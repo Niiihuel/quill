@@ -35,6 +35,8 @@ pub struct Config {
     pub programs: HashMap<String, String>,
     /// Where sessions are kept; `None` keeps them in memory only.
     pub database: Option<PathBuf>,
+    /// Where the shadow repositories of session folders live; `None` attributes no files.
+    pub snapshots: Option<PathBuf>,
 }
 
 impl Config {
@@ -48,6 +50,7 @@ impl Config {
             .unwrap_or_else(|| ".".into());
         Self {
             database: Some(data.join("quill/quill.db")),
+            snapshots: Some(data.join("quill/snapshots")),
             ..Self::default()
         }
     }
@@ -135,6 +138,8 @@ async fn route(mut rx: UnboundedReceiver<Intent>, ui: Sink, config: Config) {
             sink.clone(),
         );
         actor.spec.resume = restored.resume;
+        actor.before = restored.before;
+        actor.shadow_root = config.snapshots.clone();
         tokio::spawn(actor.run(rx));
         sessions.insert(session, tx);
         ui(Event::Status {
@@ -160,9 +165,9 @@ async fn route(mut rx: UnboundedReceiver<Intent>, ui: Sink, config: Config) {
                     cwd: new.cwd.clone(),
                 });
                 let program = config.programs.get(&new.agent).cloned();
-                tokio::spawn(
-                    Actor::new(next, new, adapter, program, tx.clone(), sink.clone()).run(rx),
-                );
+                let mut actor = Actor::new(next, new, adapter, program, tx.clone(), sink.clone());
+                actor.shadow_root = config.snapshots.clone();
+                tokio::spawn(actor.run(rx));
                 sessions.insert(next, tx);
                 continue;
             }
@@ -185,6 +190,7 @@ async fn route(mut rx: UnboundedReceiver<Intent>, ui: Sink, config: Config) {
             Intent::SetModel { session, model } => {
                 (session, Input::Command(AgentCommand::SetModel(model)))
             }
+            Intent::Rewind { session, request } => (session, Input::Rewind(request)),
         };
         if let Some(tx) = sessions.get(&session) {
             let _ = tx.send(input);
@@ -196,6 +202,8 @@ async fn route(mut rx: UnboundedReceiver<Intent>, ui: Sink, config: Config) {
 struct Restored {
     new: NewSession,
     resume: Option<String>,
+    /// Each attributed request's snapshot from before it ran, for rewinds after a restart.
+    before: HashMap<RequestId, String>,
 }
 
 impl Restored {
@@ -211,22 +219,35 @@ impl Restored {
             mode: None,
         };
         let mut resume = None;
+        let mut before = HashMap::new();
         for event in events {
-            if let Event::Agent { event, .. } = event {
-                match event {
-                    AgentEvent::Session { id } => resume = Some(id.clone()),
-                    AgentEvent::ModeChanged { mode } => new.mode = Some(mode.clone()),
-                    _ => {}
-                }
+            match event {
+                Event::Agent {
+                    event: AgentEvent::Session { id },
+                    ..
+                } => resume = Some(id.clone()),
+                Event::Agent {
+                    event: AgentEvent::ModeChanged { mode },
+                    ..
+                } => new.mode = Some(mode.clone()),
+                Event::Changes {
+                    request, snapshot, ..
+                } => drop(before.insert(request.clone(), snapshot.clone())),
+                _ => {}
             }
         }
-        Some(Self { new, resume })
+        Some(Self {
+            new,
+            resume,
+            before,
+        })
     }
 }
 
 /// What reaches a session's actor: the UI's wishes and its process's output.
 enum Input {
     Send(String),
+    Rewind(RequestId),
     Command(AgentCommand),
     Line { generation: u64, line: String },
     Exited { generation: u64, code: Option<i32> },
@@ -246,6 +267,15 @@ struct Actor {
     running: Option<RequestId>,
     /// A prompt was sent and its turn has not finished.
     busy: bool,
+    /// Where this folder's shadow repository lives, and the shadow once opened.
+    shadow_root: Option<PathBuf>,
+    shadow: Option<Arc<quill_git::Shadow>>,
+    /// Requests sent and not finished, oldest first: each finished turn belongs to the first.
+    sent: std::collections::VecDeque<RequestId>,
+    /// The folder when the oldest of `sent` began.
+    start: Option<String>,
+    /// Each attributed request's snapshot from before it ran.
+    before: HashMap<RequestId, String>,
 }
 
 impl Actor {
@@ -276,6 +306,82 @@ impl Actor {
             generation: 0,
             running: None,
             busy: false,
+            shadow_root: None,
+            shadow: None,
+            sent: Default::default(),
+            start: None,
+            before: HashMap::new(),
+        }
+    }
+
+    /// The folder as it is now, off the actor's thread; `None` when files are not attributed.
+    async fn snapshot(&mut self) -> Option<String> {
+        if self.shadow.is_none() {
+            let (root, cwd) = (self.shadow_root.clone()?, self.spec.cwd.clone());
+            let opened =
+                tokio::task::spawn_blocking(move || quill_git::Shadow::open(&root, &cwd)).await;
+            self.shadow = Some(Arc::new(opened.ok()?.ok()?));
+        }
+        let shadow = self.shadow.clone()?;
+        tokio::task::spawn_blocking(move || shadow.snapshot().ok())
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// A turn ended: what its request changed in the folder (engine.md §6, spec.md D4).
+    async fn attribute(&mut self) {
+        let request = self.sent.pop_front();
+        let end = self.snapshot().await;
+        if let (Some(request), Some(start), Some(end), Some(shadow)) = (
+            request,
+            self.start.clone(),
+            end.clone(),
+            self.shadow.clone(),
+        ) {
+            let (from, to) = (start.clone(), end.clone());
+            let files =
+                tokio::task::spawn_blocking(move || shadow.changes(&from, &to).unwrap_or_default())
+                    .await
+                    .unwrap_or_default();
+            self.before.insert(request.clone(), start.clone());
+            (self.sink)(Event::Changes {
+                session: self.id,
+                request,
+                files,
+                snapshot: start,
+            });
+        }
+        self.start = end;
+    }
+
+    /// Put the folder back as it was before `request`, unless a turn is running.
+    async fn rewind(&mut self, request: RequestId) {
+        let (Some(target), false) = (self.before.get(&request).cloned(), self.busy) else {
+            return;
+        };
+        let Some(now) = self.snapshot().await else {
+            return;
+        };
+        let Some(shadow) = self.shadow.clone() else {
+            return;
+        };
+        let restored = tokio::task::spawn_blocking(move || {
+            let files = shadow.changes(&now, &target)?;
+            shadow.restore(&target).map(|()| (files, target))
+        })
+        .await;
+        match restored {
+            Ok(Ok((files, target))) => {
+                self.start = Some(target);
+                (self.sink)(Event::Rewound {
+                    session: self.id,
+                    request,
+                    files,
+                });
+            }
+            Ok(Err(error)) => self.status(SessionStatus::Failed(format!("rewind failed: {error}"))),
+            Err(_) => {}
         }
     }
 
@@ -295,6 +401,12 @@ impl Actor {
                         continue;
                     }
                     let request = uuid::Uuid::new_v4().to_string();
+                    // The first request in line starts from the folder as it is now; the
+                    // ones queued behind it start where the turn before them ended.
+                    if self.sent.is_empty() {
+                        self.start = self.snapshot().await;
+                    }
+                    self.sent.push_back(request.clone());
                     (self.sink)(Event::Queued {
                         session: self.id,
                         request: request.clone(),
@@ -309,6 +421,7 @@ impl Actor {
                     self.busy = true;
                     self.status(SessionStatus::Running);
                 }
+                Input::Rewind(request) => self.rewind(request).await,
                 Input::Command(command) => {
                     let resumes = matches!(command, AgentCommand::Decide { .. });
                     self.write(command).await;
@@ -323,6 +436,8 @@ impl Actor {
                     self.process = None;
                     self.running = None;
                     self.busy = false;
+                    // Turns the agent never finished are not attributed.
+                    self.sent.clear();
                     self.status(match code {
                         Some(0) | None => SessionStatus::Exited,
                         Some(code) => {
@@ -430,6 +545,7 @@ impl Actor {
                 event,
             });
             if finished {
+                self.attribute().await;
                 self.running = None;
                 self.busy = false;
                 self.status(SessionStatus::Idle);

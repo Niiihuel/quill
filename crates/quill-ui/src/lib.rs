@@ -8,8 +8,8 @@ mod view;
 pub use view::view;
 
 use quill_model::{
-    AgentCapabilities, AgentEvent, Decision, Event, Intent, NewSession, RequestId, SessionId,
-    SessionStatus, Suggestion,
+    AgentCapabilities, AgentEvent, Decision, Event, FileEffect, Intent, NewSession, RequestId,
+    SessionId, SessionStatus, Suggestion,
 };
 use serde_json::Value;
 use std::path::PathBuf;
@@ -44,6 +44,12 @@ pub enum Item {
         interrupted: bool,
         cost: Option<f64>,
         error: Option<String>,
+    },
+    /// What one request changed in the folder, and whether it was rewound since.
+    Changes {
+        request: RequestId,
+        files: Vec<FileEffect>,
+        rewound: bool,
     },
 }
 
@@ -126,6 +132,40 @@ impl Store {
             Event::Agent { session, event, .. } => {
                 if let Some(s) = self.session_mut(session) {
                     agent_event(s, event);
+                }
+            }
+            // A request that changed nothing gets no card.
+            Event::Changes {
+                session,
+                request,
+                files,
+                ..
+            } if !files.is_empty() => {
+                if let Some(s) = self.session_mut(session) {
+                    s.items.push(Item::Changes {
+                        request,
+                        files,
+                        rewound: false,
+                    });
+                }
+            }
+            Event::Changes { .. } => {}
+            Event::Rewound {
+                session, request, ..
+            } => {
+                if let Some(s) = self.session_mut(session) {
+                    for item in &mut s.items {
+                        if let Item::Changes {
+                            request: r,
+                            rewound,
+                            ..
+                        } = item
+                        {
+                            if *r == request {
+                                *rewound = true;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -268,6 +308,8 @@ pub struct Ui {
     pub expanded: Vec<String>,
     /// A message written before its session existed, sent once it does.
     pub waiting: Option<String>,
+    /// The request whose changes the diff panel shows.
+    pub diff: Option<(SessionId, RequestId)>,
 }
 
 impl Ui {
@@ -282,6 +324,7 @@ impl Ui {
             open_menu: None,
             expanded: vec![],
             waiting: None,
+            diff: None,
         }
     }
 
@@ -337,6 +380,24 @@ pub fn update(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Intent
 fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
     if id == view::NEW_SESSION {
         ui.selected = None;
+        return vec![];
+    }
+    if id == view::DIFF_CLOSE {
+        ui.diff = None;
+        return vec![];
+    }
+    if let Some(rest) = id.strip_prefix("changes:") {
+        let Some(session) = ui.selected else {
+            return vec![];
+        };
+        if let Some(request) = rest.strip_suffix(":view") {
+            ui.diff = Some((session, request.to_owned()));
+        } else if let Some(request) = rest.strip_suffix(":undo") {
+            return vec![Intent::Rewind {
+                session,
+                request: request.to_owned(),
+            }];
+        }
         return vec![];
     }
     if id == view::STOP {

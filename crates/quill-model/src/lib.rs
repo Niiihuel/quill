@@ -20,6 +20,27 @@ pub struct NewSession {
     pub mode: Option<String>,
 }
 
+/// How one file changed during a request.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum ChangeKind {
+    Added,
+    Modified,
+    Deleted,
+    Renamed { from: String },
+}
+
+/// One file a request changed, whoever changed it (an edit tool or a shell command).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FileEffect {
+    /// Relative to the session's folder.
+    pub path: String,
+    pub kind: ChangeKind,
+    pub added: u32,
+    pub removed: u32,
+    /// The unified diff of this file for the request, cut when very long.
+    pub patch: String,
+}
+
 /// What the UI asks of the engine.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Intent {
@@ -43,6 +64,11 @@ pub enum Intent {
     SetModel {
         session: SessionId,
         model: String,
+    },
+    /// Put the session's files back as they were before `request` ran.
+    Rewind {
+        session: SessionId,
+        request: RequestId,
     },
 }
 
@@ -83,6 +109,20 @@ pub enum Event {
         request: Option<RequestId>,
         event: AgentEvent,
     },
+    /// What files a finished request created, changed, removed or moved.
+    Changes {
+        session: SessionId,
+        request: RequestId,
+        files: Vec<FileEffect>,
+        /// The folder before the request, as the engine's snapshot id: what a rewind restores.
+        snapshot: String,
+    },
+    /// The session's files were put back as they were before `request`.
+    Rewound {
+        session: SessionId,
+        request: RequestId,
+        files: Vec<FileEffect>,
+    },
 }
 
 impl Event {
@@ -91,7 +131,9 @@ impl Event {
             Event::SessionCreated { session, .. }
             | Event::Status { session, .. }
             | Event::Queued { session, .. }
-            | Event::Agent { session, .. } => *session,
+            | Event::Agent { session, .. }
+            | Event::Changes { session, .. }
+            | Event::Rewound { session, .. } => *session,
         }
     }
 }

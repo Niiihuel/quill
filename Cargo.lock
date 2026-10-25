@@ -2830,11 +2830,19 @@ version = "0.0.1"
 dependencies = [
  "quill-agent",
  "quill-agent-claude",
+ "quill-git",
  "quill-model",
  "quill-store",
  "serde_json",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "quill-git"
+version = "0.0.1"
+dependencies = [
+ "quill-model",
 ]
 
 [[package]]

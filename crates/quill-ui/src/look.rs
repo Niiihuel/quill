@@ -16,6 +16,7 @@ pub const MUTED: Color = Color::rgb(0x7d, 0x7d, 0x7d);
 pub const COMMAND_BOX: Color = Color::rgb(0xf9, 0xf9, 0xf9);
 pub const AWAITING: Color = Color::rgb(0xf0, 0xac, 0x55);
 pub const RUNNING: Color = Color::rgb(0x3b, 0x5b, 0xdb);
+pub const ADDED: Color = Color::rgb(0x1e, 0x9e, 0x3c);
 pub const REMOVED: Color = Color::rgb(0xcd, 0x20, 0x54);
 
 /// Sidebar width with its 1 px border.

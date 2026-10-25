@@ -22,6 +22,7 @@ fn engine() -> (Engine, Receiver<Event>) {
     let config = quill_engine::Config {
         programs,
         database: None,
+        snapshots: None,
     };
     let engine = Engine::start_with(move |event| drop(tx.send(event)), config);
     (engine, rx)
@@ -190,6 +191,7 @@ fn a_kept_session_comes_back_and_continues() {
         let config = quill_engine::Config {
             programs,
             database: Some(database.clone()),
+            snapshots: None,
         };
         (
             Engine::start_with(move |event| drop(tx.send(event)), config),
@@ -268,4 +270,54 @@ fn a_kept_session_comes_back_and_continues() {
         )
     });
     let _ = std::fs::remove_file(&database);
+}
+
+#[test]
+fn a_request_is_attributed_and_its_undo_puts_files_back() {
+    let (tx, rx) = channel();
+    let programs = HashMap::from([(
+        "claude".to_string(),
+        env!("CARGO_BIN_EXE_fake-agent").to_string(),
+    )]);
+    let snapshots = std::env::temp_dir().join(format!("quill-snapshots-{}", uuid_like()));
+    let config = quill_engine::Config {
+        programs,
+        database: None,
+        snapshots: Some(snapshots.clone()),
+    };
+    let engine = Engine::start_with(move |event| drop(tx.send(event)), config);
+    let cwd = workdir("rewind");
+    engine.send(Intent::NewSession(NewSession {
+        agent: "claude".into(),
+        cwd: cwd.clone(),
+        model: None,
+        effort: None,
+        mode: None,
+    }));
+    engine.send(Intent::Send {
+        session: 1,
+        text: "Create rewind.txt containing the line one.".into(),
+    });
+
+    let events = until(&rx, |e| matches!(e, Event::Changes { .. }));
+    let Some(Event::Changes { request, files, .. }) = events.last() else {
+        unreachable!()
+    };
+    assert_eq!(files.len(), 1, "{files:?}");
+    assert_eq!(
+        (files[0].path.as_str(), &files[0].kind),
+        ("rewind.txt", &quill_model::ChangeKind::Added)
+    );
+    assert!(cwd.join("rewind.txt").exists());
+
+    engine.send(Intent::Rewind {
+        session: 1,
+        request: request.clone(),
+    });
+    let events = until(&rx, |e| matches!(e, Event::Rewound { .. }));
+    assert!(matches!(events.last(), Some(Event::Rewound { files, .. }) if files.len() == 1));
+    assert!(!cwd.join("rewind.txt").exists());
+    // The marker the fake agent reads stays: the rewind undoes only what the request did.
+    assert!(cwd.join(".fake-agent").exists());
+    let _ = std::fs::remove_dir_all(&snapshots);
 }

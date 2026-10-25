@@ -7,7 +7,7 @@ use limn::{
     Composer, ControlSize, DropdownOption, Element, FontFamily, FramedCard, ListRow, Markdown,
     OutputBlock, Select, Size, TextShimmer,
 };
-use quill_model::SessionStatus;
+use quill_model::{ChangeKind, FileEffect, SessionStatus};
 use serde_json::Value;
 
 pub const COMPOSER: &str = "composer";
@@ -15,6 +15,7 @@ pub const NEW_SESSION: &str = "new-session";
 pub const STOP: &str = "stop";
 pub const MODE_MENU: &str = "mode-menu";
 pub const MODEL_MENU: &str = "model-menu";
+pub const DIFF_CLOSE: &str = "diff:close";
 
 fn text(s: impl Into<String>) -> Element {
     Element::text(s.into())
@@ -36,9 +37,25 @@ fn muted(s: impl Into<String>) -> Element {
 
 pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     let palette = look::PALETTE;
-    let main_width = (window.width - look::SIDEBAR_WIDTH).max(0.0);
-    let column = COLUMN.min(main_width - 32.0).max(240.0);
     let session = ui.selected.and_then(|id| store.session(id));
+    // The diff opens beside the conversation, taking 3 of 5 parts as Desktop's does.
+    let files = ui.diff.as_ref().and_then(|(id, request)| {
+        let s = session.filter(|s| s.id == *id)?;
+        s.items.iter().find_map(|i| match i {
+            Item::Changes {
+                request: r, files, ..
+            } if r == request => Some(files),
+            _ => None,
+        })
+    });
+    let rest = (window.width - look::SIDEBAR_WIDTH).max(0.0);
+    let diff_width = if files.is_some() {
+        (rest * 0.6).min(760.0)
+    } else {
+        0.0
+    };
+    let main_width = rest - diff_width;
+    let column = COLUMN.min(main_width - 32.0).max(240.0);
     let body = match session {
         Some(session) => transcript(session, ui, column, palette),
         None => empty(ui),
@@ -50,15 +67,24 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
         Element::spacer().size(None, Some(12.0)),
     ])
     .size(Some(main_width), Some(window.height));
-    Element::row(vec![
+    let mut row = vec![
         sidebar(store, ui, window.height, palette),
         Element::spacer()
             .background(look::DIVIDER)
             .size(Some(1.0), Some(window.height)),
         main,
-    ])
-    .background(look::THEME.background)
-    .size(Some(window.width), Some(window.height))
+    ];
+    if let Some(files) = files {
+        row.push(
+            Element::spacer()
+                .background(look::DIVIDER)
+                .size(Some(1.0), Some(window.height)),
+        );
+        row.push(diff_panel(files, diff_width - 1.0, window.height, palette));
+    }
+    Element::row(row)
+        .background(look::THEME.background)
+        .size(Some(window.width), Some(window.height))
 }
 
 fn top_bar(session: Option<&Session>, palette: ComponentPalette) -> Element {
@@ -220,6 +246,11 @@ fn item(item: &Item, ui: &Ui, column: f32, palette: ComponentPalette) -> Element
         } => text(error.clone().unwrap_or_else(|| "The turn failed".into()))
             .foreground(look::REMOVED),
         Item::TurnEnd { .. } => Element::spacer().size(None, Some(0.0)),
+        Item::Changes {
+            request,
+            files,
+            rewound,
+        } => changes_card(request, files, *rewound, column, palette),
     }
 }
 
@@ -404,4 +435,164 @@ fn mode_label(mode: &str) -> &'static str {
         "plan" => "Plan",
         _ => "Manual",
     }
+}
+
+/// What one request changed, under its turn: every file with how it changed,
+/// and a real undo (Desktop's asks the agent instead, engine.md §6).
+fn changes_card(
+    request: &str,
+    files: &[FileEffect],
+    rewound: bool,
+    column: f32,
+    palette: ComponentPalette,
+) -> Element {
+    let (added, removed) = files
+        .iter()
+        .fold((0, 0), |(a, r), f| (a + f.added, r + f.removed));
+    let count = if files.len() == 1 {
+        "1 file".to_string()
+    } else {
+        format!("{} files", files.len())
+    };
+    let head = Element::row(vec![
+        text(format!("Changed {count}")),
+        text(format!("+{added}")).foreground(look::ADDED),
+        text(format!("−{removed}")).foreground(look::REMOVED),
+    ])
+    .gap(6.0);
+    let mut card = FramedCard::new(palette).width(column).section(head);
+    let rows = files
+        .iter()
+        .map(|f| {
+            let (mark, color) = match &f.kind {
+                ChangeKind::Added => ("A".to_string(), look::ADDED),
+                ChangeKind::Deleted => ("D".to_string(), look::REMOVED),
+                ChangeKind::Renamed { from } => (format!("R ← {from}"), look::MUTED),
+                ChangeKind::Modified => ("M".to_string(), look::MUTED),
+            };
+            Element::row(vec![
+                text(f.path.clone())
+                    .font_family(FontFamily::Monospace)
+                    .flex(1.0),
+                text(mark).foreground(color),
+                muted(format!("+{} −{}", f.added, f.removed)),
+            ])
+            .gap(10.0)
+        })
+        .collect();
+    card = card.section(Element::column(rows).gap(4.0));
+    let foot = if rewound {
+        muted("Files restored to before this request")
+    } else {
+        ButtonGroup::new(vec![
+            Button::new(format!("changes:{request}:undo"), "Undo", palette)
+                .variant(ButtonVariant::Ghost)
+                .button_size(ButtonSize::Small)
+                .render(),
+            Button::new(format!("changes:{request}:view"), "View changes", palette)
+                .variant(ButtonVariant::Outline)
+                .button_size(ButtonSize::Small)
+                .render(),
+        ])
+        .align_end()
+        .render()
+    };
+    card.foot(foot).render()
+}
+
+/// The changes of one request, file by file, as unified diffs.
+fn diff_panel(files: &[FileEffect], width: f32, height: f32, palette: ComponentPalette) -> Element {
+    let header = Element::row(vec![
+        text("Changes"),
+        Element::spacer().flex(1.0),
+        Button::new(DIFF_CLOSE, "Close", palette)
+            .variant(ButtonVariant::Ghost)
+            .button_size(ButtonSize::Small)
+            .render(),
+    ])
+    .padding(10.0)
+    .size(Some(width), Some(44.0));
+    let mut blocks = vec![];
+    for (index, file) in files.iter().enumerate() {
+        blocks.push(
+            Element::row(vec![
+                text(file.path.clone())
+                    .font_family(FontFamily::Monospace)
+                    .flex(1.0),
+                text(format!("+{}", file.added)).foreground(look::ADDED),
+                text(format!("−{}", file.removed)).foreground(look::REMOVED),
+            ])
+            .gap(6.0)
+            .padding(8.0),
+        );
+        let lines = parse_patch(&file.patch);
+        let rows = lines.len().max(1) as f32;
+        blocks.push(
+            limn::CodeDiff::new(format!("diff:{index}"), lines)
+                .palette(palette)
+                .font_size(12.0)
+                .height((rows * 18.0 + 8.0).min(600.0))
+                .render(),
+        );
+    }
+    let body = Element::scroll(
+        "diff:scroll",
+        Element::column(blocks)
+            .gap(4.0)
+            .padding(8.0)
+            .size(Some(width), None),
+    );
+    Element::column(vec![header, body.flex(1.0)])
+        .background(look::THEME.background)
+        .size(Some(width), Some(height))
+}
+
+/// Lines of a unified diff, numbered from its hunk headers.
+pub fn parse_patch(patch: &str) -> Vec<limn::CodeDiffLine> {
+    use limn::{CodeDiffLine, CodeDiffLineKind};
+    let (mut old, mut new) = (0usize, 0usize);
+    let mut lines = vec![];
+    let mut in_hunk = false;
+    for line in patch.lines() {
+        if let Some(header) = line.strip_prefix("@@ ") {
+            // "@@ -a,b +c,d @@": the first line numbers of the hunk.
+            let mut parts = header.split_whitespace();
+            let start = |p: Option<&str>| {
+                p.and_then(|p| p[1..].split(',').next())
+                    .and_then(|n| n.parse().ok())
+                    .unwrap_or(1)
+            };
+            old = start(parts.next());
+            new = start(parts.next());
+            in_hunk = true;
+            continue;
+        }
+        if !in_hunk || line.starts_with("\\ ") {
+            continue;
+        }
+        let (kind, text) = match line.chars().next() {
+            Some('+') => (CodeDiffLineKind::Added, &line[1..]),
+            Some('-') => (CodeDiffLineKind::Removed, &line[1..]),
+            Some(' ') => (CodeDiffLineKind::Context, &line[1..]),
+            _ => (CodeDiffLineKind::Context, line),
+        };
+        let (old_line, new_line) = match kind {
+            CodeDiffLineKind::Added => (None, Some(new)),
+            CodeDiffLineKind::Removed => (Some(old), None),
+            CodeDiffLineKind::Context => (Some(old), Some(new)),
+        };
+        if old_line.is_some() {
+            old += 1;
+        }
+        if new_line.is_some() {
+            new += 1;
+        }
+        lines.push(CodeDiffLine {
+            kind,
+            old_line,
+            new_line,
+            text: text.to_owned(),
+        });
+    }
+    lines
 }
