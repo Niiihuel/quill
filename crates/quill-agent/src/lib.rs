@@ -56,6 +56,9 @@ pub struct AgentCapabilities {
     pub tool_hooks: bool,
     /// Optional features the agent announced, as it names them.
     pub features: Vec<String>,
+    /// The person's plan, as the agent names it ("max", "pro"), when it says.
+    #[serde(default)]
+    pub plan: Option<String>,
 }
 
 /// One file a tool changed, as the agent reported it.
@@ -99,6 +102,22 @@ pub struct Usage {
     /// The size of the model's context, when the agent says.
     #[serde(default)]
     pub context_window: u64,
+}
+
+/// One usage window of the person's plan.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct UsageWindow {
+    /// The share spent, 0 to 1.
+    pub utilization: f32,
+    /// When it starts again, in Unix seconds.
+    pub resets_at: u64,
+}
+
+/// The plan's usage windows the agent reported: the session's five hours and the week.
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PlanLimits {
+    pub session: Option<UsageWindow>,
+    pub weekly: Option<UsageWindow>,
 }
 
 /// Something the agent said, in quill's terms.
@@ -174,6 +193,8 @@ pub enum AgentEvent {
         body: Value,
     },
     /// A line the adapter does not understand, kept whole.
+    /// How much of the plan's usage windows is spent.
+    Limits(PlanLimits),
     Unknown(Value),
 }
 

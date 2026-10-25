@@ -4,7 +4,8 @@
 
 use quill_agent::{
     AgentAdapter, AgentCapabilities, AgentCommand, AgentEvent, AgentId, CommandRun, Decision,
-    Decoded, FileChange, LaunchPlan, ModelInfo, SessionSpec, Suggestion, Usage,
+    Decoded, FileChange, LaunchPlan, ModelInfo, PlanLimits, SessionSpec, Suggestion, Usage,
+    UsageWindow,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -16,7 +17,7 @@ const POST_TOOL_HOOK: &str = "quill_post_tool";
 const MODES: [&str; 3] = ["default", "acceptEdits", "plan"];
 
 /// Message types that carry nothing quill shows yet; not `Unknown`, not events.
-const QUIET: [&str; 3] = ["rate_limit_event", "command_lifecycle", "auth_status"];
+const QUIET: [&str; 2] = ["command_lifecycle", "auth_status"];
 
 #[derive(Default)]
 pub struct Claude {
@@ -364,6 +365,21 @@ impl AgentAdapter for Claude {
                 });
             }
             ("result", _) => {}
+            // Verified on 2.1.310: `rate_limit_info.unifiedWindows` gives each window's
+            // `utilization` (0–1) and `resetsAt`, as Desktop's usage popover reads them.
+            ("rate_limit_event", _) => {
+                let windows = &msg["rate_limit_info"]["unifiedWindows"];
+                let window = |w: &Value| {
+                    Some(UsageWindow {
+                        utilization: w["utilization"].as_f64()? as f32,
+                        resets_at: w["resetsAt"].as_u64()?,
+                    })
+                };
+                decoded.events.push(AgentEvent::Limits(PlanLimits {
+                    session: window(&windows["five_hour"]),
+                    weekly: window(&windows["seven_day"]),
+                }));
+            }
             (kind, _) if QUIET.contains(&kind) => {}
             _ => decoded.events.push(AgentEvent::Unknown(msg)),
         }
@@ -413,6 +429,9 @@ fn ready(body: &Value) -> AgentEvent {
             fork: true,
             rewind: true,
             tool_hooks: true,
+            plan: body["account"]["subscriptionType"]
+                .as_str()
+                .map(str::to_owned),
             features: body["capabilities"]
                 .as_array()
                 .into_iter()

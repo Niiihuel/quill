@@ -4,7 +4,8 @@
 use std::path::PathBuf;
 
 pub use quill_agent::{
-    AgentCapabilities, AgentEvent, Decision, FileChange, ModelInfo, Suggestion, Usage,
+    AgentCapabilities, AgentEvent, Decision, FileChange, ModelInfo, PlanLimits, Suggestion, Usage,
+    UsageWindow,
 };
 
 /// quill's own id of a session.

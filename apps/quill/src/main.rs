@@ -320,6 +320,12 @@ impl eframe::App for App {
                     quill_ui::view::SLASH if !self.ui.prompt.starts_with('/') => {
                         self.set_prompt(format!("/{}", self.ui.prompt));
                     }
+                    // Desktop's "See all" opens the plan's usage page.
+                    quill_ui::view::USAGE_ALL => {
+                        let _ = std::process::Command::new("xdg-open")
+                            .arg("https://claude.ai/settings/usage")
+                            .spawn();
+                    }
                     quill_ui::view::SCROLL_END => {
                         if let Some(session) = self.ui.selected {
                             self.tree.scroll_to_end(&format!("transcript:{session}"));
@@ -406,6 +412,27 @@ fn system_fonts() -> Option<limn::Fonts> {
     Some(fonts)
 }
 
+/// The person's first name for the greeting: the account's full name if the system has one,
+/// else the login name, capitalized.
+fn first_name() -> Option<String> {
+    let user = std::env::var("USER").ok()?;
+    let full = std::process::Command::new("getent")
+        .args(["passwd", &user])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|line| line.split(':').nth(4).map(str::to_owned))
+        .filter(|gecos| !gecos.trim().is_empty());
+    let name = full
+        .as_deref()
+        .unwrap_or(&user)
+        .split([' ', ','])
+        .next()?
+        .to_owned();
+    let mut chars = name.chars();
+    Some(chars.next()?.to_uppercase().chain(chars).collect())
+}
+
 fn main() -> eframe::Result {
     let cwd = std::env::args()
         .nth(1)
@@ -444,6 +471,7 @@ fn main() -> eframe::Result {
                 ui: Ui {
                     // Tests and demos pin a cheap model; the picker changes it per session.
                     model: std::env::var("QUILL_MODEL").ok(),
+                    name: first_name(),
                     ..Ui::new(cwd)
                 },
                 engine,

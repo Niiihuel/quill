@@ -95,6 +95,9 @@ pub struct Session {
 #[derive(Default)]
 pub struct Store {
     pub sessions: Vec<Session>,
+    /// The plan's usage windows, as the agent last reported them; they are the person's,
+    /// not one session's.
+    pub limits: Option<quill_model::PlanLimits>,
 }
 
 impl Store {
@@ -154,6 +157,10 @@ impl Store {
                     s.items.push(Item::User { request, text });
                 }
             }
+            Event::Agent {
+                event: AgentEvent::Limits(limits),
+                ..
+            } => self.limits = Some(limits),
             Event::Agent { session, event, .. } => {
                 if let Some(s) = self.session_mut(session) {
                     agent_event(s, event);
@@ -390,6 +397,8 @@ pub struct Ui {
     pub panel_open: bool,
     /// Folders whose sessions the sidebar folds away.
     pub collapsed: Vec<PathBuf>,
+    /// The person's first name for the new session's greeting, when the host knows it.
+    pub name: Option<String>,
     /// How the person allowed last, which the next permission card offers first.
     pub last_allow: Allow,
     /// Whether the transcript shows its end, which the host sets every frame.
@@ -514,6 +523,7 @@ impl Ui {
             panel_open: true,
             collapsed: vec![],
             last_allow: Allow::Once,
+            name: None,
             window: limn::Size::new(1408.0, 844.0),
             at_end: true,
             column_fraction: None,
@@ -810,6 +820,7 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         view::ATTACH_FOLDER,
         view::SLASH,
         view::PICK_FOLDER,
+        view::USAGE_ALL,
     ]
     .contains(&id)
     {
@@ -847,6 +858,7 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         view::MODEL_MENU,
         view::PLUS_MENU,
         view::FOLDER_MENU,
+        view::USAGE_MENU,
     ] {
         if id == menu {
             ui.open_menu = if ui.open_menu == Some(menu) {

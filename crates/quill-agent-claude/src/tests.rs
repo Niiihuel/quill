@@ -308,3 +308,22 @@ fn launch_never_claims_to_be_desktop() {
         .contains(&"CLAUDE_CODE_ENTRYPOINT".to_string()));
     assert!(!plan.env.iter().any(|(_, v)| v.contains("desktop")));
 }
+
+#[test]
+fn plan_usage_and_plan_come_from_rate_limits_and_initialize() {
+    let (_, events, _) = replay("always");
+    let limits = events.iter().find_map(|e| match e {
+        AgentEvent::Limits(limits) => Some(*limits),
+        _ => None,
+    });
+    let limits = limits.expect("a rate_limit_event");
+    let session = limits.session.unwrap();
+    assert!((session.utilization - 0.14).abs() < 1e-6);
+    assert_eq!(session.resets_at, 1_792_926_000);
+    assert!((limits.weekly.unwrap().utilization - 0.04).abs() < 1e-6);
+    let plan = events.iter().find_map(|e| match e {
+        AgentEvent::Ready { capabilities, .. } => Some(capabilities.plan.clone()),
+        _ => None,
+    });
+    assert!(plan.is_some());
+}

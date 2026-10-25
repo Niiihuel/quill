@@ -22,6 +22,9 @@ pub const PICK_FOLDER: &str = "pick-folder";
 pub const PLUS_MENU: &str = "plus-menu";
 pub const FOLDER_MENU: &str = "folder-menu";
 pub const SEND: &str = "send";
+pub const USAGE_MENU: &str = "usage-menu";
+/// "See all →": the plan's usage page, which the host opens in the browser.
+pub const USAGE_ALL: &str = "usage:all";
 pub const SCROLL_END: &str = "scroll-end";
 /// The prefix of a code block's copy button; the code follows it.
 pub const COPY_CODE: &str = "copy-code:";
@@ -264,7 +267,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
         let column = COLUMN.min(layout.main - 64.0).max(240.0);
         let body = match session {
             Some(session) => transcript(session, ui, column, palette),
-            None => empty(ui),
+            None => empty(ui, column),
         };
         row.push(
             Element::column(vec![
@@ -803,9 +806,26 @@ fn status_dot(status: &SessionStatus) -> Element {
         .centered_y()
 }
 
-/// A new session's page is empty above the composer, as Desktop 3.6556.2's.
-fn empty(_ui: &Ui) -> Element {
-    Element::spacer()
+/// A new session's page greets the person at the top, as their Desktop does
+///: an orange spark and "What's up next, Name?", 20 px.
+fn empty(ui: &Ui, column: f32) -> Element {
+    let greeting = match &ui.name {
+        Some(name) => format!("What's up next, {name}?"),
+        None => "What's up next?".into(),
+    };
+    let line = Element::row(vec![
+        text("✳")
+            .font_size(26.0)
+            .foreground(look::SPARK)
+            .centered_y(),
+        text(greeting).font_size(20.0).centered_y(),
+    ])
+    .gap(8.0)
+    .size(Some(column), Some(30.0));
+    Element::column(vec![
+        Element::spacer().size(None, Some(16.0)),
+        line.centered_x(),
+    ])
 }
 
 fn transcript(session: &Session, ui: &Ui, column: f32, palette: ComponentPalette) -> Element {
@@ -1518,9 +1538,10 @@ fn permission_actions(id: &str, can_always: bool, ui: &Ui, palette: ComponentPal
         .render()
 }
 
-/// Desktop's composer at 1×: a 44 px box with "+" on the left and send (or stop)
-/// on the right, growing upward as the message does, over a row of chips outside it: the
-/// folder and mode on the left, the model and effort on the right.
+/// Desktop's composer, as the person's Desktop 2.9939.4 lays it out: a new
+/// session's place and folder as filled chips over a 44 px box that holds only the message
+/// and its return arrow; under the box "+" and the mode on the left, the model, its effort
+/// and the plan's usage on the right.
 fn composer(
     store: &Store,
     session: Option<&Session>,
@@ -1535,18 +1556,16 @@ fn composer(
         )
     });
     let trailing = if running && ui.prompt.trim().is_empty() {
-        composer_button(STOP, limn::Icon::StopFill, "Stop", false)
-    } else if !ui.prompt.trim().is_empty() {
-        send_button()
+        composer_button(STOP, limn::Icon::StopFill, "Stop", false, 34.0)
     } else {
-        Element::spacer().size(Some(34.0), Some(34.0))
+        send_button(!ui.prompt.trim().is_empty())
     };
     let placeholder = if session.is_some() {
         "Type / for commands"
     } else {
         "Describe a task or ask a question"
     };
-    Composer::new(
+    let box_ = Composer::new(
         COMPOSER,
         ui.prompt.clone(),
         placeholder,
@@ -1556,19 +1575,38 @@ fn composer(
     .enter_submits(true)
     .auto_grow(28.0, 184.0)
     .editor_font_size(15.0)
-    .pill_controls(plus_menu(ui), trailing)
+    .pill_controls(Element::spacer().size(Some(0.0), None), trailing)
     .inline_controls(true)
     .controls_at_last_line(true)
     .border_color(look::COMPOSER_BORDER)
     .shadow_color(look::COMPOSER_SHADOW)
     .card_radius(14.0)
     .context(composer_footer(store, session, ui, palette))
-    .render()
+    .render();
+    if session.is_some() {
+        return box_;
+    }
+    // quill runs sessions on this computer only, so "Local" is a label, not a menu.
+    let local = Element::row(vec![
+        hgap(8.0),
+        chip_icon(limn::Icon::Laptop),
+        chip_text("Local", look::PALETTE.text),
+        hgap(8.0),
+    ])
+    .gap(6.0)
+    .background(look::CANCEL)
+    .radius(6.0)
+    .size(None, Some(24.0));
+    Element::column(vec![
+        Element::row(vec![local, folder_menu(store, ui)]).gap(8.0),
+        box_,
+    ])
+    .gap(13.0)
 }
 
 /// A round-cornered 34 px icon button inside the composer, gray under the pointer and while
 /// its menu is open.
-fn composer_button(id: &str, icon: limn::Icon, label: &str, open: bool) -> Element {
+fn composer_button(id: &str, icon: limn::Icon, label: &str, open: bool, side: f32) -> Element {
     let palette = ComponentPalette {
         hover: look::COMPOSER_HOVER,
         selected: look::COMPOSER_OPEN,
@@ -1578,7 +1616,7 @@ fn composer_button(id: &str, icon: limn::Icon, label: &str, open: bool) -> Eleme
         .interactive_surface(Element::icon_button(id, icon, label))
         .foreground(look::PALETTE.text)
         .radius(8.0)
-        .size(Some(34.0), Some(34.0));
+        .size(Some(side), Some(side));
     let button = if open {
         button.background(look::COMPOSER_OPEN)
     } else {
@@ -1588,13 +1626,19 @@ fn composer_button(id: &str, icon: limn::Icon, label: &str, open: bool) -> Eleme
 }
 
 /// Send, drawn as Desktop's return arrow; limn has no such icon, so it is the character.
-fn send_button() -> Element {
+fn send_button(ready: bool) -> Element {
     let palette = ComponentPalette {
         hover: look::COMPOSER_HOVER,
         selected: look::COMPOSER_OPEN,
         ..look::PALETTE
     };
-    let glyph = text("↵").font_size(18.0).center_content();
+    // Muted while there is nothing to send, as Desktop's.
+    let ink = if ready {
+        look::PALETTE.text
+    } else {
+        look::MUTED
+    };
+    let glyph = text("↵").font_size(18.0).foreground(ink).center_content();
     let button = palette
         .interactive_surface(Element::clickable(SEND, glyph))
         .radius(8.0)
@@ -1606,7 +1650,7 @@ fn send_button() -> Element {
 /// as @-mentions the agent reads, and the slash that opens its commands.
 fn plus_menu(ui: &Ui) -> Element {
     let open = ui.open_menu == Some(PLUS_MENU);
-    let anchor = composer_button(PLUS_MENU, limn::Icon::Add, "Add", open);
+    let anchor = composer_button(PLUS_MENU, limn::Icon::Add, "Add", open, 28.0);
     let entries = vec![
         limn::DropdownMenuItem::new(ATTACH_FILES, "Add files or photos")
             .icon(limn::Icon::Paperclip)
@@ -1688,8 +1732,11 @@ fn chip(
     let chip = palette
         .interactive_surface(Element::clickable(id, row))
         .radius(6.0);
+    // Above the composer the chips are filled at rest.
     let chip = if open {
         chip.background(look::CHIP_OPEN)
+    } else if id == FOLDER_MENU {
+        chip.background(look::CANCEL)
     } else {
         chip
     };
@@ -1712,33 +1759,168 @@ fn chip_icon(icon: limn::Icon) -> Element {
         .centered_y()
 }
 
-/// The chips under the composer: a new session's place and folder, then the mode;
-/// the model and its effort on the right.
+/// The row under the composer: "+" and the mode on the left; the model, its
+/// effort and the plan's usage ring on the right.
 fn composer_footer(
     store: &Store,
     session: Option<&Session>,
     ui: &Ui,
     palette: ComponentPalette,
 ) -> Element {
-    let mut left = vec![];
-    if session.is_none() {
-        // quill runs sessions on this computer only, so the place is a label, not a menu.
-        left.push(
-            Element::row(vec![
-                hgap(6.0),
-                chip_icon(limn::Icon::Laptop),
-                chip_text("This computer", look::PALETTE.text),
-            ])
-            .gap(6.0)
-            .size(None, Some(24.0)),
-        );
-        left.push(folder_menu(store, ui));
+    Element::row(vec![
+        plus_menu(ui),
+        mode_menu(session, ui),
+        Element::spacer().flex(1.0),
+        model_menu(store, session, ui, palette),
+        usage_menu(store, session, ui),
+    ])
+    .gap(2.0)
+    .size(None, Some(28.0))
+}
+
+/// "Resets in 4 hr 53 min" within a day; "Resets in 3 days" beyond.
+/// shortcut: Desktop names the day and hour ("Resets Sun 3:00 AM"); quill has no local time
+/// zone yet, so it counts days.
+fn resets_in(resets_at: u64, now: u64) -> String {
+    let left = resets_at.saturating_sub(now);
+    let (days, hours, minutes) = (left / 86_400, left % 86_400 / 3_600, left % 3_600 / 60);
+    match (days, hours) {
+        (0, 0) => format!("Resets in {minutes} min"),
+        (0, h) => format!("Resets in {h} hr {minutes} min"),
+        (1, _) => "Resets in 1 day".into(),
+        (d, _) => format!("Resets in {d} days"),
     }
-    left.push(mode_menu(session, ui));
-    let mut row = left;
-    row.push(Element::spacer().flex(1.0));
-    row.push(model_menu(store, session, ui, palette));
-    Element::row(row).gap(2.0).size(None, Some(28.0))
+}
+
+/// A 4 px bar, gray, filled blue to `share`.
+fn usage_bar(share: f32, width: f32) -> Element {
+    let fill = (width * share.clamp(0.0, 1.0)).max(if share > 0.0 { 4.0 } else { 0.0 });
+    Element::row(vec![Element::spacer()
+        .background(look::HANDLE)
+        .radius(2.0)
+        .size(Some(fill), Some(4.0))])
+    .background(look::ACTIVE)
+    .radius(2.0)
+    .size(Some(width), Some(4.0))
+}
+
+/// One labelled row of the usage popover, over its bar.
+fn usage_row(label: &str, detail: String, share: f32, width: f32, muted_label: bool) -> Element {
+    let label = if muted_label {
+        muted(label.to_owned())
+    } else {
+        text(label.to_owned())
+    };
+    Element::column(vec![
+        Element::row(vec![
+            label.font_size(SMALL),
+            Element::spacer().flex(1.0),
+            muted(detail).font_size(SMALL),
+        ])
+        .size(Some(width), Some(20.0)),
+        usage_bar(share, width),
+    ])
+    .gap(8.0)
+}
+
+/// The usage ring and its popover: the context window, then the plan's session
+/// and weekly limits with when they reset, from what the agent reports.
+fn usage_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
+    let open = ui.open_menu == Some(USAGE_MENU);
+    let limits = store.limits.unwrap_or_default();
+    let spent = limits.session.map_or(0.0, |w| w.utilization);
+    // A 14 px ring, blue over gray, as Desktop's.
+    let ring_palette = ComponentPalette {
+        text: look::HANDLE,
+        selected: look::ACTIVE,
+        ..look::PALETTE
+    };
+    let ring = limn::Progress::new(spent, ring_palette)
+        .ring(14.0)
+        .render()
+        .centered();
+    let palette = ComponentPalette {
+        hover: look::TOOL_HOVER,
+        ..look::PALETTE
+    };
+    let anchor = palette
+        .interactive_surface(Element::clickable(USAGE_MENU, ring))
+        .radius(6.0)
+        .size(Some(28.0), Some(28.0));
+    let anchor = if open {
+        anchor.background(look::TOOL_HOVER)
+    } else {
+        anchor
+    };
+    let width = 328.0;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let (tokens, share) = session.map_or((0, 0.0), |s| {
+        let share = if s.context_window > 0 {
+            s.context_tokens as f32 / s.context_window as f32
+        } else {
+            0.0
+        };
+        (s.context_tokens, share)
+    });
+    let tokens = if tokens >= 1000 {
+        format!("{:.1}k", tokens as f64 / 1000.0)
+    } else {
+        tokens.to_string()
+    };
+    let plan = session
+        .and_then(|s| s.capabilities.as_ref())
+        .or_else(|| {
+            store
+                .sessions
+                .iter()
+                .rev()
+                .find_map(|s| s.capabilities.as_ref())
+        })
+        .and_then(|c| c.plan.clone())
+        .map(|p| effort_label(&p));
+    let mut rows = vec![
+        usage_row("Context window", tokens, share, width, true),
+        hline(width, look::DIVIDER),
+        Element::row(vec![
+            muted(match &plan {
+                Some(plan) => format!("Plan usage limits · {plan}"),
+                None => "Plan usage limits".into(),
+            })
+            .font_size(SMALL),
+            Element::spacer().flex(1.0),
+            Element::clickable(USAGE_ALL, text("See all →").font_size(SMALL)),
+        ])
+        .size(Some(width), Some(20.0)),
+    ];
+    for (label, window) in [
+        ("Session limit", limits.session),
+        ("Weekly · all models", limits.weekly),
+    ] {
+        if let Some(w) = window {
+            rows.push(usage_row(
+                label,
+                format!(
+                    "{}  {}%",
+                    resets_in(w.resets_at, now),
+                    (w.utilization * 100.0).round() as u32
+                ),
+                w.utilization,
+                width,
+                false,
+            ));
+        }
+    }
+    let card = Element::column(rows).gap(14.0).padding(16.0);
+    menu(
+        anchor,
+        vec![limn::DropdownMenuEntry::Custom(Box::new(card))],
+        open,
+        USAGE_MENU,
+        width + 32.0,
+        limn::PopoverPlacement::TopEnd,
+    )
 }
 
 /// The folder a new session works in: the recent ones and "Open folder…".
@@ -1934,7 +2116,7 @@ fn model_menu(
     let effort = ui.effort.clone().or_else(|| efforts.first().cloned());
     let mut content = vec![chip_text(name, look::PALETTE.text)];
     if let Some(effort) = &effort {
-        content.push(chip_text(effort_label(effort), look::MUTED));
+        content.push(chip_text(effort_label(effort), look::PALETTE.text));
     }
     let anchor = chip(MODEL_MENU, content, open, "Model", Some("Ctrl+Shift+I"));
     let mut entries = vec![limn::DropdownMenuEntry::Heading(
