@@ -367,3 +367,48 @@ fn a_permission_read_back_shows_its_answer() {
         });
     assert_eq!(decided, Some(Some("Allowed")));
 }
+
+#[test]
+fn the_sidebar_groups_sessions_by_folder_and_folds_a_group() {
+    let mut store = Store::default();
+    for (session, cwd) in [(1, "/work"), (2, "/other"), (3, "/work")] {
+        store.apply(Event::SessionCreated {
+            session,
+            agent: "claude".into(),
+            cwd: cwd.into(),
+        });
+    }
+    let mut ui = Ui::new("/work".into());
+    let window = limn::Size::new(1408.0, 844.0);
+    let ids = |store: &Store, ui: &Ui| -> Vec<String> {
+        let frame = UiTree::new(view(store, ui, window)).layout(window);
+        frame
+            .regions
+            .iter()
+            .filter(|r| r.id.starts_with("group:") || r.id.starts_with("session:"))
+            .map(|r| r.id.clone())
+            .collect()
+    };
+    // The folder with the newest session comes first, its sessions newest first.
+    assert_eq!(
+        ids(&store, &ui),
+        [
+            "group:/work",
+            "session:3",
+            "session:1",
+            "group:/other",
+            "session:2"
+        ]
+    );
+    update(
+        &store,
+        &mut ui,
+        &UiAction::Clicked {
+            id: "group:/work".into(),
+        },
+    );
+    assert_eq!(
+        ids(&store, &ui),
+        ["group:/work", "group:/other", "session:2"]
+    );
+}

@@ -33,10 +33,19 @@ pub const PANE_HEADER: f32 = 43.0;
 /// UI text; the conversation's text is larger.
 pub const BODY: f32 = 14.0;
 pub const CHAT: f32 = 16.0;
+/// Section labels and captions.
+pub const SMALL: f32 = 13.0;
 /// The hairline under the top bar and pane headers, a shade darker than DIVIDER.
 pub const PANE_BORDER: Color = Color::rgb(0xe0, 0xe0, 0xe0);
 /// The terminal's cursor, the blue of its ANSI palette.
 pub const CURSOR: Color = Color::rgb(0x00, 0x73, 0xe6);
+/// The selected sidebar row.
+pub const SELECTED: Color = Color::rgb(0xe0, 0xe0, 0xe0);
+/// The confirmation dialog's Cancel and its soft destructive action.
+pub const CANCEL: Color = Color::rgb(0xf2, 0xf2, 0xf2);
+pub const DANGER_FILL: Color = Color::rgb(0xfb, 0xe7, 0xe7);
+pub const DANGER_BORDER: Color = Color::rgb(0xdc, 0x3c, 0x3d);
+pub const DANGER_INK: Color = Color::rgb(0xa4, 0x25, 0x28);
 /// An active toggle or tab.
 pub const ACTIVE: Color = Color::rgb(0xe5, 0xe5, 0xe5);
 

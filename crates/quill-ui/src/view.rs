@@ -1,11 +1,11 @@
 //! The window: sidebar of sessions, transcript and composer (features/code-*.md, docs/ui.md §2).
 
-use crate::look::{self, BODY, CHAT, COLUMN};
+use crate::look::{self, BODY, CHAT, COLUMN, SMALL};
 use crate::{Item, Pane, Session, Store, ToolResult, Ui};
 use limn::{
     Button, ButtonGroup, ButtonSize, ButtonVariant, Collapsible, Component, ComponentPalette,
-    Composer, ControlSize, DropdownOption, Element, FontFamily, FramedCard, ListRow, Markdown,
-    OutputBlock, Select, Size, TextShimmer,
+    Composer, ControlSize, DropdownOption, Element, FontFamily, FramedCard, Markdown, OutputBlock,
+    Select, Size, TextShimmer,
 };
 use quill_model::{ChangeKind, FileEffect, SessionStatus};
 use serde_json::Value;
@@ -228,9 +228,18 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
         }),
         TERMINAL_CLOSE_CONFIRM,
         TERMINAL_CLOSE_CANCEL,
-        palette,
+        // Cancel is filled with `raised`: Desktop's light gray.
+        ComponentPalette {
+            raised: look::CANCEL,
+            ..palette
+        },
     )
+    .width(400.0)
     .confirm_label("Close terminal")
+    .soft_destructive(look::DANGER_FILL, look::DANGER_BORDER, look::DANGER_INK)
+    .cancel_variant(ButtonVariant::Secondary)
+    .description_size(BODY)
+    .closable(false)
     .render()
 }
 
@@ -338,6 +347,8 @@ fn terminal_pane(
             )
             .font_size(TERMINAL_FONT)
             .background(look::THEME.background)
+            // Desktop's terminal marks its focus with the cursor alone.
+            .focus_ring(false)
             .render(),
             TERMINAL_PADDING[0],
             TERMINAL_PADDING[1],
@@ -436,38 +447,104 @@ fn top_bar(session: Option<&Session>, ui: &Ui, palette: ComponentPalette) -> Ele
     Element::row(row).gap(4.0).size(None, Some(look::TOP_BAR))
 }
 
+/// Desktop's sidebar: New, then the sessions under a header per folder that folds
+/// them, the folder with the newest session first.
 fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> Element {
-    let mut rows = vec![Button::new(NEW_SESSION, "New session", palette)
-        .variant(ButtonVariant::Subtle)
-        .render()];
-    if store.sessions.is_empty() {
-        rows.push(muted("Sessions you start will show up here.").padding(8.0));
-    }
+    let mut rows = vec![
+        // Desktop keeps this band for its window controls; quill's window has its own.
+        Element::spacer().size(None, Some(look::TOP_BAR)),
+        side_row(
+            NEW_SESSION.into(),
+            vec![
+                Element::icon(limn::Icon::Add)
+                    .foreground(look::PALETTE.text)
+                    .size(Some(16.0), Some(16.0))
+                    .centered_y(),
+                text("New").centered_y(),
+            ],
+            false,
+            palette,
+        ),
+        Element::spacer().size(None, Some(16.0)),
+    ];
+    let mut folders: Vec<&std::path::PathBuf> = vec![];
     for session in store.sessions.iter().rev() {
-        let title = if session.title.is_empty() {
-            "New session".to_string()
-        } else {
-            session.title.clone()
-        };
-        let mut row = ListRow::new(format!("session:{}", session.id), title, palette)
-            .subtitle(
-                session
-                    .cwd
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-            )
-            .trailing(status_dot(&session.status));
-        if ui.selected == Some(session.id) {
-            row = row.filled();
+        if !folders.contains(&&session.cwd) {
+            folders.push(&session.cwd);
         }
-        rows.push(row.render());
+    }
+    for folder in folders {
+        let open = !ui.collapsed.contains(folder);
+        let caret = Element::icon(if open {
+            limn::Icon::ChevronDown
+        } else {
+            limn::Icon::ChevronRight
+        })
+        .foreground(look::MUTED)
+        .size(Some(10.0), Some(10.0))
+        .centered_y();
+        let header = Element::row(vec![
+            hgap(10.0),
+            muted(folder_name(folder)).font_size(SMALL).centered_y(),
+            caret,
+        ])
+        .gap(6.0)
+        .size(None, Some(28.0));
+        rows.push(Element::clickable(
+            format!("group:{}", folder.display()),
+            header,
+        ));
+        if !open {
+            continue;
+        }
+        for session in store.sessions.iter().rev().filter(|s| &s.cwd == folder) {
+            let title = if session.title.is_empty() {
+                "New session".to_string()
+            } else {
+                session.title.clone()
+            };
+            rows.push(side_row(
+                format!("session:{}", session.id),
+                vec![
+                    Element::truncated_text(title)
+                        .font_family(FontFamily::Sans)
+                        .font_size(BODY)
+                        .foreground(look::PALETTE.text)
+                        .flex(1.0)
+                        .centered_y(),
+                    status_dot(&session.status),
+                ],
+                ui.selected == Some(session.id),
+                palette,
+            ));
+        }
     }
     Element::column(rows)
         .gap(2.0)
         .padding(8.0)
         .background(look::SIDEBAR)
         .size(Some(look::SIDEBAR_WIDTH - 1.0), Some(height))
+}
+
+/// A sidebar row: 32 px tall, 10 px in, rounded, filled while selected.
+fn side_row(
+    id: String,
+    content: Vec<Element>,
+    selected: bool,
+    palette: ComponentPalette,
+) -> Element {
+    let mut items = vec![hgap(10.0)];
+    items.extend(content);
+    items.push(hgap(10.0));
+    let row = Element::row(items).gap(10.0).size(None, Some(32.0));
+    let row = palette
+        .interactive_surface(Element::clickable(id, row))
+        .radius(8.0);
+    if selected {
+        row.background(look::SELECTED)
+    } else {
+        row
+    }
 }
 
 /// Running and awaiting sessions carry a dot in the sidebar, as Desktop's rows do.

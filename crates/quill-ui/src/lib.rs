@@ -349,6 +349,8 @@ pub struct Ui {
     pub expanded_pane: Option<Pane>,
     /// Whether the right panel (Environment, Context, Changes) shows while no pane is open.
     pub panel_open: bool,
+    /// Folders whose sessions the sidebar folds away.
+    pub collapsed: Vec<PathBuf>,
     /// Answers picked on question cards, by permission and question index.
     pub answers: std::collections::HashMap<(String, usize), String>,
     /// The permission whose "Always allow" menu is open.
@@ -408,6 +410,7 @@ impl Ui {
             panes: vec![],
             expanded_pane: None,
             panel_open: true,
+            collapsed: vec![],
             answers: Default::default(),
             perm_menu: None,
             terminal: TerminalPane::default(),
@@ -531,6 +534,15 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
     }
     if id.starts_with("terminal:") {
         terminal_clicked(&mut ui.terminal, id);
+        return vec![];
+    }
+    if let Some(folder) = id.strip_prefix("group:") {
+        let folder = PathBuf::from(folder);
+        if let Some(at) = ui.collapsed.iter().position(|f| *f == folder) {
+            ui.collapsed.remove(at);
+        } else {
+            ui.collapsed.push(folder);
+        }
         return vec![];
     }
     if id == view::PANEL_TOGGLE {
