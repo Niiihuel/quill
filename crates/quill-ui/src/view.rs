@@ -1,7 +1,7 @@
 //! The window: sidebar of sessions, transcript and composer (features/code-*.md, docs/ui.md §2).
 
-use crate::look::{self, BODY, COLUMN};
-use crate::{Item, Session, Store, ToolResult, Ui};
+use crate::look::{self, BODY, CHAT, COLUMN};
+use crate::{Item, Pane, Session, Store, ToolResult, Ui};
 use limn::{
     Button, ButtonGroup, ButtonSize, ButtonVariant, Collapsible, Component, ComponentPalette,
     Composer, ControlSize, DropdownOption, Element, FontFamily, FramedCard, ListRow, Markdown,
@@ -15,7 +15,9 @@ pub const NEW_SESSION: &str = "new-session";
 pub const STOP: &str = "stop";
 pub const MODE_MENU: &str = "mode-menu";
 pub const MODEL_MENU: &str = "model-menu";
-pub const DIFF_CLOSE: &str = "diff:close";
+pub const DIFF_TOGGLE: &str = "diff:toggle";
+pub const DIFF_CLOSE: &str = "pane:diff:close";
+pub const PANEL_TOGGLE: &str = "panel:toggle";
 /// Asks the host for the platform folder picker; the host sets `Ui::cwd` with the answer.
 pub const PICK_FOLDER: &str = "pick-folder";
 pub const TERMINAL_TOGGLE: &str = "terminal:toggle";
@@ -26,10 +28,9 @@ pub const TERMINAL_SCROLL: &str = "terminal:scroll";
 pub const TERMINAL_NEW: &str = "terminal:new";
 pub const TERMINAL_CLOSE_CONFIRM: &str = "terminal:close-confirm";
 pub const TERMINAL_CLOSE_CANCEL: &str = "terminal:close-cancel";
-const TERMINAL_HEIGHT: f32 = 272.0;
-const TERMINAL_TAB_WIDTH: f32 = 140.0;
 const TERMINAL_FONT: f32 = 12.0;
-const TERMINAL_PADDING: f32 = 8.0;
+/// The shell's text starts 12 px in and 8 px under the pane's header.
+const TERMINAL_PADDING: [f32; 2] = [12.0, 8.0];
 
 fn text(s: impl Into<String>) -> Element {
     Element::text(s.into())
@@ -49,25 +50,66 @@ fn muted(s: impl Into<String>) -> Element {
     text(s).foreground(look::MUTED)
 }
 
-/// The widths of the diff panel, the right panel and the main column, in that order.
-fn widths(store: &Store, ui: &Ui, window: Size) -> (f32, f32, f32) {
+/// How the space right of the sidebar is shared.
+struct Layout {
+    /// The conversation; zero while a pane is expanded over it.
+    main: f32,
+    /// The column of panes, and the panes in it from the top.
+    column: f32,
+    panes: Vec<Pane>,
+    /// The right panel, shown only while no pane is open.
+    panel: f32,
+}
+
+fn layout(store: &Store, ui: &Ui, window: Size) -> Layout {
     let session = ui.selected.and_then(|id| store.session(id));
     let rest = (window.width - look::SIDEBAR_WIDTH).max(0.0);
-    let diff_width = if diff_files(store, ui).is_some() {
-        (rest * 0.6).min(760.0)
-    } else {
-        0.0
+    let panes: Vec<Pane> = ui
+        .panes
+        .iter()
+        .copied()
+        .filter(|p| *p != Pane::Diff || diff_files(store, ui).is_some())
+        .collect();
+    if let Some(pane) = ui.expanded_pane.filter(|p| panes.contains(p)) {
+        return Layout {
+            main: 0.0,
+            column: rest,
+            panes: vec![pane],
+            panel: 0.0,
+        };
+    }
+    // The first pane sets the column: the diff takes 3 of 5 parts, a terminal 1 of 3
+    // (the 1× captures of 2026-10-25, see look.rs).
+    let column = match panes.first() {
+        Some(Pane::Diff) => (rest * 0.6).round(),
+        Some(Pane::Terminal) => (rest / 3.0).round(),
+        None => 0.0,
     };
-    // The right panel stays only while it fits beside a full column.
-    let panel_width = if diff_width == 0.0 && session.is_some() && rest >= 1100.0 {
+    let panel = if panes.is_empty()
+        && ui.panel_open
+        && session.is_some()
+        && rest - look::PANEL_WIDTH >= COLUMN
+    {
         look::PANEL_WIDTH
     } else {
         0.0
     };
-    (diff_width, panel_width, rest - diff_width - panel_width)
+    Layout {
+        main: rest - column - panel,
+        column,
+        panes,
+        panel,
+    }
 }
 
-/// The files of the request the diff panel shows.
+/// The height each pane of the column gets: the space under the top bar, shared evenly.
+fn pane_height(layout: &Layout, window: Size) -> f32 {
+    let below = window.height - look::TOP_BAR - 1.0;
+    let n = layout.panes.len().max(1) as f32;
+    ((below - (n - 1.0)) / n).floor()
+}
+
+/// The files of the request the diff pane shows.
 fn diff_files<'a>(store: &'a Store, ui: &Ui) -> Option<&'a Vec<FileEffect>> {
     let (id, request) = ui.diff.as_ref()?;
     let session = store.session(ui.selected?).filter(|s| s.id == *id)?;
@@ -81,69 +123,101 @@ fn diff_files<'a>(store: &'a Store, ui: &Ui) -> Option<&'a Vec<FileEffect>> {
 
 /// The columns and rows the terminal pane holds in `window`, for the host's shell.
 pub fn terminal_grid(store: &Store, ui: &Ui, window: Size) -> (u16, u16) {
-    let (_, _, main_width) = widths(store, ui, window);
+    let layout = layout(store, ui, window);
     let inner = Size::new(
-        main_width - 2.0 * TERMINAL_PADDING,
-        TERMINAL_HEIGHT - limn::TabStrip::HEADER_HEIGHT - 2.0 * TERMINAL_PADDING,
+        layout.column - 2.0 * TERMINAL_PADDING[0],
+        pane_height(&layout, window) - look::PANE_HEADER - 1.0 - 2.0 * TERMINAL_PADDING[1],
     );
     let (cols, rows) = limn::TerminalView::grid_size(inner, TERMINAL_FONT);
     (cols as u16, rows as u16)
 }
 
+/// `child` with `x` of space on its sides and `y` above and below it.
+fn pad(child: Element, x: f32, y: f32) -> Element {
+    let gap = |w: Option<f32>, h: Option<f32>| Element::spacer().size(w, h);
+    Element::column(vec![
+        gap(None, Some(y)),
+        Element::row(vec![
+            gap(Some(x), None),
+            child.flex(1.0),
+            gap(Some(x), None),
+        ])
+        .flex(1.0),
+        gap(None, Some(y)),
+    ])
+}
+
+fn hgap(width: f32) -> Element {
+    Element::spacer().size(Some(width), None)
+}
+
+fn vline(height: f32) -> Element {
+    Element::spacer()
+        .background(look::DIVIDER)
+        .size(Some(1.0), Some(height))
+}
+
+fn hline(width: f32, color: limn::Color) -> Element {
+    Element::spacer()
+        .background(color)
+        .size(Some(width), Some(1.0))
+}
+
 pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     let palette = look::PALETTE;
     let session = ui.selected.and_then(|id| store.session(id));
-    // The diff opens beside the conversation, taking 3 of 5 parts as Desktop's does.
-    let files = diff_files(store, ui);
-    let (diff_width, panel_width, main_width) = widths(store, ui, window);
-    let column = COLUMN.min(main_width - 32.0).max(240.0);
-    let body = match session {
-        Some(session) => transcript(session, ui, column, palette),
-        None => empty(ui),
-    };
-    let mut main = vec![
-        top_bar(session, ui, palette),
-        body.flex(1.0),
-        composer(session, ui, column, palette).centered_x(),
-        Element::spacer().size(None, Some(12.0)),
-    ];
-    // The session's shell sits under the conversation (features/terminal.md).
-    if let (true, Some(screen)) = (ui.terminal.open, &ui.terminal.screen) {
-        main.push(terminal_tabs(ui, main_width, palette));
-        main.push(
-            limn::TerminalView::new(TERMINAL, screen.clone(), palette)
-                .font_size(TERMINAL_FONT)
-                .background(look::THEME.background)
-                .render()
-                .padding(TERMINAL_PADDING)
-                .size(
-                    Some(main_width),
-                    Some(TERMINAL_HEIGHT - limn::TabStrip::HEADER_HEIGHT),
-                ),
-        );
-    }
-    let main = Element::column(main).size(Some(main_width), Some(window.height));
-    let mut row = vec![
-        sidebar(store, ui, window.height, palette),
-        Element::spacer()
-            .background(look::DIVIDER)
-            .size(Some(1.0), Some(window.height)),
-        main,
-    ];
-    if let Some(files) = files {
+    let layout = layout(store, ui, window);
+    let rest = layout.main + layout.column + layout.panel;
+    let below = window.height - look::TOP_BAR - 1.0;
+    let mut row = vec![];
+    if layout.main > 0.0 {
+        let column = COLUMN.min(layout.main - 64.0).max(240.0);
+        let body = match session {
+            Some(session) => transcript(session, ui, column, palette),
+            None => empty(ui),
+        };
         row.push(
-            Element::spacer()
-                .background(look::DIVIDER)
-                .size(Some(1.0), Some(window.height)),
+            Element::column(vec![
+                body.flex(1.0),
+                composer(session, ui, column, palette).centered_x(),
+                Element::spacer().size(None, Some(12.0)),
+            ])
+            .size(Some(layout.main), Some(below)),
         );
-        row.push(diff_panel(files, diff_width - 1.0, window.height, palette));
     }
-    if let (Some(session), true) = (session, panel_width > 0.0) {
-        row.push(right_panel(session, panel_width, window.height, palette));
+    if !layout.panes.is_empty() {
+        let height = pane_height(&layout, window);
+        let mut stack = vec![];
+        for (i, pane) in layout.panes.iter().enumerate() {
+            if i > 0 {
+                stack.push(hline(layout.column, look::PANE_BORDER));
+            }
+            stack.push(match pane {
+                Pane::Diff => diff_pane(store, ui, layout.column, height, palette),
+                Pane::Terminal => terminal_pane(session, ui, layout.column, height, palette),
+            });
+        }
+        if layout.main > 0.0 {
+            row.push(vline(below));
+        }
+        row.push(Element::column(stack).size(Some(layout.column), Some(below)));
     }
-    let root = Element::row(row)
-        .background(look::THEME.background)
-        .size(Some(window.width), Some(window.height));
+    if let (Some(session), true) = (session, layout.panel > 0.0) {
+        row.push(right_panel(session, layout.panel, below, palette));
+    }
+    let content = Element::column(vec![
+        top_bar(session, ui, palette),
+        hline(rest, look::PANE_BORDER),
+        Element::row(row).size(Some(rest), Some(below)),
+    ])
+    .size(Some(rest), Some(window.height));
+    let root = Element::row(vec![
+        sidebar(store, ui, window.height, palette),
+        vline(window.height),
+        content,
+    ])
+    .background(look::THEME.background)
+    .size(Some(window.width), Some(window.height));
     let closing = ui.terminal.closing.and_then(|i| ui.terminal.tabs.get(i));
     limn::AlertDialog::new(
         root,
@@ -160,40 +234,117 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     .render()
 }
 
-/// The pane's tabs, each with its close button, and "New terminal".
-fn terminal_tabs(ui: &Ui, width: f32, palette: ComponentPalette) -> Element {
-    let tabs = ui
-        .terminal
-        .tabs
-        .iter()
-        .enumerate()
-        .map(|(i, (title, _))| {
-            limn::TabItem::new(
-                format!("terminal:tab:{i}"),
-                format!("terminal:extent:{i}"),
-                limn::Icon::Terminal,
-                title,
-                TERMINAL_TAB_WIDTH,
+/// A pane's header: what it shows on the left, its tools on the right, 44 px over a
+/// hairline.
+fn pane_header(lead: Element, tools: Vec<Element>, width: f32) -> Element {
+    let mut row = vec![hgap(12.0), lead, Element::spacer().flex(1.0)];
+    row.extend(tools);
+    row.push(hgap(4.0));
+    Element::column(vec![
+        Element::row(row)
+            .gap(8.0)
+            .size(Some(width), Some(look::PANE_HEADER)),
+        hline(width, look::PANE_BORDER),
+    ])
+}
+
+/// Expand and close, the tools every pane carries.
+fn pane_tools(pane: Pane, ui: &Ui, palette: ComponentPalette) -> Vec<Element> {
+    let expanded = ui.expanded_pane == Some(pane);
+    let key = pane.key();
+    vec![
+        icon_tool(
+            &format!("pane:{key}:expand"),
+            if expanded {
+                limn::Icon::Collapse
+            } else {
+                limn::Icon::Expand
+            },
+            if expanded { "Collapse" } else { "Expand" },
+            28.0,
+            palette,
+        ),
+        icon_tool(
+            &format!("pane:{key}:close"),
+            limn::Icon::Close,
+            "Close",
+            28.0,
+            palette,
+        ),
+    ]
+}
+
+/// The session's shells: "Terminal" and the folder while there is one, pills once
+/// there are more, "New terminal" after them.
+fn terminal_pane(
+    session: Option<&Session>,
+    ui: &Ui,
+    width: f32,
+    height: f32,
+    palette: ComponentPalette,
+) -> Element {
+    let new = icon_tool(TERMINAL_NEW, limn::Icon::Add, "New terminal", 28.0, palette);
+    let tabs = &ui.terminal.tabs;
+    let lead = if tabs.len() <= 1 {
+        let folder = session.map_or(&ui.cwd, |s| &s.cwd);
+        Element::row(vec![
+            text("Terminal").centered_y(),
+            muted(folder_name(folder)).centered_y(),
+            Element::spacer().size(Some(4.0), None),
+            new,
+        ])
+        .gap(8.0)
+    } else {
+        let mut pills: Vec<Element> = tabs
+            .iter()
+            .enumerate()
+            .map(|(i, (title, _))| {
+                let pill = Element::row(vec![
+                    hgap(8.0),
+                    text(title.clone()).centered_y(),
+                    icon_tool(
+                        &format!("terminal:close:{i}"),
+                        limn::Icon::Close,
+                        "Close terminal",
+                        20.0,
+                        palette,
+                    ),
+                ])
+                .gap(4.0)
+                .size(None, Some(28.0))
+                .radius(8.0);
+                let pill = if i == ui.terminal.active {
+                    pill.background(look::ACTIVE)
+                } else {
+                    pill
+                };
+                Element::clickable(format!("terminal:tab:{i}"), pill).centered_y()
+            })
+            .collect();
+        pills.push(new);
+        Element::row(pills).gap(4.0)
+    };
+    let header = pane_header(lead, pane_tools(Pane::Terminal, ui, palette), width);
+    let body = match &ui.terminal.screen {
+        Some(screen) => pad(
+            // The view draws its cursor in the palette's text: Desktop's is blue.
+            limn::TerminalView::new(
+                TERMINAL,
+                screen.clone(),
+                ComponentPalette {
+                    text: look::CURSOR,
+                    ..palette
+                },
             )
-            .active(i == ui.terminal.active)
-            .close(icon_tool(
-                &format!("terminal:close:{i}"),
-                limn::Icon::Close,
-                "Close terminal",
-                limn::TabStrip::CLOSE_SIZE,
-                palette,
-            ))
-        })
-        .collect();
-    let strip = limn::TabStrip::new("terminal:tabs", tabs, palette).render();
-    let new = icon_tool(
-        TERMINAL_NEW,
-        limn::Icon::Add,
-        "New terminal",
-        limn::TabStrip::TOOL_SIZE,
-        palette,
-    );
-    limn::TabStrip::header(strip, new, width, palette).render()
+            .font_size(TERMINAL_FONT)
+            .background(look::THEME.background)
+            .render(),
+            TERMINAL_PADDING[0],
+            TERMINAL_PADDING[1],
+        ),
+        None => Element::spacer(),
+    };
+    Element::column(vec![header, body.flex(1.0)]).size(Some(width), Some(height))
 }
 
 /// A square icon button with the palette's hover and press, as limn's own tools draw them.
@@ -206,11 +357,28 @@ fn icon_tool(
 ) -> Element {
     palette
         .interactive_surface(Element::icon_button(id, icon, label))
-        .foreground(palette.muted)
+        .foreground(palette.text)
         .size(Some(side), Some(side))
+        .centered_y()
 }
 
+/// A top-bar toggle: its icon on the active fill while what it shows is open.
+fn toggle(id: &str, icon: limn::Icon, label: &str, on: bool, palette: ComponentPalette) -> Element {
+    let tool = icon_tool(id, icon, label, 26.0, palette);
+    if on {
+        tool.background(look::ACTIVE).radius(6.0)
+    } else {
+        tool
+    }
+}
+
+/// The session's title, Stop while it works, and the toggles of the panel and the panes
+///.
 fn top_bar(session: Option<&Session>, ui: &Ui, palette: ComponentPalette) -> Element {
+    // An expanded pane leaves the bar empty, as Desktop's does.
+    if ui.expanded_pane.is_some() {
+        return Element::spacer().size(None, Some(look::TOP_BAR));
+    }
     let title = session.map_or("New session".to_string(), |s| {
         if s.title.is_empty() {
             "New session".into()
@@ -218,31 +386,54 @@ fn top_bar(session: Option<&Session>, ui: &Ui, palette: ComponentPalette) -> Ele
             s.title.clone()
         }
     });
-    let mut row = vec![muted(title), Element::spacer().flex(1.0)];
+    let title = if session.is_some() {
+        text(title)
+    } else {
+        muted(title)
+    };
+    let mut row = vec![title.centered_y(), Element::spacer().flex(1.0)];
     if session.is_some_and(|s| matches!(s.status, SessionStatus::Running | SessionStatus::Awaiting))
     {
         row.push(
             Button::new(STOP, "Stop", palette)
                 .variant(ButtonVariant::Ghost)
                 .button_size(ButtonSize::Small)
-                .render(),
+                .render()
+                .centered_y(),
         );
     }
-    let label = if ui.terminal.open {
-        "Hide terminal"
-    } else {
-        "Show terminal"
-    };
-    row.push(
-        Button::new(TERMINAL_TOGGLE, label, palette)
-            .variant(ButtonVariant::Ghost)
-            .button_size(ButtonSize::Small)
-            .render(),
-    );
-    Element::row(row)
-        .gap(4.0)
-        .padding(12.0)
-        .size(None, Some(44.0))
+    if session.is_some() {
+        row.push(toggle(
+            PANEL_TOGGLE,
+            limn::Icon::PanelRight,
+            "Toggle panel",
+            ui.panel_open && ui.panes.is_empty(),
+            palette,
+        ));
+    }
+    row.push(toggle(
+        TERMINAL_TOGGLE,
+        limn::Icon::Terminal,
+        if ui.pane_open(Pane::Terminal) {
+            "Hide terminal"
+        } else {
+            "Show terminal"
+        },
+        ui.pane_open(Pane::Terminal),
+        palette,
+    ));
+    if session.is_some() {
+        row.push(toggle(
+            DIFF_TOGGLE,
+            limn::Icon::Code,
+            "Toggle diff",
+            ui.pane_open(Pane::Diff),
+            palette,
+        ));
+    }
+    row.insert(0, hgap(20.0));
+    row.push(hgap(8.0));
+    Element::row(row).gap(4.0).size(None, Some(look::TOP_BAR))
 }
 
 fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> Element {
@@ -346,17 +537,18 @@ fn status_line(status: &SessionStatus, palette: ComponentPalette) -> Option<Elem
 fn item(item: &Item, ui: &Ui, column: f32, palette: ComponentPalette) -> Element {
     match item {
         Item::User { text: t, .. } => {
-            let bubble =
-                Element::panel(text(t.clone()).size(Some((column * 0.8).min(460.0)), None))
-                    .background(look::USER_BUBBLE)
-                    .radius(12.0)
-                    .padding(10.0);
+            // Up to 3/4 of the column, 16 px of side padding.
+            let line = text(t.clone()).font_size(CHAT);
+            let bubble = Element::panel(pad(line, 4.0, 0.0).size(Some(column * 0.75), None))
+                .background(look::USER_BUBBLE)
+                .radius(14.0)
+                .padding(12.0);
             Element::row(vec![Element::spacer().flex(1.0), bubble])
         }
         Item::Assistant { text: t, streaming } => {
             Markdown::new(t, palette)
                 .width(column)
-                .font_size(BODY)
+                .font_size(CHAT)
                 .streaming(*streaming)
                 .render()
                 .element
@@ -537,13 +729,18 @@ fn composer(session: Option<&Session>, ui: &Ui, column: f32, palette: ComponentP
         })
         .unwrap_or_default();
     let model_label = ui.model.clone().unwrap_or_else(|| "Default model".into());
-    let footer = Element::row(vec![
-        Button::new(PICK_FOLDER, format!("▣ {folder}"), palette)
-            .variant(ButtonVariant::Ghost)
-            .button_size(ButtonSize::Small)
-            .enabled(session.is_none())
-            .tooltip("The folder a new session works in")
-            .render(),
+    // Only a new session chooses its folder; a session's footer is mode and model.
+    let mut footer = vec![];
+    if session.is_none() {
+        footer.push(
+            Button::new(PICK_FOLDER, format!("▣ {folder}"), palette)
+                .variant(ButtonVariant::Ghost)
+                .button_size(ButtonSize::Small)
+                .tooltip("The folder a new session works in")
+                .render(),
+        );
+    }
+    footer.extend([
         Select::new(
             MODE_MENU,
             mode_label(mode),
@@ -567,8 +764,8 @@ fn composer(session: Option<&Session>, ui: &Ui, column: f32, palette: ComponentP
         .size(ControlSize::Compact)
         .width(150.0)
         .render(),
-    ])
-    .gap(8.0);
+    ]);
+    let footer = Element::row(footer).gap(8.0);
     let placeholder = if session.is_some() {
         "Reply…"
     } else {
@@ -659,17 +856,19 @@ fn changes_card(
 }
 
 /// The changes of one request, file by file, as unified diffs.
-fn diff_panel(files: &[FileEffect], width: f32, height: f32, palette: ComponentPalette) -> Element {
-    let header = Element::row(vec![
-        text("Changes"),
-        Element::spacer().flex(1.0),
-        Button::new(DIFF_CLOSE, "Close", palette)
-            .variant(ButtonVariant::Ghost)
-            .button_size(ButtonSize::Small)
-            .render(),
-    ])
-    .padding(10.0)
-    .size(Some(width), Some(44.0));
+fn diff_pane(
+    store: &Store,
+    ui: &Ui,
+    width: f32,
+    height: f32,
+    palette: ComponentPalette,
+) -> Element {
+    let files = diff_files(store, ui).map_or(&[][..], Vec::as_slice);
+    let header = pane_header(
+        text("Changes").centered_y(),
+        pane_tools(Pane::Diff, ui, palette),
+        width,
+    );
     let mut blocks = vec![];
     for (index, file) in files.iter().enumerate() {
         blocks.push(
@@ -685,7 +884,7 @@ fn diff_panel(files: &[FileEffect], width: f32, height: f32, palette: ComponentP
                 .word_ranges(words)
                 .palette(palette)
                 .font_size(12.0)
-                .height((rows * 18.0 + 8.0).min(600.0))
+                .height((rows * 19.0 + 16.0).min(600.0))
                 .render(),
         );
     }

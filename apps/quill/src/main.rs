@@ -5,7 +5,7 @@ use eframe::egui;
 use limn::{Element, Size, UiTree};
 use quill_engine::Engine;
 use quill_model::{Event, Intent};
-use quill_ui::{Store, TerminalRequest, Ui};
+use quill_ui::{Pane, Store, TerminalRequest, Ui};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -30,12 +30,14 @@ impl App {
     fn sync_terminal(&mut self, ctx: &egui::Context, window: Size) {
         let folder = quill_ui::folder(&self.store, &self.ui);
         let (cols, rows) = quill_ui::view::terminal_grid(&self.store, &self.ui, window);
+        if !self.ui.pane_open(Pane::Terminal) {
+            self.ui.terminal.screen = None;
+            self.ui.terminal.requests.clear();
+            return;
+        }
         let pane = &mut self.ui.terminal;
         pane.screen = None;
         let requests = std::mem::take(&mut pane.requests);
-        if !pane.open {
-            return;
-        }
         let tabs = self.terminals.entry(folder.clone()).or_default();
         let had = !tabs.is_empty();
         let wake = || {
@@ -61,8 +63,8 @@ impl App {
         }
         // Closing the last tab, or `exit` in it, hides the pane; opening it again starts fresh.
         let Some(terminal) = tabs.active_mut() else {
-            pane.open = false;
             pane.tabs.clear();
+            self.ui.close_pane(Pane::Terminal);
             return;
         };
         terminal.resize(cols, rows);
@@ -162,11 +164,11 @@ impl eframe::App for App {
             {
                 self.tree.set_input_value(quill_ui::view::COMPOSER, "");
             }
-            let opened = !self.ui.terminal.open;
+            let opened = !self.ui.pane_open(Pane::Terminal);
             let intents = quill_ui::update(&self.store, &mut self.ui, &action);
             self.dispatch(intents);
             // A pane just opened, or a tab just picked or made, takes the keys.
-            focus_terminal |= (opened && self.ui.terminal.open)
+            focus_terminal |= (opened && self.ui.pane_open(Pane::Terminal))
                 || self
                     .ui
                     .terminal

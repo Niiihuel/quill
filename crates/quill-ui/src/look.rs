@@ -19,13 +19,25 @@ pub const RUNNING: Color = Color::rgb(0x3b, 0x5b, 0xdb);
 pub const ADDED: Color = Color::rgb(0x1e, 0x9e, 0x3c);
 pub const REMOVED: Color = Color::rgb(0xcd, 0x20, 0x54);
 
+// Sizes are Desktop's at 1× (Xvfb at 96 dpi, 1408×844), captured 2026-10-25. The
+// earlier Xephyr captures () drew at 0.75×, so sizes read from them are scaled.
 /// Sidebar width with its 1 px border.
-pub const SIDEBAR_WIDTH: f32 = 212.0;
-/// The transcript and composer column: 540 wide at 1408.
-pub const COLUMN: f32 = 540.0;
-/// The right panel: Environment, Context, Changes, 210 wide at 1408.
-pub const PANEL_WIDTH: f32 = 210.0;
-pub const BODY: f32 = 13.0;
+pub const SIDEBAR_WIDTH: f32 = 288.0;
+/// The transcript and composer column, at most.
+pub const COLUMN: f32 = 770.0;
+/// The right panel: 280 px cards with 8 px around them.
+pub const PANEL_WIDTH: f32 = 296.0;
+pub const TOP_BAR: f32 = 36.0;
+pub const PANE_HEADER: f32 = 43.0;
+/// UI text; the conversation's text is larger.
+pub const BODY: f32 = 14.0;
+pub const CHAT: f32 = 16.0;
+/// The hairline under the top bar and pane headers, a shade darker than DIVIDER.
+pub const PANE_BORDER: Color = Color::rgb(0xe0, 0xe0, 0xe0);
+/// The terminal's cursor, the blue of its ANSI palette.
+pub const CURSOR: Color = Color::rgb(0x00, 0x73, 0xe6);
+/// An active toggle or tab.
+pub const ACTIVE: Color = Color::rgb(0xe5, 0xe5, 0xe5);
 
 /// Desktop's surfaces are white under a hairline, not tinted levels; menus and
 /// cards lift with a faint shadow only.

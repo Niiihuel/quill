@@ -162,6 +162,15 @@ impl Store {
                     s.branch = branch;
                 }
             }
+            Event::Decided {
+                session,
+                permission,
+                decision,
+            } => {
+                if let Some(s) = self.session_mut(session) {
+                    mark_decided(&mut s.items, &permission, &decision);
+                }
+            }
             Event::Rewound {
                 session, request, ..
             } => {
@@ -331,8 +340,15 @@ pub struct Ui {
     pub expanded: Vec<String>,
     /// A message written before its session existed, sent once it does.
     pub waiting: Option<String>,
-    /// The request whose changes the diff panel shows.
+    /// The request whose changes the diff pane shows.
     pub diff: Option<(SessionId, RequestId)>,
+    /// The panes open beside the conversation, in the order they opened: the first sets the
+    /// column's width and the rest stack under it, as Desktop's do.
+    pub panes: Vec<Pane>,
+    /// The pane that fills the space of the conversation, as Desktop's expand does.
+    pub expanded_pane: Option<Pane>,
+    /// Whether the right panel (Environment, Context, Changes) shows while no pane is open.
+    pub panel_open: bool,
     /// Answers picked on question cards, by permission and question index.
     pub answers: std::collections::HashMap<(String, usize), String>,
     /// The permission whose "Always allow" menu is open.
@@ -340,10 +356,25 @@ pub struct Ui {
     pub terminal: TerminalPane,
 }
 
+/// What can open in the column beside the conversation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Pane {
+    Diff,
+    Terminal,
+}
+
+impl Pane {
+    pub fn key(self) -> &'static str {
+        match self {
+            Pane::Diff => "diff",
+            Pane::Terminal => "terminal",
+        }
+    }
+}
+
 /// The terminal pane: what the host's shells last showed, and what the person asked of them.
 #[derive(Default)]
 pub struct TerminalPane {
-    pub open: bool,
     /// The folder's tabs: title, and whether a command runs in it.
     pub tabs: Vec<(String, bool)>,
     pub active: usize,
@@ -374,9 +405,32 @@ impl Ui {
             expanded: vec![],
             waiting: None,
             diff: None,
+            panes: vec![],
+            expanded_pane: None,
+            panel_open: true,
             answers: Default::default(),
             perm_menu: None,
             terminal: TerminalPane::default(),
+        }
+    }
+
+    pub fn pane_open(&self, pane: Pane) -> bool {
+        self.panes.contains(&pane)
+    }
+
+    pub fn open_pane(&mut self, pane: Pane) {
+        if !self.pane_open(pane) {
+            self.panes.push(pane);
+        }
+    }
+
+    pub fn close_pane(&mut self, pane: Pane) {
+        self.panes.retain(|p| *p != pane);
+        if self.expanded_pane == Some(pane) {
+            self.expanded_pane = None;
+        }
+        if pane == Pane::Diff {
+            self.diff = None;
         }
     }
 
@@ -429,11 +483,18 @@ pub fn update(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Intent
     }
 }
 
+/// The selected session's last request that changed files, which the diff toggle opens.
+fn last_changes(store: &Store, ui: &Ui) -> Option<(SessionId, RequestId)> {
+    let session = store.session(ui.selected?)?;
+    session.items.iter().rev().find_map(|item| match item {
+        Item::Changes { request, .. } => Some((session.id, request.clone())),
+        _ => None,
+    })
+}
+
 fn terminal_clicked(pane: &mut TerminalPane, id: &str) {
     let index = |prefix: &str| id.strip_prefix(prefix)?.parse::<usize>().ok();
-    if id == view::TERMINAL_TOGGLE {
-        pane.open = !pane.open;
-    } else if id == view::TERMINAL_NEW {
+    if id == view::TERMINAL_NEW {
         pane.requests.push(TerminalRequest::New);
     } else if id == view::TERMINAL_CLOSE_CONFIRM {
         pane.requests
@@ -460,12 +521,39 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
     if let Some(rest) = id.strip_prefix("ask:") {
         return answer(store, ui, rest);
     }
+    if id == view::TERMINAL_TOGGLE {
+        if ui.pane_open(Pane::Terminal) {
+            ui.close_pane(Pane::Terminal);
+        } else {
+            ui.open_pane(Pane::Terminal);
+        }
+        return vec![];
+    }
     if id.starts_with("terminal:") {
         terminal_clicked(&mut ui.terminal, id);
         return vec![];
     }
-    if id == view::DIFF_CLOSE {
-        ui.diff = None;
+    if id == view::PANEL_TOGGLE {
+        ui.panel_open = !ui.panel_open;
+        return vec![];
+    }
+    if id == view::DIFF_TOGGLE {
+        if ui.pane_open(Pane::Diff) {
+            ui.close_pane(Pane::Diff);
+        } else if let Some((session, request)) = last_changes(store, ui) {
+            ui.diff = Some((session, request));
+            ui.open_pane(Pane::Diff);
+        }
+        return vec![];
+    }
+    if let Some(rest) = id.strip_prefix("pane:") {
+        for pane in [Pane::Diff, Pane::Terminal] {
+            if rest == format!("{}:close", pane.key()) {
+                ui.close_pane(pane);
+            } else if rest == format!("{}:expand", pane.key()) {
+                ui.expanded_pane = (ui.expanded_pane != Some(pane)).then_some(pane);
+            }
+        }
         return vec![];
     }
     if let Some(rest) = id.strip_prefix("changes:") {
@@ -474,6 +562,7 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         };
         if let Some(request) = rest.strip_suffix(":view") {
             ui.diff = Some((session, request.to_owned()));
+            ui.open_pane(Pane::Diff);
         } else if let Some(request) = rest.strip_suffix(":undo") {
             return vec![Intent::Rewind {
                 session,
@@ -596,16 +685,20 @@ pub fn decided(store: &mut Store, intent: &Intent) {
     } = intent
     {
         if let Some(s) = store.session_mut(*session) {
-            for item in &mut s.items {
-                if let Item::Permission { id, decided, .. } = item {
-                    if id == permission {
-                        *decided = Some(match decision {
-                            Decision::Deny { .. } => "Denied",
-                            Decision::AllowAlways(_) => "Always allowed",
-                            _ => "Allowed",
-                        });
-                    }
-                }
+            mark_decided(&mut s.items, permission, decision);
+        }
+    }
+}
+
+fn mark_decided(items: &mut [Item], permission: &str, decision: &Decision) {
+    for item in items {
+        if let Item::Permission { id, decided, .. } = item {
+            if id == permission {
+                *decided = Some(match decision {
+                    Decision::Deny { .. } => "Denied",
+                    Decision::AllowAlways(_) => "Always allowed",
+                    _ => "Allowed",
+                });
             }
         }
     }

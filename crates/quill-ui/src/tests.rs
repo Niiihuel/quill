@@ -240,18 +240,19 @@ fn a_rewritten_line_marks_only_what_changed() {
 }
 
 #[test]
-fn the_terminal_toggles_and_fits_the_main_column() {
+fn the_terminal_toggles_and_takes_a_third_beside_the_conversation() {
     let store = Store::default();
     let mut ui = Ui::new("/tmp".into());
     let click = limn::UiAction::Clicked {
         id: view::TERMINAL_TOGGLE.into(),
     };
     update(&store, &mut ui, &click);
-    assert!(ui.terminal.open);
-    let (cols, rows) = view::terminal_grid(&store, &ui, limn::Size::new(1212.0, 800.0));
-    assert!(cols > 100 && rows > 10, "{cols}x{rows}");
+    assert!(ui.pane_open(Pane::Terminal));
+    // Desktop at 1408×844: a 373 px column, its shell 12 px in from each side.
+    let (cols, rows) = view::terminal_grid(&store, &ui, limn::Size::new(1408.0, 844.0));
+    assert!((45..=50).contains(&cols) && rows > 40, "{cols}x{rows}");
     update(&store, &mut ui, &click);
-    assert!(!ui.terminal.open);
+    assert!(!ui.pane_open(Pane::Terminal));
 }
 
 #[test]
@@ -281,7 +282,7 @@ fn closing_a_terminal_with_a_running_command_asks_first() {
 fn the_terminal_pane_and_its_tabs_fit_in_the_window() {
     let store = Store::default();
     let mut ui = Ui::new("/tmp".into());
-    ui.terminal.open = true;
+    ui.open_pane(Pane::Terminal);
     ui.terminal.tabs = vec![("Terminal 1".into(), false), ("Terminal 2".into(), false)];
     ui.terminal.screen = Some(std::sync::Arc::new(limn::TerminalScreen {
         cols: 80,
@@ -313,11 +314,16 @@ fn the_terminal_pane_and_its_tabs_fit_in_the_window() {
 }
 
 #[test]
-fn a_terminal_tab_close_button_keeps_its_slot() {
+fn one_terminal_shows_its_folder_and_more_show_as_pills() {
     let store = Store::default();
-    let mut ui = Ui::new("/tmp".into());
-    ui.terminal.open = true;
+    let mut ui = Ui::new("/tmp/work".into());
+    ui.open_pane(Pane::Terminal);
     ui.terminal.tabs = vec![("Terminal 1".into(), false)];
+    ui.terminal.screen = Some(std::sync::Arc::default());
+    let window = limn::Size::new(1408.0, 844.0);
+    let frame = UiTree::new(view(&store, &ui, window)).layout(window);
+    assert!(!frame.regions.iter().any(|r| r.id == "terminal:close:0"));
+    ui.terminal.tabs.push(("Terminal 2".into(), false));
     ui.terminal.screen = Some(std::sync::Arc::default());
     let window = limn::Size::new(1400.0, 844.0);
     let frame = UiTree::new(view(&store, &ui, window)).layout(window);
@@ -326,9 +332,38 @@ fn a_terminal_tab_close_button_keeps_its_slot() {
         .iter()
         .find(|r| r.id == "terminal:close:0")
         .unwrap();
-    assert!(
-        close.rect.width <= limn::TabStrip::CLOSE_SIZE,
-        "{:?}",
-        close.rect
+    assert!(close.rect.width <= 20.0, "{:?}", close.rect);
+}
+
+#[test]
+fn a_permission_read_back_shows_its_answer() {
+    // A session read back from the store has no intents, only events.
+    let (mut store, _) = store_with_session();
+    agent(
+        &mut store,
+        AgentEvent::PermissionRequest {
+            id: "p1".into(),
+            call: Some("t1".into()),
+            tool: "Bash".into(),
+            input: serde_json::json!({ "command": "touch a" }),
+            title: None,
+            interactive: false,
+            suggestions: vec![],
+        },
     );
+    store.apply(Event::Decided {
+        session: 1,
+        permission: "p1".into(),
+        decision: quill_model::Decision::Allow,
+    });
+    let decided = store
+        .session(1)
+        .unwrap()
+        .items
+        .iter()
+        .find_map(|i| match i {
+            Item::Permission { id, decided, .. } if id == "p1" => Some(*decided),
+            _ => None,
+        });
+    assert_eq!(decided, Some(Some("Allowed")));
 }
