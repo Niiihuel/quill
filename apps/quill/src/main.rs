@@ -19,6 +19,8 @@ struct App {
     inbox: Arc<Mutex<Vec<Event>>>,
     /// The folder the person chose in the platform's dialog, picked up on the next frame.
     picked: Arc<Mutex<Option<PathBuf>>>,
+    /// Files or a folder chosen from "+", to go into the message as @-mentions.
+    attached: Arc<Mutex<Vec<PathBuf>>>,
     /// The terminal tabs of each folder, kept while the window lives (features/terminal.md).
     terminals: HashMap<PathBuf, quill_pty::Tabs>,
     fonts_attached: bool,
@@ -123,6 +125,34 @@ impl App {
         Some((session.id, session.items.len(), tail))
     }
 
+    /// Put `prompt` in the composer, its editor and the UI's copy alike, and give it the keys.
+    fn set_prompt(&mut self, prompt: String) {
+        self.tree.set_input_value(quill_ui::view::COMPOSER, &prompt);
+        self.ui.prompt = prompt;
+        self.tree.focus(quill_ui::view::COMPOSER);
+    }
+
+    /// Ask the platform for files or a folder beside the window; they land in `attached`.
+    fn attach(&self, ctx: &egui::Context, folder: bool) {
+        let (attached, start, ctx) = (
+            self.attached.clone(),
+            quill_ui::folder(&self.store, &self.ui),
+            ctx.clone(),
+        );
+        std::thread::spawn(move || {
+            let dialog = rfd::FileDialog::new().set_directory(start);
+            let paths = if folder {
+                dialog.pick_folder().into_iter().collect()
+            } else {
+                dialog.pick_files().unwrap_or_default()
+            };
+            if !paths.is_empty() {
+                *attached.lock().unwrap() = paths;
+                ctx.request_repaint();
+            }
+        });
+    }
+
     fn dispatch(&mut self, intents: Vec<Intent>) {
         for intent in intents {
             quill_ui::decided(&mut self.store, &intent);
@@ -147,6 +177,22 @@ impl eframe::App for App {
             let intents = self.ui.applied(&event);
             self.store.apply(event);
             self.dispatch(intents);
+        }
+        let attached = std::mem::take(&mut *self.attached.lock().unwrap());
+        if !attached.is_empty() {
+            // Paths inside the folder are written from it, as the agent reads them.
+            let base = quill_ui::folder(&self.store, &self.ui);
+            let mentions: Vec<String> = attached
+                .iter()
+                .map(|p| format!("@{}", p.strip_prefix(&base).unwrap_or(p).display()))
+                .collect();
+            let mut prompt = self.ui.prompt.trim_end().to_owned();
+            if !prompt.is_empty() {
+                prompt.push(' ');
+            }
+            prompt.push_str(&mentions.join(" "));
+            prompt.push(' ');
+            self.set_prompt(prompt);
         }
         if let Some(folder) = self.picked.lock().unwrap().take() {
             self.ui.cwd = folder;
@@ -177,6 +223,43 @@ impl eframe::App for App {
         }
         for event in limn_egui::events(&ctx, area.min) {
             // Permission keys work wherever the focus is, the composer included.
+            // Ctrl+U adds files; a digit picks that row of an open composer menu, as in Desktop.
+            if matches!(
+                &event,
+                limn::UiEvent::Key {
+                    key: limn::Key::U,
+                    ctrl: true,
+                    shift: false
+                }
+            ) {
+                actions.push(limn::UiAction::Clicked {
+                    id: quill_ui::view::ATTACH_FILES.into(),
+                });
+                continue;
+            }
+            // Ctrl+Shift+I and Ctrl+Shift+M open the model and mode menus, as in Desktop.
+            if let limn::UiEvent::Key {
+                key,
+                ctrl: true,
+                shift: true,
+            } = &event
+            {
+                let menu = match key {
+                    limn::Key::I => Some(quill_ui::view::MODEL_MENU),
+                    limn::Key::M => Some(quill_ui::view::MODE_MENU),
+                    _ => None,
+                };
+                if let Some(id) = menu {
+                    actions.push(limn::UiAction::Clicked { id: id.into() });
+                    continue;
+                }
+            }
+            if let limn::UiEvent::Text(typed) = &event {
+                if let Some(id) = quill_ui::menu_digit(&self.store, &self.ui, typed) {
+                    actions.push(limn::UiAction::Clicked { id });
+                    continue;
+                }
+            }
             if let limn::UiEvent::Key { key, shift, ctrl } = &event {
                 if let Some(id) = quill_ui::shortcut(&self.store, &self.ui, *key, *ctrl, *shift) {
                     actions.push(limn::UiAction::Clicked { id });
@@ -207,6 +290,19 @@ impl eframe::App for App {
                         ctx.request_repaint();
                     }
                 });
+            }
+            if let limn::UiAction::Clicked { id } = &action {
+                match id.as_str() {
+                    quill_ui::view::ATTACH_FILES => self.attach(&ctx, false),
+                    quill_ui::view::ATTACH_FOLDER => self.attach(&ctx, true),
+                    quill_ui::view::SLASH if !self.ui.prompt.starts_with('/') => {
+                        self.set_prompt(format!("/{}", self.ui.prompt));
+                    }
+                    quill_ui::view::SEND if !self.ui.prompt.trim().is_empty() => {
+                        self.tree.set_input_value(quill_ui::view::COMPOSER, "");
+                    }
+                    _ => {}
+                }
             }
             // The editor keeps its own text; a sent message empties it.
             if matches!(&action, limn::UiAction::Submitted { id, value } if id == quill_ui::view::COMPOSER && !value.trim().is_empty())
@@ -278,6 +374,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |creation| {
             limn_egui::install_fonts(&creation.egui_ctx);
+            quill_ui::look::install();
             let inbox: Arc<Mutex<Vec<Event>>> = Arc::default();
             let (events, ctx) = (inbox.clone(), creation.egui_ctx.clone());
             // The engine's thread wakes the window for every event it reports.
@@ -296,6 +393,7 @@ fn main() -> eframe::Result {
                 engine,
                 inbox,
                 picked: Arc::default(),
+                attached: Arc::default(),
                 terminals: HashMap::new(),
                 transcript: None,
                 fonts_attached: false,

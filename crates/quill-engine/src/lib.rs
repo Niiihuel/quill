@@ -199,6 +199,9 @@ async fn route(mut rx: UnboundedReceiver<Intent>, ui: Sink, config: Config) {
             Intent::SetModel { session, model } => {
                 (session, Input::Command(AgentCommand::SetModel(model)))
             }
+            Intent::SetEffort { session, effort } => {
+                (session, Input::Command(AgentCommand::SetEffort(effort)))
+            }
             Intent::Rewind { session, request } => (session, Input::Rewind(request)),
         };
         if let Some(tx) = sessions.get(&session) {

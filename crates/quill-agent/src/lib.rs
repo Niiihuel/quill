@@ -203,6 +203,7 @@ pub enum AgentCommand {
     },
     SetMode(String),
     SetModel(String),
+    SetEffort(String),
     /// Restore files to before `request`; `dry_run` only reports what would change.
     Rewind {
         request: String,

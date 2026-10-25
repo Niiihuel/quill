@@ -4,8 +4,8 @@ use crate::look::{self, BODY, CHAT, COLUMN, SMALL};
 use crate::{Item, Pane, Session, Store, ToolResult, Ui};
 use limn::{
     Button, ButtonGroup, ButtonSize, ButtonVariant, Collapsible, Component, ComponentPalette,
-    Composer, ControlSize, DropdownOption, Element, FontFamily, FramedCard, Markdown, OutputBlock,
-    Select, Size, TextShimmer,
+    Composer, ControlSize, Element, FontFamily, FramedCard, Markdown, OutputBlock, Size,
+    TextShimmer,
 };
 use quill_model::{ChangeKind, FileEffect, SessionStatus};
 use serde_json::Value;
@@ -20,6 +20,13 @@ pub const DIFF_CLOSE: &str = "pane:diff:close";
 pub const PANEL_TOGGLE: &str = "panel:toggle";
 /// Asks the host for the platform folder picker; the host sets `Ui::cwd` with the answer.
 pub const PICK_FOLDER: &str = "pick-folder";
+pub const PLUS_MENU: &str = "plus-menu";
+pub const FOLDER_MENU: &str = "folder-menu";
+pub const SEND: &str = "send";
+/// "+" menu actions the host carries out: pickers for @-mentions, and the slash.
+pub const ATTACH_FILES: &str = "attach:files";
+pub const ATTACH_FOLDER: &str = "attach:folder";
+pub const SLASH: &str = "attach:slash";
 pub const TERMINAL_TOGGLE: &str = "terminal:toggle";
 /// The terminal pane; while it has the focus the host sends keys to the shell.
 pub const TERMINAL: &str = "terminal";
@@ -253,7 +260,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
         row.push(
             Element::column(vec![
                 body.flex(1.0),
-                composer(session, ui, column, palette).centered_x(),
+                composer(store, session, ui, column, palette).centered_x(),
                 Element::spacer().size(None, Some(12.0)),
             ])
             .size(Some(layout.main), Some(below)),
@@ -998,66 +1005,31 @@ fn permission_actions(id: &str, can_always: bool, ui: &Ui, palette: ComponentPal
         .render()
 }
 
-fn composer(session: Option<&Session>, ui: &Ui, column: f32, palette: ComponentPalette) -> Element {
-    let folder = session.map_or(&ui.cwd, |s| &s.cwd);
-    let folder = folder_name(folder);
-    let mode = session.map_or(ui.mode.as_str(), |s| s.mode.as_str());
-    let modes = ["default", "acceptEdits", "plan"]
-        .into_iter()
-        .map(|m| DropdownOption::new(format!("mode:{m}"), mode_label(m)).selected(m == mode))
-        .collect();
-    let models: Vec<DropdownOption> = session
-        .and_then(|s| s.capabilities.as_ref())
-        .map(|c| {
-            c.models
-                .iter()
-                .map(|m| {
-                    DropdownOption::new(format!("model:{}", m.id), m.name.clone())
-                        .selected(ui.model.as_deref() == Some(m.id.as_str()))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let model_label = ui.model.clone().unwrap_or_else(|| "Default model".into());
-    // Only a new session chooses its folder; a session's footer is mode and model.
-    let mut footer = vec![];
-    if session.is_none() {
-        footer.push(
-            Button::new(PICK_FOLDER, format!("▣ {folder}"), palette)
-                .variant(ButtonVariant::Ghost)
-                .button_size(ButtonSize::Small)
-                .tooltip("The folder a new session works in")
-                .render(),
-        );
-    }
-    footer.extend([
-        Select::new(
-            MODE_MENU,
-            mode_label(mode),
-            modes,
-            ui.open_menu == Some(MODE_MENU),
-            format!("{MODE_MENU}:dismiss"),
-            palette,
+/// Desktop's composer at 1×: a 44 px box with "+" on the left and send (or stop)
+/// on the right, growing upward as the message does, over a row of chips outside it: the
+/// folder and mode on the left, the model and effort on the right.
+fn composer(
+    store: &Store,
+    session: Option<&Session>,
+    ui: &Ui,
+    column: f32,
+    palette: ComponentPalette,
+) -> Element {
+    let running = session.is_some_and(|s| {
+        matches!(
+            s.status,
+            SessionStatus::Running | SessionStatus::Starting | SessionStatus::Awaiting
         )
-        .size(ControlSize::Compact)
-        .width(120.0)
-        .render(),
-        Element::spacer().flex(1.0),
-        Select::new(
-            MODEL_MENU,
-            model_label,
-            models,
-            ui.open_menu == Some(MODEL_MENU),
-            format!("{MODEL_MENU}:dismiss"),
-            palette,
-        )
-        .size(ControlSize::Compact)
-        .width(150.0)
-        .render(),
-    ]);
-    let footer = Element::row(footer).gap(8.0);
+    });
+    let trailing = if running && ui.prompt.trim().is_empty() {
+        composer_button(STOP, limn::Icon::StopFill, "Stop", false)
+    } else if !ui.prompt.trim().is_empty() {
+        send_button()
+    } else {
+        Element::spacer().size(Some(34.0), Some(34.0))
+    };
     let placeholder = if session.is_some() {
-        "Reply…"
+        "Type / for commands"
     } else {
         "Describe a task or ask a question"
     };
@@ -1069,17 +1041,430 @@ fn composer(session: Option<&Session>, ui: &Ui, column: f32, palette: ComponentP
         look::COMPOSER_PALETTE,
     )
     .enter_submits(true)
-    .auto_grow(44.0, 200.0)
-    .footer(footer)
+    .auto_grow(28.0, 184.0)
+    .editor_font_size(15.0)
+    .pill_controls(plus_menu(ui), trailing)
+    .inline_controls(true)
+    .border_color(look::COMPOSER_BORDER)
+    .shadow_color(look::COMPOSER_SHADOW)
+    .card_radius(14.0)
+    .context(composer_footer(store, session, ui, palette))
     .render()
 }
 
-fn mode_label(mode: &str) -> &'static str {
-    match mode {
-        "acceptEdits" => "Accept edits",
-        "plan" => "Plan",
-        _ => "Manual",
+/// A round-cornered 34 px icon button inside the composer, gray under the pointer and while
+/// its menu is open.
+fn composer_button(id: &str, icon: limn::Icon, label: &str, open: bool) -> Element {
+    let palette = ComponentPalette {
+        hover: look::COMPOSER_HOVER,
+        selected: look::COMPOSER_OPEN,
+        ..look::PALETTE
+    };
+    let button = palette
+        .interactive_surface(Element::icon_button(id, icon, label))
+        .foreground(look::PALETTE.text)
+        .radius(8.0)
+        .size(Some(34.0), Some(34.0));
+    let button = if open {
+        button.background(look::COMPOSER_OPEN)
+    } else {
+        button
+    };
+    limn::Tooltip::new(button, id, label, look::PALETTE).render()
+}
+
+/// Send, drawn as Desktop's return arrow; limn has no such icon, so it is the character.
+fn send_button() -> Element {
+    let palette = ComponentPalette {
+        hover: look::COMPOSER_HOVER,
+        selected: look::COMPOSER_OPEN,
+        ..look::PALETTE
+    };
+    let glyph = text("↵").font_size(18.0).center_content();
+    let button = palette
+        .interactive_surface(Element::clickable(SEND, glyph))
+        .radius(8.0)
+        .size(Some(34.0), Some(34.0));
+    limn::Tooltip::new(button, SEND, "Send", look::PALETTE).render()
+}
+
+/// "+": what can go into the message, as far as quill can: files and folders
+/// as @-mentions the agent reads, and the slash that opens its commands.
+fn plus_menu(ui: &Ui) -> Element {
+    let open = ui.open_menu == Some(PLUS_MENU);
+    let anchor = composer_button(PLUS_MENU, limn::Icon::Add, "Add", open);
+    let entries = vec![
+        limn::DropdownMenuItem::new(ATTACH_FILES, "Add files or photos")
+            .icon(limn::Icon::Paperclip)
+            .shortcut("Ctrl+U")
+            .into(),
+        limn::DropdownMenuItem::new(ATTACH_FOLDER, "Add folder")
+            .icon(limn::Icon::Folder)
+            .into(),
+        limn::DropdownMenuItem::new(SLASH, "Slash commands")
+            .icon(limn::Icon::Hash)
+            .into(),
+    ];
+    menu(
+        anchor,
+        entries,
+        open,
+        PLUS_MENU,
+        320.0,
+        limn::PopoverPlacement::TopStart,
+    )
+}
+
+/// A menu in Desktop's style: white, rounded, above the composer.
+fn menu(
+    anchor: Element,
+    entries: Vec<limn::DropdownMenuEntry>,
+    open: bool,
+    id: &str,
+    width: f32,
+    placement: limn::PopoverPlacement,
+) -> Element {
+    // Desktop's rows are 28 px with 14 px labels and 13 px captions.
+    let sizing = limn::SelectorSizing {
+        preferred_width: width,
+        min_width: width,
+        row_height: 28.0,
+        detail_row_height: 44.0,
+        header_height: 26.0,
+        icon_size: 16.0,
+        label_size: BODY,
+        detail_size: SMALL,
+        padding: 8.0,
+        max_visible_items: 12,
+        ..limn::SelectorSizing::COMPACT
+    };
+    limn::DropdownMenu::new(
+        anchor,
+        entries,
+        open,
+        format!("{id}:dismiss"),
+        look::MENU_PALETTE,
+    )
+    .sizing(sizing)
+    .placement(placement)
+    .render()
+}
+
+/// A footer chip: an icon and words, gray under the pointer and darker while its menu is
+/// open, 24 px tall.
+fn chip(
+    id: &str,
+    content: Vec<Element>,
+    open: bool,
+    tooltip: &str,
+    shortcut: Option<&str>,
+) -> Element {
+    let palette = ComponentPalette {
+        hover: look::CHIP_HOVER,
+        selected: look::CHIP_OPEN,
+        ..look::PALETTE
+    };
+    let mut items = vec![hgap(6.0)];
+    items.extend(content);
+    items.push(hgap(6.0));
+    let row = Element::row(items).gap(6.0).size(None, Some(24.0));
+    let chip = palette
+        .interactive_surface(Element::clickable(id, row))
+        .radius(6.0);
+    let chip = if open {
+        chip.background(look::CHIP_OPEN)
+    } else {
+        chip
+    };
+    let tip = limn::Tooltip::new(chip, id, tooltip, look::PALETTE);
+    match shortcut {
+        Some(keys) => tip.shortcut(keys),
+        None => tip,
     }
+    .render()
+}
+
+fn chip_text(s: impl Into<String>, ink: limn::Color) -> Element {
+    text(s).font_size(SMALL).foreground(ink).centered_y()
+}
+
+fn chip_icon(icon: limn::Icon) -> Element {
+    Element::icon(icon)
+        .foreground(look::PALETTE.text)
+        .size(Some(14.0), Some(14.0))
+        .centered_y()
+}
+
+/// The chips under the composer: a new session's place and folder, then the mode;
+/// the model and its effort on the right.
+fn composer_footer(
+    store: &Store,
+    session: Option<&Session>,
+    ui: &Ui,
+    palette: ComponentPalette,
+) -> Element {
+    let mut left = vec![];
+    if session.is_none() {
+        // quill runs sessions on this computer only, so the place is a label, not a menu.
+        left.push(
+            Element::row(vec![
+                hgap(6.0),
+                chip_icon(limn::Icon::Laptop),
+                chip_text("This computer", look::PALETTE.text),
+            ])
+            .gap(6.0)
+            .size(None, Some(24.0)),
+        );
+        left.push(folder_menu(store, ui));
+    }
+    left.push(mode_menu(session, ui));
+    let mut row = left;
+    row.push(Element::spacer().flex(1.0));
+    row.push(model_menu(store, session, ui, palette));
+    Element::row(row).gap(2.0).size(None, Some(28.0))
+}
+
+/// The folder a new session works in: the recent ones and "Open folder…".
+fn folder_menu(store: &Store, ui: &Ui) -> Element {
+    let open = ui.open_menu == Some(FOLDER_MENU);
+    let anchor = chip(
+        FOLDER_MENU,
+        vec![
+            chip_icon(limn::Icon::Folder),
+            chip_text(folder_name(&ui.cwd), look::PALETTE.text),
+        ],
+        open,
+        "Folder",
+        None,
+    );
+    let mut recent: Vec<&std::path::PathBuf> = vec![&ui.cwd];
+    for session in store.sessions.iter().rev() {
+        if !recent.contains(&&session.cwd) {
+            recent.push(&session.cwd);
+        }
+    }
+    let mut entries = vec![limn::DropdownMenuEntry::Heading("Recent".into())];
+    entries.extend(recent.into_iter().take(6).map(|folder| {
+        limn::DropdownMenuItem::new(format!("folder:{}", folder.display()), folder_name(folder))
+            .selected(*folder == ui.cwd)
+            .into()
+    }));
+    entries.push(limn::DropdownMenuEntry::Separator);
+    entries.push(limn::DropdownMenuItem::new(PICK_FOLDER, "Open folder…").into());
+    menu(
+        anchor,
+        entries,
+        open,
+        FOLDER_MENU,
+        220.0,
+        limn::PopoverPlacement::TopStart,
+    )
+}
+
+/// The modes the menu lists, in its order: those the agent offers that quill can name.
+fn offered_modes(session: Option<&Session>) -> Vec<String> {
+    session
+        .and_then(|s| s.capabilities.as_ref())
+        .map(|c| c.modes.clone())
+        .filter(|m| !m.is_empty())
+        .unwrap_or_else(|| vec!["default".into(), "acceptEdits".into(), "plan".into()])
+        .into_iter()
+        .filter(|m| mode_entry(m).is_some())
+        .collect()
+}
+
+/// The models the menu lists: the session's agent's, or for a new session the last
+/// session's.
+fn offered_models<'a>(
+    store: &'a Store,
+    session: Option<&'a Session>,
+) -> &'a [quill_model::ModelInfo] {
+    session
+        .and_then(|s| s.capabilities.as_ref())
+        .or_else(|| {
+            store
+                .sessions
+                .iter()
+                .rev()
+                .find_map(|s| s.capabilities.as_ref())
+        })
+        .map(|c| c.models.as_slice())
+        .unwrap_or_default()
+}
+
+/// The models Desktop lists by number, the newest of each family, and the rest it keeps
+/// under "More models". The agent lists each family newest first.
+fn split_models(
+    models: &[quill_model::ModelInfo],
+) -> (Vec<&quill_model::ModelInfo>, Vec<&quill_model::ModelInfo>) {
+    let mut families: Vec<&str> = vec![];
+    let (mut latest, mut more) = (vec![], vec![]);
+    for model in models {
+        let family = model.name.split_whitespace().next().unwrap_or_default();
+        if family == "Default" || families.contains(&family) {
+            more.push(model);
+        } else {
+            families.push(family);
+            latest.push(model);
+        }
+    }
+    (latest, more)
+}
+
+/// The row a typed digit picks in the open mode or model menu, as Desktop's 1–4 do.
+pub fn menu_digit(store: &Store, ui: &Ui, typed: &str) -> Option<String> {
+    let n: usize = typed.parse().ok().filter(|n| (1..=9).contains(n))?;
+    let session = ui.selected.and_then(|id| store.session(id));
+    match ui.open_menu? {
+        MODE_MENU => offered_modes(session)
+            .get(n - 1)
+            .map(|m| format!("mode:{m}")),
+        MODEL_MENU => split_models(offered_models(store, session))
+            .0
+            .get(n - 1)
+            .map(|m| format!("model:{}", m.id)),
+        _ => None,
+    }
+}
+
+/// What each mode does, in Desktop's words.
+fn mode_entry(mode: &str) -> Option<(&'static str, &'static str)> {
+    Some(match mode {
+        "auto" => ("Auto", "Claude handles permission decisions"),
+        "default" => ("Manual", "Always ask before making changes"),
+        "acceptEdits" => ("Accept edits", "Automatically accept all file edits"),
+        "plan" => ("Plan", "Create a plan before making changes"),
+        _ => return None,
+    })
+}
+
+/// The permission mode: Manual reads amber, as Desktop's chip does.
+fn mode_menu(session: Option<&Session>, ui: &Ui) -> Element {
+    let open = ui.open_menu == Some(MODE_MENU);
+    let current = session.map_or(ui.mode.as_str(), |s| s.mode.as_str());
+    let label = mode_entry(current).map_or("Manual", |(label, _)| label);
+    let ink = if current == "default" {
+        look::MANUAL
+    } else {
+        look::PALETTE.text
+    };
+    // Desktop's tooltip says what the mode does.
+    let about = mode_entry(current).map_or("", |(_, about)| about);
+    let anchor = chip(
+        MODE_MENU,
+        vec![chip_text(label, ink)],
+        open,
+        about,
+        Some("Ctrl+Shift+M"),
+    );
+    let mut entries = vec![limn::DropdownMenuEntry::Heading("Mode".into())];
+    for (i, mode) in offered_modes(session).iter().enumerate() {
+        let (label, about) = mode_entry(mode).unwrap_or(("", ""));
+        let n = i + 1;
+        entries.push(
+            limn::DropdownMenuItem::new(format!("mode:{mode}"), label)
+                .description(about)
+                .shortcut(n.to_string())
+                .selected(mode == current)
+                .into(),
+        );
+    }
+    menu(
+        anchor,
+        entries,
+        open,
+        MODE_MENU,
+        300.0,
+        limn::PopoverPlacement::TopStart,
+    )
+}
+
+/// Desktop's names for effort levels.
+fn effort_label(effort: &str) -> String {
+    match effort {
+        "xhigh" => "Extra".into(),
+        "medium" => "Medium".into(),
+        other => {
+            let mut s = other.to_owned();
+            if let Some(first) = s.get_mut(0..1) {
+                first.make_ascii_uppercase();
+            }
+            s
+        }
+    }
+}
+
+/// The model and its effort: the models numbered, the current one checked, then
+/// Effort with the levels that model accepts.
+fn model_menu(
+    store: &Store,
+    session: Option<&Session>,
+    ui: &Ui,
+    _palette: ComponentPalette,
+) -> Element {
+    let open = ui.open_menu == Some(MODEL_MENU);
+    let models = offered_models(store, session);
+    let current = models.iter().find(|m| {
+        ui.model
+            .as_deref()
+            .is_some_and(|id| m.id == id || m.name.to_lowercase().contains(id))
+    });
+    let name = current.map_or_else(
+        || ui.model.clone().unwrap_or_else(|| "Default".into()),
+        |m| m.name.clone(),
+    );
+    let efforts = current.map(|m| m.efforts.as_slice()).unwrap_or_default();
+    let effort = ui.effort.clone().or_else(|| efforts.first().cloned());
+    let mut content = vec![chip_text(name, look::PALETTE.text)];
+    if let Some(effort) = &effort {
+        content.push(chip_text(effort_label(effort), look::MUTED));
+    }
+    let anchor = chip(MODEL_MENU, content, open, "Model", Some("Ctrl+Shift+I"));
+    let mut entries = vec![limn::DropdownMenuEntry::Heading(
+        "Model · this session".into(),
+    )];
+    let (latest, more) = split_models(models);
+    let item = |model: &quill_model::ModelInfo| {
+        limn::DropdownMenuItem::new(format!("model:{}", model.id), model.name.clone())
+            .selected(current.is_some_and(|c| c.id == model.id))
+    };
+    for (n, model) in latest.iter().enumerate() {
+        entries.push(item(model).shortcut((n + 1).to_string()).into());
+    }
+    if !efforts.is_empty() {
+        entries.push(limn::DropdownMenuEntry::Separator);
+        let levels = efforts
+            .iter()
+            .map(|e| {
+                limn::DropdownMenuItem::new(format!("effort:{e}"), effort_label(e))
+                    .selected(effort.as_ref() == Some(e))
+                    .into()
+            })
+            .collect();
+        let mut effort_item =
+            limn::DropdownMenuItem::new(format!("{MODEL_MENU}:effort"), "Effort").submenu(levels);
+        if let Some(effort) = &effort {
+            effort_item = effort_item.annotation(effort_label(effort));
+        }
+        entries.push(effort_item.into());
+    }
+    if !more.is_empty() {
+        entries.push(limn::DropdownMenuEntry::Separator);
+        let rest = more.iter().map(|m| item(m).into()).collect();
+        entries.push(
+            limn::DropdownMenuItem::new(format!("{MODEL_MENU}:more"), "More models")
+                .submenu(rest)
+                .into(),
+        );
+    }
+    menu(
+        anchor,
+        entries,
+        open,
+        MODEL_MENU,
+        200.0,
+        limn::PopoverPlacement::TopEnd,
+    )
 }
 
 /// What one request changed, under its turn: every file with how it changed,

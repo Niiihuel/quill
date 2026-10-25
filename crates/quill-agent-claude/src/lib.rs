@@ -159,6 +159,9 @@ impl AgentAdapter for Claude {
             "--permission-mode".into(),
             spec.mode.clone().unwrap_or_else(|| "default".into()),
         ]);
+        if let Some(effort) = &spec.effort {
+            args.extend(["--effort".into(), effort.clone()]);
+        }
         if let Some(model) = &spec.model {
             args.extend(["--model".into(), model.clone()]);
         }
@@ -223,6 +226,11 @@ impl AgentAdapter for Claude {
             AgentCommand::SetModel(model) => {
                 vec![self.request(json!({ "subtype": "set_model", "model": model }))]
             }
+            // As Desktop changes it; verified on CLI 2.1.310, which answers
+            // success even to a level it does not know, so only the model's levels are sent.
+            AgentCommand::SetEffort(effort) => vec![self.request(json!({
+                "subtype": "apply_flag_settings", "settings": { "effortLevel": effort },
+            }))],
             AgentCommand::Rewind { request, dry_run } => vec![self.request(json!({
                 "subtype": "rewind_files", "user_message_id": request, "dry_run": dry_run,
             }))],

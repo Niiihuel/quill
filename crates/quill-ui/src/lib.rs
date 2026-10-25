@@ -2,10 +2,10 @@
 //! is doing ([`Ui`]), what their actions ask ([`update`]) and the window ([`view`]).
 //! Layout and colors follow Claude Desktop's Code surface (docs/ui.md, features/code-*.md).
 
-mod look;
+pub mod look;
 pub mod view;
 
-pub use view::view;
+pub use view::{menu_digit, view};
 
 use quill_model::{
     AgentCapabilities, AgentEvent, Decision, Event, FileEffect, Intent, NewSession, RequestId,
@@ -347,6 +347,8 @@ pub struct Ui {
     pub agent: String,
     pub mode: String,
     pub model: Option<String>,
+    /// The effort new sessions start with and the selected one runs at.
+    pub effort: Option<String>,
     pub open_menu: Option<&'static str>,
     pub expanded: Vec<String>,
     /// A message written before its session existed, sent once it does.
@@ -474,6 +476,7 @@ impl Ui {
             agent: "claude".into(),
             mode: "default".into(),
             model: None,
+            effort: None,
             open_menu: None,
             expanded: vec![],
             waiting: None,
@@ -564,7 +567,7 @@ pub fn update(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Intent
                         agent: ui.agent.clone(),
                         cwd: ui.cwd.clone(),
                         model: ui.model.clone(),
-                        effort: None,
+                        effort: ui.effort.clone(),
                         mode: Some(ui.mode.clone()),
                     })]
                 }
@@ -757,7 +760,56 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
             .map(|session| vec![Intent::Interrupt { session }])
             .unwrap_or_default();
     }
-    for menu in [view::MODE_MENU, view::MODEL_MENU] {
+    if id == view::SEND {
+        let value = ui.prompt.clone();
+        return update(
+            store,
+            ui,
+            &limn::UiAction::Submitted {
+                id: view::COMPOSER.into(),
+                value,
+            },
+        );
+    }
+    // The "+" actions are the host's (pickers, the editor's text); the menu closes.
+    if [
+        view::ATTACH_FILES,
+        view::ATTACH_FOLDER,
+        view::SLASH,
+        view::PICK_FOLDER,
+    ]
+    .contains(&id)
+    {
+        ui.open_menu = None;
+        return vec![];
+    }
+    if let Some(folder) = id.strip_prefix("folder:") {
+        ui.open_menu = None;
+        ui.cwd = PathBuf::from(folder);
+        return vec![];
+    }
+    if let Some(effort) = id.strip_prefix("effort:") {
+        ui.open_menu = None;
+        ui.effort = Some(effort.to_owned());
+        return ui
+            .selected
+            .map(|session| {
+                vec![Intent::SetEffort {
+                    session,
+                    effort: effort.to_owned(),
+                }]
+            })
+            .unwrap_or_default();
+    }
+    if id == format!("{}:effort", view::MODEL_MENU) {
+        return vec![];
+    }
+    for menu in [
+        view::MODE_MENU,
+        view::MODEL_MENU,
+        view::PLUS_MENU,
+        view::FOLDER_MENU,
+    ] {
         if id == menu {
             ui.open_menu = if ui.open_menu == Some(menu) {
                 None

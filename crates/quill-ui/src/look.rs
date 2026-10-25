@@ -53,6 +53,22 @@ pub const CARD_BORDER: Color = Color::rgb(0xeb, 0xeb, 0xeb);
 pub const COMMAND_INK: Color = Color::rgb(0x61, 0x61, 0x61);
 /// A boundary under the pointer or being dragged.
 pub const HANDLE: Color = Color::rgb(0x25, 0x7d, 0xe0);
+/// The composer: its box's edge and shadow, its buttons under the pointer and
+/// with their menu open, the footer chips likewise, and the amber Manual reads in.
+pub const COMPOSER_BORDER: Color = Color::rgb(0xd9, 0xd9, 0xd9);
+pub const COMPOSER_SHADOW: Color = Color::rgba(0, 0, 0, 16);
+pub const COMPOSER_HOVER: Color = Color::rgb(0xe5, 0xe5, 0xe5);
+pub const COMPOSER_OPEN: Color = Color::rgb(0xd2, 0xd2, 0xd2);
+pub const CHIP_HOVER: Color = Color::rgb(0xe0, 0xe0, 0xe0);
+pub const CHIP_OPEN: Color = Color::rgb(0xca, 0xca, 0xca);
+pub const MANUAL: Color = Color::rgb(0x79, 0x4c, 0x02);
+/// Menus: rows light gray under the pointer.
+pub const MENU_PALETTE: limn::ComponentPalette = limn::ComponentPalette {
+    hover: Color::rgb(0xf0, 0xf0, 0xf0),
+    // Desktop marks the current row with its check alone.
+    selected: Color::rgb(0xff, 0xff, 0xff),
+    ..PALETTE
+};
 /// An active toggle or tab.
 pub const ACTIVE: Color = Color::rgb(0xe5, 0xe5, 0xe5);
 
@@ -75,3 +91,19 @@ pub const COMPOSER_PALETTE: limn::ComponentPalette = limn::ComponentPalette {
     selected: Color::rgb(0xff, 0xff, 0xff),
     ..PALETTE
 };
+
+/// Desktop's tooltips are near-black with white words and a gray shortcut; limn
+/// takes one style for every tooltip from its tokens.
+pub fn install() {
+    let mut tokens = limn::tokens();
+    let ink = Color::rgb(0x0b, 0x0b, 0x0b);
+    tokens.tooltip = Some(limn::TooltipStyle {
+        background: ink,
+        border: ink,
+        keycap: ink,
+        text: Color::rgb(0xff, 0xff, 0xff),
+        muted: Color::rgb(0xa3, 0xa3, 0xa3),
+        shadow: Color::rgba(0, 0, 0, 40),
+    });
+    limn::set_tokens(tokens);
+}

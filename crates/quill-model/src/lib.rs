@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-pub use quill_agent::{AgentCapabilities, AgentEvent, Decision, Suggestion, Usage};
+pub use quill_agent::{AgentCapabilities, AgentEvent, Decision, ModelInfo, Suggestion, Usage};
 
 /// quill's own id of a session.
 pub type SessionId = u64;
@@ -64,6 +64,11 @@ pub enum Intent {
     SetModel {
         session: SessionId,
         model: String,
+    },
+    /// How hard the agent thinks, one of the levels its model accepts.
+    SetEffort {
+        session: SessionId,
+        effort: String,
     },
     /// Put the session's files back as they were before `request` ran.
     Rewind {
