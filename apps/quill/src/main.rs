@@ -474,14 +474,41 @@ fn main() -> eframe::Result {
                 limn::set_fonts(fonts);
             }
             limn_egui::install_fonts(&creation.egui_ctx);
-            quill_ui::look::install();
+            // `QUILL_THEME=dark|light`, else the system's, else dark.
+            let dark = match std::env::var("QUILL_THEME").as_deref() {
+                Ok("light") => false,
+                Ok("dark") => true,
+                _ => creation.egui_ctx.system_theme() != Some(egui::Theme::Light),
+            };
+            creation.egui_ctx.set_theme(if dark {
+                egui::Theme::Dark
+            } else {
+                egui::Theme::Light
+            });
+            quill_ui::look::set_dark(dark);
             let inbox: Arc<Mutex<Vec<Event>>> = Arc::default();
             let (events, ctx) = (inbox.clone(), creation.egui_ctx.clone());
             // The engine's thread wakes the window for every event it reports.
-            let engine = Engine::start(move |event| {
+            let sink = move |event| {
                 events.lock().unwrap().push(event);
                 ctx.request_repaint();
-            });
+            };
+            // `QUILL_PROGRAMS=claude=/path/fake-agent` runs another program for an agent, as
+            // the engine's tests do, with sessions kept in memory only: a replay to look at.
+            let engine = match std::env::var("QUILL_PROGRAMS") {
+                Ok(programs) => Engine::start_with(
+                    sink,
+                    quill_engine::Config {
+                        programs: programs
+                            .split(',')
+                            .filter_map(|p| p.split_once('='))
+                            .map(|(agent, program)| (agent.to_owned(), program.to_owned()))
+                            .collect(),
+                        ..Default::default()
+                    },
+                ),
+                Err(_) => Engine::start(sink),
+            };
             Ok(Box::new(App {
                 tree: UiTree::new(Element::spacer()),
                 store: Store::default(),

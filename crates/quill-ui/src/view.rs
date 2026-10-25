@@ -5,7 +5,8 @@ use crate::look::{self, BODY, CHAT, COLUMN, SMALL};
 use crate::{Item, Pane, Session, Store, ToolResult, Ui};
 use limn::{
     Button, ButtonGroup, ButtonSize, ButtonVariant, Component, ComponentPalette, Composer,
-    ControlSize, Element, FontFamily, FramedCard, Markdown, OutputBlock, Size, TextShimmer,
+    ControlSize, Element, FontFamily, FramedCard, Markdown, OutputBlock, Size, Spinner,
+    TextShimmer,
 };
 use quill_model::{ChangeKind, FileEffect, SessionStatus};
 use serde_json::Value;
@@ -52,7 +53,7 @@ fn text(s: impl Into<String>) -> Element {
     Element::text(s.into())
         .font_family(FontFamily::Sans)
         .font_size(BODY)
-        .foreground(look::PALETTE.text)
+        .foreground(look::palette().text)
 }
 
 /// The last part of a path, as Desktop names a session's folder.
@@ -63,7 +64,7 @@ fn folder_name(path: &std::path::Path) -> String {
 }
 
 fn muted(s: impl Into<String>) -> Element {
-    text(s).foreground(look::MUTED)
+    text(s).foreground(look::muted())
 }
 
 /// How the space right of the sidebar is shared.
@@ -98,7 +99,8 @@ fn layout(store: &Store, ui: &Ui, window: Size) -> Layout {
     // (the 1× captures of 2026-10-25, see look.rs).
     let fraction = match panes.first() {
         Some(Pane::Diff) => 0.6,
-        Some(Pane::Terminal) => 1.0 / 3.0,
+        // A helper agent and a plan open at a third too.
+        Some(Pane::Terminal | Pane::Agent | Pane::Plan) => 1.0 / 3.0,
         None => 0.0,
     };
     // Dragging the boundary sets the share, as in Desktop.
@@ -160,8 +162,8 @@ fn pane_heights(layout: &Layout, ui: &Ui, window: Size) -> Vec<f32> {
 /// A boundary: Desktop's hairline at rest, its blue under the pointer and while dragged.
 fn divider(id: &str, across: bool, length: f32, palette: ComponentPalette) -> Element {
     let blue = ComponentPalette {
-        hover: look::HANDLE,
-        selected: look::HANDLE,
+        hover: look::handle(),
+        selected: look::handle(),
         ..palette
     };
     if across {
@@ -172,7 +174,7 @@ fn divider(id: &str, across: bool, length: f32, palette: ComponentPalette) -> El
         Element::overlay(line, handle).size(Some(HANDLE), Some(length))
     } else {
         let line = Element::column(vec![
-            hline(length, look::PANE_BORDER),
+            hline(length, look::pane_border()),
             Element::spacer().size(None, Some(HANDLE - 1.0)),
         ]);
         let handle = limn::ResizeHandle::horizontal(id, blue)
@@ -248,7 +250,7 @@ fn hgap(width: f32) -> Element {
 
 fn vline(height: f32) -> Element {
     Element::spacer()
-        .background(look::DIVIDER)
+        .background(look::divider())
         .size(Some(1.0), Some(height))
 }
 
@@ -259,7 +261,7 @@ fn hline(width: f32, color: limn::Color) -> Element {
 }
 
 pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
-    let palette = look::PALETTE;
+    let palette = look::palette();
     let session = ui.selected.and_then(|id| store.session(id));
     let layout = layout(store, ui, window);
     let rest = layout.main + layout.column + layout.panel;
@@ -291,6 +293,8 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
             stack.push(match pane {
                 Pane::Diff => diff_pane(store, ui, width, height, palette),
                 Pane::Terminal => terminal_pane(session, ui, width, height, palette),
+                Pane::Agent => agent_pane(store, session, ui, width, height, palette),
+                Pane::Plan => plan_pane(session, ui, width, height),
             });
         }
         if layout.main > 0.0 {
@@ -303,7 +307,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     }
     let content = Element::column(vec![
         top_bar(session, ui),
-        hline(rest, look::PANE_BORDER),
+        hline(rest, look::pane_border()),
         Element::row(row).size(Some(rest), Some(below)),
     ])
     .size(Some(rest), Some(window.height));
@@ -312,7 +316,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
         vline(window.height),
         content,
     ])
-    .background(look::THEME.background)
+    .background(look::theme().background)
     .size(Some(window.width), Some(window.height));
     // Desktop's own wording for both closes (Ion `cccc2cf0a`,).
     let tabs = &ui.terminal.tabs;
@@ -354,19 +358,23 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
         TERMINAL_CLOSE_CANCEL,
         // Cancel is filled with `raised`: Desktop's light gray.
         ComponentPalette {
-            raised: look::CANCEL,
+            raised: look::cancel(),
             ..palette
         },
     )
     .width(400.0)
     .confirm_label(confirm)
-    .soft_destructive(look::DANGER_FILL, look::DANGER_BORDER, look::DANGER_INK)
+    .soft_destructive(
+        look::danger_fill(),
+        look::danger_border(),
+        look::danger_ink(),
+    )
     .cancel_variant(ButtonVariant::Secondary)
     .description_size(BODY)
     .description_line_height(20.0)
     .closable(false)
     // Desktop's backdrop is lighter, its title closer, its buttons 30 px with 14 px labels.
-    .scrim(look::SCRIM)
+    .scrim(look::scrim())
     .title_gap(1.0)
     .button_sizing(limn::ButtonSizing {
         height: 30.0,
@@ -387,7 +395,7 @@ fn pane_header(lead: Element, tools: Vec<Element>, width: f32) -> Element {
         Element::row(row)
             .gap(8.0)
             .size(Some(width), Some(look::PANE_HEADER)),
-        hline(width, look::PANE_BORDER),
+        hline(width, look::pane_border()),
     ])
 }
 
@@ -477,7 +485,7 @@ fn terminal_pane(
                     .size(None, Some(28.0))
                     .radius(8.0);
                 let pill = if i == ui.terminal.active {
-                    pill.background(look::ACTIVE)
+                    pill.background(look::active())
                 } else {
                     pill
                 };
@@ -496,12 +504,12 @@ fn terminal_pane(
                 TERMINAL,
                 screen.clone(),
                 ComponentPalette {
-                    text: look::CURSOR,
+                    text: look::cursor(),
                     ..palette
                 },
             )
             .font_size(TERMINAL_FONT)
-            .background(look::THEME.background)
+            .background(look::theme().background)
             // Desktop's terminal marks its focus with the cursor alone.
             .focus_ring(false)
             .render(),
@@ -541,8 +549,8 @@ fn rename_field(name: &str, palette: ComponentPalette) -> Element {
         .size(ControlSize::Compact)
         .width(160.0)
         .render()
-        .border(look::CARD_BORDER, 1.0)
-        .focus_border(look::HANDLE, 1.0)
+        .border(look::card_border(), 1.0)
+        .focus_border(look::handle(), 1.0)
         .radius(8.0)
         .centered_y()
 }
@@ -555,7 +563,7 @@ fn icon_tool(
     side: f32,
     _palette: ComponentPalette,
 ) -> Element {
-    tool_surface(id, icon, label, side, None, look::TOOL_HOVER, None).centered_y()
+    tool_surface(id, icon, label, side, None, look::tool_hover(), None).centered_y()
 }
 
 /// An icon button as Desktop draws them: rounded 6, its icon in the text's ink,
@@ -572,11 +580,11 @@ fn tool_surface(
     let palette = ComponentPalette {
         hover,
         selected: hover,
-        ..look::PALETTE
+        ..look::palette()
     };
     // The icon is centered by hand: limn's icon button sets it a pixel to the left.
     let glyph = Element::icon(icon)
-        .foreground(look::PALETTE.text)
+        .foreground(look::palette().text)
         .size(Some(16.0), Some(16.0))
         .centered();
     let button = palette
@@ -587,7 +595,7 @@ fn tool_surface(
         Some(fill) => button.background(fill),
         None => button,
     };
-    let tip = limn::Tooltip::new(button, id, label, look::PALETTE);
+    let tip = limn::Tooltip::new(button, id, label, look::palette());
     match shortcut {
         Some(keys) => tip.shortcut(keys),
         None => tip,
@@ -598,9 +606,9 @@ fn tool_surface(
 /// A top-bar toggle: its icon on the active fill while what it shows is open.
 fn toggle(id: &str, icon: limn::Icon, label: &str, on: bool, shortcut: Option<&str>) -> Element {
     let (fill, hover) = if on {
-        (Some(look::ACTIVE), look::ACTIVE_HOVER)
+        (Some(look::active()), look::active_hover())
     } else {
-        (None, look::TOOL_HOVER)
+        (None, look::tool_hover())
     };
     tool_surface(id, icon, label, 26.0, fill, hover, shortcut).centered_y()
 }
@@ -671,7 +679,7 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
             NEW_SESSION.into(),
             vec![
                 Element::icon(icons::of(icons::ADD))
-                    .foreground(look::PALETTE.text)
+                    .foreground(look::palette().text)
                     .size(Some(16.0), Some(16.0))
                     .centered_y(),
                 text("New").centered_y(),
@@ -699,7 +707,7 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
         } else {
             icons::of(icons::CARET_RIGHT)
         })
-        .foreground(look::MUTED)
+        .foreground(look::muted())
         .size(Some(10.0), Some(10.0))
         .centered_y();
         // Under the pointer the header fills and offers a new session there.
@@ -715,7 +723,7 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
                 "New session",
                 22.0,
                 None,
-                look::TOOL_HOVER,
+                look::tool_hover(),
                 None,
             )
             .centered_y()
@@ -725,7 +733,7 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
         .gap(6.0)
         .size(None, Some(28.0));
         let header_palette = ComponentPalette {
-            hover: look::ROW_HOVER,
+            hover: look::row_hover(),
             ..palette
         };
         rows.push(
@@ -752,7 +760,7 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
                     Element::truncated_text(title)
                         .font_family(FontFamily::Sans)
                         .font_size(BODY)
-                        .foreground(look::PALETTE.text)
+                        .foreground(look::palette().text)
                         .flex(1.0)
                         .centered_y(),
                     status_dot(&session.status),
@@ -765,7 +773,7 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
     Element::column(rows)
         .gap(2.0)
         .padding(8.0)
-        .background(look::SIDEBAR)
+        .background(look::sidebar())
         .size(Some(look::SIDEBAR_WIDTH - 1.0), Some(height))
 }
 
@@ -784,9 +792,9 @@ fn side_row(
     //.
     let palette = ComponentPalette {
         hover: if selected {
-            look::SELECTED_HOVER
+            look::selected_hover()
         } else {
-            look::ROW_HOVER
+            look::row_hover()
         },
         ..palette
     };
@@ -795,7 +803,7 @@ fn side_row(
         .radius(8.0)
         .hover_region();
     if selected {
-        row.background(look::SELECTED)
+        row.background(look::selected())
     } else {
         row
     }
@@ -804,9 +812,9 @@ fn side_row(
 /// Running and awaiting sessions carry a dot in the sidebar, as Desktop's rows do.
 fn status_dot(status: &SessionStatus) -> Element {
     let color = match status {
-        SessionStatus::Running | SessionStatus::Starting => look::RUNNING,
-        SessionStatus::Awaiting => look::AWAITING,
-        SessionStatus::Failed(_) => look::REMOVED,
+        SessionStatus::Running | SessionStatus::Starting => look::running(),
+        SessionStatus::Awaiting => look::awaiting(),
+        SessionStatus::Failed(_) => look::removed(),
         _ => return Element::spacer().size(Some(6.0), Some(6.0)),
     };
     // A running session's dot pulses, as Desktop's does.
@@ -827,7 +835,7 @@ fn empty(ui: &Ui, column: f32) -> Element {
     };
     let line = Element::row(vec![
         Element::icon(icons::of(icons::SPARK))
-            .foreground(look::SPARK)
+            .foreground(look::spark())
             .size(Some(24.0), Some(24.0))
             .centered_y(),
         text(greeting).font_size(20.0).centered_y(),
@@ -841,53 +849,135 @@ fn empty(ui: &Ui, column: f32) -> Element {
 }
 
 fn transcript(session: &Session, ui: &Ui, column: f32, palette: ComponentPalette) -> Element {
-    // Tool calls in a row fold into one group, as Desktop shows a turn's work;
-    // an answered permission between them is gone, a waiting one ends the group.
     // Desktop opens a session with where it started.
     let mut items: Vec<Element> = vec![muted(format!(
         "Started on this computer · {}",
         folder_name(&session.cwd)
     ))
     .font_size(12.0)];
+    let busy = matches!(
+        session.status,
+        SessionStatus::Starting | SessionStatus::Running | SessionStatus::Awaiting
+    );
+    let (entries, running) = entries(session, &session.items, busy, ui, column, palette);
+    items.extend(entries);
+    // While the turn runs, its task list sits over the running line; it goes when the
+    // turn ends.
+    let list = todos(&session.items);
+    if busy && !list.is_empty() {
+        items.push(task_card(&list, column, palette));
+    }
+    if let Some(status) = status_line(session, running.as_ref(), ui, column, palette) {
+        items.push(status);
+    }
+    let content = Element::column(items)
+        .gap(14.0)
+        .size(Some(column), None)
+        .padding(16.0)
+        .centered_x();
+    let scroll = Element::scroll(format!("transcript:{}", session.id), content);
+    if ui.at_end {
+        return scroll;
+    }
+    // Away from the end, Desktop floats a round "↓" over the conversation.
+    let down = ComponentPalette {
+        hover: look::tool_hover(),
+        ..palette
+    }
+    .interactive_surface(Element::icon_button(
+        SCROLL_END,
+        icons::of(icons::ARROW_DOWN),
+        "Scroll to bottom",
+    ))
+    .foreground(look::palette().text)
+    .background(palette.surface)
+    .border(look::card_border(), 1.0)
+    .radius(16.0)
+    .size(Some(32.0), Some(32.0));
+    let float = Element::column(vec![
+        Element::spacer().flex(1.0),
+        Element::row(vec![
+            Element::spacer().flex(1.0),
+            down,
+            Element::spacer().flex(1.0),
+        ]),
+        Element::spacer().size(None, Some(12.0)),
+    ]);
+    Element::overlay(scroll, float)
+}
+
+/// What a list of transcript items shows: messages, cards, and tool calls in a row folded
+/// into one group, as Desktop shows a turn's work; an answered permission
+/// between them is gone, a waiting one ends the group. While `busy`, a last step still
+/// running leaves its group and is returned for the running line.
+fn entries<'a>(
+    session: &'a Session,
+    list: &'a [Item],
+    busy: bool,
+    ui: &Ui,
+    column: f32,
+    palette: ComponentPalette,
+) -> (Vec<Element>, Option<Step<'a>>) {
+    let mut items: Vec<Element> = vec![];
     let mut steps: Vec<Step> = vec![];
-    for item in &session.items {
+    let flush = |steps: &mut Vec<Step>, items: &mut Vec<Element>| {
+        if !steps.is_empty() {
+            items.push(step_group(steps, ui, column, palette));
+            steps.clear();
+        }
+    };
+    let main = std::ptr::eq(list, session.items.as_slice());
+    let mut waiting = None;
+    for (at, item) in list.iter().enumerate() {
         match item {
+            Item::Tool { name, .. } if is_task_tool(name) => {}
             Item::Tool {
                 call,
                 name,
                 input,
                 result,
-            } => steps.push(Step {
-                call,
-                name,
-                input,
-                result: result.as_ref(),
-            }),
+            } => {
+                let step = Step {
+                    call,
+                    name,
+                    input,
+                    result: result.as_ref(),
+                    running: result.is_none() || session.task_running(call),
+                };
+                if stands_alone(name) {
+                    flush(&mut steps, &mut items);
+                    if let Some(element) = lone_step(&step, column, palette) {
+                        items.push(element);
+                    }
+                } else {
+                    steps.push(step);
+                }
+            }
             Item::Permission {
                 decided: Some(_), ..
             } => {}
             other => {
-                if !steps.is_empty() {
-                    items.push(step_group(&steps, ui, column, palette));
-                    steps.clear();
+                // A step that waits on this permission runs under its card
+                //.
+                if busy
+                    && matches!(other, Item::Permission { decided: None, .. })
+                    && steps.last().is_some_and(|s| s.result.is_none())
+                {
+                    waiting = steps.pop();
                 }
+                flush(&mut steps, &mut items);
                 // Desktop sets each message apart: about 60 px between turns and
                 // 39 px under the person's words; the gap adds to the column's own 14.
                 let user = matches!(other, Item::User { .. });
-                if user && items.len() > 1 {
+                if user && !items.is_empty() {
                     items.push(Element::spacer().size(None, Some(32.0)));
                 }
-                let element = self::item(other, ui, column, palette);
+                let element = self::item(other, session, ui, column, palette);
                 // Under a reply, its actions show while the pointer is on it.
                 let element = match other {
                     Item::Assistant {
                         streaming: false, ..
-                    } => {
-                        let at = session
-                            .items
-                            .iter()
-                            .position(|i| std::ptr::eq(i, other))
-                            .unwrap_or_default();
+                    } if main => {
                         let copy = format!("copy:{}:{at}", session.id);
                         Element::column(vec![
                             element,
@@ -897,7 +987,7 @@ fn transcript(session: &Session, ui: &Ui, column: f32, palette: ComponentPalette
                                 "Copy",
                                 24.0,
                                 None,
-                                look::TOOL_HOVER,
+                                look::tool_hover(),
                                 None,
                             )
                             .reveal_on_hover(format!("{copy}:reveal")),
@@ -914,67 +1004,146 @@ fn transcript(session: &Session, ui: &Ui, column: f32, palette: ComponentPalette
             }
         }
     }
-    if !steps.is_empty() {
-        items.push(step_group(&steps, ui, column, palette));
-    }
-    if let Some(status) = status_line(&session.status, palette) {
-        items.push(status);
-    }
-    let content = Element::column(items)
-        .gap(14.0)
-        .size(Some(column), None)
-        .padding(16.0)
-        .centered_x();
-    let scroll = Element::scroll(format!("transcript:{}", session.id), content);
-    if ui.at_end {
-        return scroll;
-    }
-    // Away from the end, Desktop floats a round "↓" over the conversation.
-    let down = ComponentPalette {
-        hover: look::TOOL_HOVER,
-        ..palette
-    }
-    .interactive_surface(Element::icon_button(
-        SCROLL_END,
-        icons::of(icons::ARROW_DOWN),
-        "Scroll to bottom",
-    ))
-    .foreground(look::PALETTE.text)
-    .background(palette.surface)
-    .border(look::CARD_BORDER, 1.0)
-    .radius(16.0)
-    .size(Some(32.0), Some(32.0));
-    let float = Element::column(vec![
-        Element::spacer().flex(1.0),
-        Element::row(vec![
-            Element::spacer().flex(1.0),
-            down,
-            Element::spacer().flex(1.0),
-        ]),
-        Element::spacer().size(None, Some(12.0)),
-    ]);
-    Element::overlay(scroll, float)
+    let running = if busy && steps.last().is_some_and(|s| s.result.is_none()) {
+        steps.pop()
+    } else {
+        waiting
+    };
+    flush(&mut steps, &mut items);
+    (items, running)
 }
 
-fn status_line(status: &SessionStatus, palette: ComponentPalette) -> Option<Element> {
-    Some(match status {
-        SessionStatus::Starting => TextShimmer::new("status", "Starting…", palette).render(),
-        SessionStatus::Running => TextShimmer::new("status", "Working…", palette).render(),
+/// The line under the turn: Desktop's orange dots, then the step running, or the
+/// turn's clock, its tokens, the work running beside it and whether the model thinks, muted,
+/// at the transcript's size. Waiting on the person it says so; with only background work
+/// left, it counts it.
+fn status_line(
+    session: &Session,
+    running: Option<&Step>,
+    ui: &Ui,
+    column: f32,
+    palette: ComponentPalette,
+) -> Option<Element> {
+    let dots = || {
+        Spinner::new("status:dots", look::spark())
+            .variant(limn::SpinnerVariant::Dots)
+            .size(16.0)
+            .decorative()
+            .render()
+            .centered_y()
+    };
+    let tasks = session.tasks.iter().filter(|t| t.running).count();
+    let tasks = match tasks {
+        0 => None,
+        1 => Some("1 running task".to_owned()),
+        n => Some(format!("{n} running tasks")),
+    };
+    Some(match &session.status {
+        // "Reading saludo.py 2s ▸": the verb muted, what it acts on in the text's ink, and
+        // the step's own clock; under a permission it waits on,
+        // the same.
+        SessionStatus::Starting | SessionStatus::Running | SessionStatus::Awaiting
+            if running.is_some() =>
+        {
+            let step = running?;
+            let key = format!("tool:{}", step.call);
+            let open = ui.expanded.iter().any(|c| c == step.call);
+            let (verb, object) = step_label(step, false);
+            let mut line = vec![dots(), muted(verb).font_size(CHAT).centered_y()];
+            if !object.is_empty() {
+                line.push(text(object).font_size(CHAT).centered_y());
+            }
+            let since = session.step_since.map_or(0, |t| t.elapsed().as_secs());
+            line.push(muted(elapsed(since)).font_size(CHAT).centered_y());
+            line.push(caret(open));
+            let line = Element::clickable(key, Element::row(line).gap(8.0));
+            if !open {
+                return Some(line);
+            }
+            Element::column(vec![line, step_body(step, column, palette)]).gap(8.0)
+        }
+        SessionStatus::Starting | SessionStatus::Running => {
+            // The clock shows from five seconds on.
+            let secs = session.running_since.map_or(0, |t| t.elapsed().as_secs());
+            let mut parts = vec![];
+            if secs >= 5 {
+                parts.push(elapsed(secs));
+            }
+            if session.tokens > 0 {
+                parts.push(tokens(session.tokens));
+            }
+            parts.extend(tasks);
+            if session.thinking {
+                parts.push("Thinking".into());
+            }
+            Element::row(vec![
+                dots(),
+                muted(parts.join(" · ")).font_size(CHAT).centered_y(),
+            ])
+            .gap(12.0)
+        }
+        // A ringed orange dot and a white pill with an orange edge.
         SessionStatus::Awaiting => Element::row(vec![
-            Element::spacer()
-                .background(look::AWAITING)
-                .radius(4.0)
-                .size(Some(8.0), Some(8.0))
-                .centered_y(),
-            muted("Needs your input"),
+            Element::panel(
+                Element::spacer()
+                    .background(look::awaiting())
+                    .radius(4.0)
+                    .size(Some(8.0), Some(8.0)),
+            )
+            .border(look::awaiting_edge(), 2.0)
+            .radius(7.0)
+            .padding(1.0)
+            .centered_y(),
+            Element::panel(Element::row(vec![
+                hgap(5.0),
+                text("Needs your input")
+                    .font_size(12.0)
+                    .foreground(look::manual()),
+                hgap(5.0),
+            ]))
+            .border(look::awaiting_edge(), 1.0)
+            .radius(10.0)
+            .padding(2.0)
+            .centered_y(),
         ])
         .gap(8.0),
-        SessionStatus::Failed(error) => text(error.clone()).foreground(look::REMOVED),
-        SessionStatus::Idle | SessionStatus::Exited => return None,
+        SessionStatus::Failed(error) => text(error.clone()).foreground(look::removed()),
+        SessionStatus::Idle | SessionStatus::Exited => {
+            let tasks = tasks?;
+            TextShimmer::new("status:tasks", tasks, palette)
+                .render()
+                .font_size(CHAT)
+        }
     })
 }
 
-fn item(item: &Item, ui: &Ui, column: f32, palette: ComponentPalette) -> Element {
+/// A turn's running time as Desktop writes it: "14s", "9m 4s", "1h 2m 3s".
+pub fn elapsed(secs: u64) -> String {
+    match secs {
+        0..60 => format!("{secs}s"),
+        60..3600 => format!("{}m {}s", secs / 60, secs % 60),
+        _ => format!("{}h {}m {}s", secs / 3600, secs % 3600 / 60, secs % 60),
+    }
+}
+
+/// A token count as the running line writes it: "140 tokens", "30.7k tokens"
+///.
+pub fn tokens(count: u64) -> String {
+    match count {
+        0..1000 => format!("{count} tokens"),
+        // shortcut: the millions form is a guess; Desktop's turns were never seen that long.
+        1000..1_000_000 => format!("{:.1}k tokens", count as f64 / 1000.0),
+        _ => format!("{:.1}M tokens", count as f64 / 1_000_000.0),
+    }
+}
+
+fn item(
+    item: &Item,
+    session: &Session,
+    ui: &Ui,
+    column: f32,
+    palette: ComponentPalette,
+) -> Element {
     match item {
         Item::User { text: t, .. } => {
             // As wide as its words, up to 3/4 of the column, 16 px of side padding.
@@ -982,7 +1151,7 @@ fn item(item: &Item, ui: &Ui, column: f32, palette: ComponentPalette) -> Element
                 .font_size(CHAT)
                 .max_width(column * 0.75 - 32.0);
             let bubble = Element::panel(Element::row(vec![hgap(4.0), line, hgap(4.0)]))
-                .background(look::USER_BUBBLE)
+                .background(look::user_bubble())
                 .radius(14.0)
                 .padding(12.0);
             Element::row(vec![Element::spacer().flex(1.0), bubble])
@@ -991,13 +1160,13 @@ fn item(item: &Item, ui: &Ui, column: f32, palette: ComponentPalette) -> Element
             // Desktop's code: blocks in a white bordered box as wide as their
             // code, no language line, a copy button, 13 px; inline code on a light fill.
             let code_palette = ComponentPalette {
-                raised: look::PALETTE.surface,
-                border: look::DIVIDER,
+                raised: look::palette().surface,
+                border: look::divider(),
                 ..palette
             };
             let colors = limn::MarkdownColors {
-                code_ink: look::PALETTE.text,
-                code_fill: look::COMMAND_BOX,
+                code_ink: look::palette().text,
+                code_fill: look::command_box(),
                 ..limn::MarkdownColors::for_palette(code_palette)
             };
             Markdown::new(t, code_palette)
@@ -1010,14 +1179,16 @@ fn item(item: &Item, ui: &Ui, column: f32, palette: ComponentPalette) -> Element
                 .code_font_size(SMALL)
                 .inline_code_size(SMALL)
                 .code_syntax_colors(limn::CodeSyntaxColors {
-                    text: look::PALETTE.text,
-                    string: look::ADDED,
-                    keyword: look::KEYWORD,
-                    function: Some(look::CURSOR),
-                    interpolation: Some(look::REMOVED),
+                    text: look::palette().text,
+                    string: look::added(),
+                    keyword: look::keyword(),
+                    function: Some(look::cursor()),
+                    interpolation: Some(look::removed()),
                     ..limn::CodeSyntaxColors::for_palette(code_palette)
                 })
                 .streaming(*streaming)
+                // New words come in out of a fade.
+                .streaming_fade(true)
                 .render()
                 .element
         }
@@ -1029,6 +1200,12 @@ fn item(item: &Item, ui: &Ui, column: f32, palette: ComponentPalette) -> Element
             decided: None,
             ..
         } if input["questions"].is_array() => question_card(id, input, ui, column, palette),
+        Item::Permission {
+            id,
+            tool,
+            decided: None,
+            ..
+        } if tool == "ExitPlanMode" => plan_card(id, Some(session), ui, column, palette),
         Item::Permission { .. } => permission(item, ui, column, palette),
         Item::TurnEnd {
             ok: false,
@@ -1038,7 +1215,7 @@ fn item(item: &Item, ui: &Ui, column: f32, palette: ComponentPalette) -> Element
         Item::TurnEnd {
             ok: false, error, ..
         } => text(error.clone().unwrap_or_else(|| "The turn failed".into()))
-            .foreground(look::REMOVED),
+            .foreground(look::removed()),
         Item::TurnEnd { .. } => Element::spacer().size(None, Some(0.0)),
         Item::Changes {
             request,
@@ -1054,6 +1231,142 @@ pub struct Step<'a> {
     pub name: &'a str,
     pub input: &'a Value,
     pub result: Option<&'a ToolResult>,
+    /// It has not answered yet, or the work it started still runs (a helper agent).
+    pub running: bool,
+}
+
+/// The task tools keep the list shown over the running line; Desktop lists no step for them
+///.
+pub fn is_task_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "TodoWrite" | "TaskCreate" | "TaskUpdate" | "TaskGet" | "TaskList" | "TaskStop"
+    )
+}
+
+/// Steps Desktop sets on their own line, out of any group
+///.
+fn stands_alone(name: &str) -> bool {
+    matches!(name, "AskUserQuestion" | "ExitPlanMode")
+}
+
+/// One entry of the task list.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Todo {
+    pub id: String,
+    pub subject: String,
+    /// "pending", "in_progress" or "completed".
+    pub status: String,
+}
+
+/// The task list as the task tools left it: `TaskCreate` adds, `TaskUpdate` changes or
+/// deletes by id, `TodoWrite` writes the whole list.
+pub fn todos(items: &[Item]) -> Vec<Todo> {
+    let mut list: Vec<Todo> = vec![];
+    for item in items {
+        let Item::Tool {
+            name,
+            input,
+            result,
+            ..
+        } = item
+        else {
+            continue;
+        };
+        match name.as_str() {
+            "TaskCreate" => {
+                // The CLI numbers its tasks and says so: "Task #1 created successfully: …".
+                let id = result
+                    .as_ref()
+                    .and_then(|r| r.output.strip_prefix("Task #"))
+                    .and_then(|rest| rest.split(' ').next())
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| (list.len() + 1).to_string());
+                list.push(Todo {
+                    id,
+                    subject: input["subject"].as_str().unwrap_or_default().to_owned(),
+                    status: "pending".into(),
+                });
+            }
+            "TaskUpdate" => {
+                let id = input["taskId"].as_str().unwrap_or_default();
+                if input["status"] == "deleted" {
+                    list.retain(|t| t.id != id);
+                } else if let Some(todo) = list.iter_mut().find(|t| t.id == id) {
+                    if let Some(status) = input["status"].as_str() {
+                        todo.status = status.to_owned();
+                    }
+                    if let Some(subject) = input["subject"].as_str() {
+                        todo.subject = subject.to_owned();
+                    }
+                }
+            }
+            "TodoWrite" => {
+                list = input["todos"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                    .map(|(i, t)| Todo {
+                        id: (i + 1).to_string(),
+                        subject: t["content"].as_str().unwrap_or_default().to_owned(),
+                        status: t["status"].as_str().unwrap_or("pending").to_owned(),
+                    })
+                    .collect();
+            }
+            _ => {}
+        }
+    }
+    list
+}
+
+/// The task list: a card as wide as the column, a 28 px row per
+/// task, its mark (a filled check when done, a turning arc while in progress, a dashed ring
+/// while waiting) and its words, gray once done.
+fn task_card(list: &[Todo], column: f32, palette: ComponentPalette) -> Element {
+    let rows = list
+        .iter()
+        .enumerate()
+        .map(|(i, todo)| {
+            let done = todo.status == "completed";
+            let mark = match todo.status.as_str() {
+                // The icon's own white would take the tint: the check goes over a dot.
+                "completed" => Element::overlay(
+                    Element::spacer()
+                        .background(look::muted())
+                        .radius(7.0)
+                        .size(Some(14.0), Some(14.0)),
+                    Element::icon(icons::of(icons::CHECK))
+                        .foreground(palette.surface)
+                        .size(Some(10.0), Some(10.0))
+                        .centered(),
+                )
+                .size(Some(14.0), Some(14.0)),
+                "in_progress" => Spinner::new(format!("task:{i}"), look::muted())
+                    .size(14.0)
+                    .decorative()
+                    .render(),
+                _ => Element::icon(icons::of(icons::TASK_PENDING))
+                    .foreground(look::muted())
+                    .size(Some(14.0), Some(14.0)),
+            };
+            let words = text(todo.subject.clone()).font_size(BODY);
+            let words = if done {
+                words.foreground(look::muted())
+            } else {
+                words
+            };
+            Element::row(vec![mark.centered_y(), words.centered_y()])
+                .gap(6.0)
+                .size(None, Some(28.0))
+        })
+        .collect();
+    Element::panel(Element::column(rows))
+        .background(palette.surface)
+        .border(look::card_border(), 1.0)
+        .radius(8.0)
+        .padding(12.0)
+        .size(Some(column), None)
 }
 
 /// A verb phrase put in the past, as Desktop names a finished step: "Run saludo.py" becomes
@@ -1121,48 +1434,89 @@ fn file_of(input: &Value) -> String {
         .unwrap_or_default()
 }
 
-/// A step's verb and what it acted on: ("Edited", "saludo.py"); a command keeps its own
-/// words, past or present.
+/// A step's verb and what it acted on, done or still running: ("Edited", "saludo.py"),
+/// ("Reading", "saludo.py"); a command keeps its own words.
+/// The verbs are Desktop's.
 fn step_label(step: &Step, done: bool) -> (String, String) {
-    match step.name {
+    let input = step.input;
+    let said = |key: &str| input[key].as_str().unwrap_or_default().to_owned();
+    let (past, present, object) = match step.name {
         "Bash" => {
-            let said = step.input["description"]
+            let said = input["description"]
                 .as_str()
                 .map(str::to_owned)
-                .unwrap_or_else(|| {
-                    format!("Run {}", step.input["command"].as_str().unwrap_or_default())
-                });
-            let phrase = if done { past_tense(&said) } else { said };
-            (phrase, String::new())
+                .unwrap_or_else(|| format!("Run {}", said("command")));
+            // Running it reads "Creating a.txt…"; stopped or failed, in its own words
+            //.
+            let phrase = match step.result {
+                None => progressive(&said),
+                Some(r) if r.stopped || r.is_error => said,
+                Some(_) if done => past_tense(&said),
+                Some(_) => said,
+            };
+            return (phrase, String::new());
         }
-        "Read" => ("Read".into(), file_of(step.input)),
-        "Edit" | "MultiEdit" | "NotebookEdit" => ("Edited".into(), file_of(step.input)),
-        "Write" => ("Wrote".into(), file_of(step.input)),
-        "Grep" | "Glob" => (
-            "Searched".into(),
-            step.input["pattern"]
+        "Read" => ("Read", "Reading", file_of(input)),
+        "Edit" | "MultiEdit" | "NotebookEdit" => ("Edited", "Editing", file_of(input)),
+        "Write" => {
+            let created = step
+                .result
+                .and_then(|r| r.files.first())
+                .is_none_or(|f| f.before.is_none());
+            let past = if created { "Created" } else { "Updated" };
+            (past, "Writing", file_of(input))
+        }
+        "Grep" | "Glob" => ("Searched", "Searching", said("pattern")),
+        "LS" => ("Listed", "Listing", said("path")),
+        "WebFetch" => ("Fetched", "Fetching", said("url")),
+        "WebSearch" => ("Searched web", "Searching web", said("query")),
+        "Agent" | "Task" => ("Ran agent", "Running agent", said("description")),
+        "Skill" => ("Ran skill", "Running skill", said("skill")),
+        "ExitPlanMode" => ("Proposed plan", "Proposing plan", String::new()),
+        "AskUserQuestion" => (
+            "Asked",
+            "Asking",
+            input["questions"][0]["header"]
                 .as_str()
                 .unwrap_or_default()
                 .to_owned(),
         ),
-        other => (other.to_owned(), String::new()),
-    }
+        // A connector's tool by its own name: "mcp__server__tool" is "tool".
+        name => (
+            "Used",
+            "Using",
+            name.rsplit("__").next().unwrap_or(name).to_owned(),
+        ),
+    };
+    let verb = if done { past } else { present };
+    (verb.to_owned(), object)
 }
 
 /// The line a group of steps folds into, as Desktop words it: one command says
 /// what it did ("Ran saludo.py"); otherwise each file with what was done to it and how many
-/// commands ran: "Read and edited saludo.py, ran a command".
+/// commands ran: "Read and edited saludo.py, ran a command". While a step runs, the group
+/// reads as that step: "Listing files in folder".
 pub fn group_summary(steps: &[Step]) -> String {
-    let running = steps.iter().any(|s| s.result.is_none());
+    if let Some(step) = steps.iter().rev().find(|s| s.running) {
+        return match step.name {
+            "Bash" | "Agent" | "Task" => progressive(
+                step.input["description"]
+                    .as_str()
+                    .unwrap_or("Run a command"),
+            ),
+            _ => {
+                let (verb, object) = step_label(step, false);
+                format!("{verb} {object}").trim_end().to_owned()
+            }
+        };
+    }
     if let [step] = steps {
-        if step.name == "Bash" {
+        if matches!(step.name, "Bash" | "Agent" | "Task") {
             let said = step.input["description"]
                 .as_str()
                 .map(str::to_owned)
                 .unwrap_or_else(|| "Run a command".into());
-            return if running {
-                progressive(&said)
-            } else if step.result.is_some_and(|r| r.stopped) {
+            return if step.result.is_some_and(|r| r.stopped || r.is_error) {
                 said
             } else {
                 past_tense(&said)
@@ -1170,11 +1524,12 @@ pub fn group_summary(steps: &[Step]) -> String {
         }
     }
     let mut files: Vec<(String, Vec<String>)> = vec![];
-    let (mut commands, mut searches, mut others) = (0, 0, vec![]);
+    let (mut commands, mut searches, mut agents, mut others) = (0, 0, 0, 0);
     for step in steps {
         match step.name {
             "Bash" => commands += 1,
             "Grep" | "Glob" => searches += 1,
+            "Agent" | "Task" => agents += 1,
             "Read" | "Edit" | "MultiEdit" | "NotebookEdit" | "Write" => {
                 let (verb, file) = step_label(step, true);
                 let verb = verb.to_lowercase();
@@ -1184,7 +1539,7 @@ pub fn group_summary(steps: &[Step]) -> String {
                     None => files.push((file, vec![verb])),
                 }
             }
-            other => others.push(other.to_owned()),
+            _ => others += 1,
         }
     }
     let mut clauses: Vec<String> = files
@@ -1194,12 +1549,16 @@ pub fn group_summary(steps: &[Step]) -> String {
     if searches > 0 {
         clauses.push("searched the code".into());
     }
-    match commands {
-        0 => {}
-        1 => clauses.push("ran a command".into()),
-        n => clauses.push(format!("ran {n} commands")),
-    }
-    clauses.extend(others);
+    // "ran a command", "ran 2 commands"; "ran an agent" and
+    // "used a tool" the same way.
+    let count = |n: usize, verb: &str, one: &str, thing: &str| match n {
+        0 => None,
+        1 => Some(format!("{verb} {one} {thing}")),
+        n => Some(format!("{verb} {n} {thing}s")),
+    };
+    clauses.extend(count(commands, "ran", "a", "command"));
+    clauses.extend(count(agents, "ran", "an", "agent"));
+    clauses.extend(count(others, "used", "a", "tool"));
     let mut summary = clauses.join(", ");
     if let Some(first) = summary.get_mut(0..1) {
         first.make_ascii_uppercase();
@@ -1251,7 +1610,7 @@ pub fn line_diff(before: &str, after: &str) -> Vec<limn::CodeDiffLine> {
 fn step_group(steps: &[Step], ui: &Ui, column: f32, palette: ComponentPalette) -> Element {
     let key = format!("steps:{}", steps[0].call);
     let open = ui.expanded.contains(&key);
-    let running = steps.iter().any(|s| s.result.is_none());
+    let running = steps.iter().any(|s| s.running);
     let stopped = !running
         && steps
             .last()
@@ -1264,24 +1623,44 @@ fn step_group(steps: &[Step], ui: &Ui, column: f32, palette: ComponentPalette) -
     let mut head = vec![if running {
         TextShimmer::new(format!("{key}:shimmer"), summary, palette)
             .render()
+            .font_size(CHAT)
             .centered_y()
     } else {
         muted(summary).font_size(CHAT).centered_y()
     }];
+    // A command left running in the background offers its output.
+    if steps
+        .iter()
+        .any(|s| s.running && s.name == "Bash" && s.result.is_some())
+    {
+        head.push(text("View live output").font_size(CHAT).centered_y());
+    }
     if stopped {
         head.push(muted("Stopped").font_size(CHAT).centered_y());
+    } else if !running
+        && steps
+            .last()
+            .is_some_and(|s| s.result.is_some_and(|r| r.is_error))
+    {
+        // Desktop marks a run whose last step failed.
+        head.push(
+            text("Failed")
+                .font_size(CHAT)
+                .foreground(look::failed())
+                .centered_y(),
+        );
     }
     if added + removed > 0 {
         head.push(
             text(format!("+{added}"))
                 .font_size(CHAT)
-                .foreground(look::ADDED)
+                .foreground(look::added())
                 .centered_y(),
         );
         head.push(
             text(format!("−{removed}"))
                 .font_size(CHAT)
-                .foreground(look::REMOVED)
+                .foreground(look::removed())
                 .centered_y(),
         );
     }
@@ -1293,13 +1672,13 @@ fn step_group(steps: &[Step], ui: &Ui, column: f32, palette: ComponentPalette) -
     let mut rows = vec![];
     for (i, step) in steps.iter().enumerate() {
         if i > 0 {
-            rows.push(hline(column, look::CARD_BORDER));
+            rows.push(hline(column, look::card_border()));
         }
         rows.push(step_row(step, ui, column, palette));
     }
     let card = Element::panel(Element::column(rows))
         .background(palette.surface)
-        .border(look::CARD_BORDER, 1.0)
+        .border(look::card_border(), 1.0)
         .radius(8.0)
         .size(Some(column), None);
     Element::column(vec![head, card]).gap(8.0)
@@ -1309,15 +1688,17 @@ fn step_group(steps: &[Step], ui: &Ui, column: f32, palette: ComponentPalette) -
 fn caret(open: bool) -> Element {
     text(if open { "▾" } else { "▸" })
         .font_size(10.0)
-        .foreground(look::MUTED)
+        .foreground(look::muted())
         .centered_y()
 }
 
 /// One step in its group's card: "Read saludo.py", "Edited saludo.py +1 −1",
-/// "Ran saludo.py to verify output", each opening what it did.
+/// "Ran saludo.py to verify output", each opening what it did. A helper agent's row has no
+/// caret: it opens the agent's own pane.
 fn step_row(step: &Step, ui: &Ui, column: f32, palette: ComponentPalette) -> Element {
-    let open = ui.expanded.iter().any(|c| c == step.call);
-    let done = step.result.is_some_and(|r| !r.stopped);
+    let agent = matches!(step.name, "Agent" | "Task");
+    let open = !agent && ui.expanded.iter().any(|c| c == step.call);
+    let done = !step.running && step.result.is_some_and(|r| !r.stopped);
     let (verb, object) = step_label(step, done);
     let mut line = vec![hgap(10.0), muted(verb).centered_y()];
     if !object.is_empty() {
@@ -1327,12 +1708,12 @@ fn step_row(step: &Step, ui: &Ui, column: f32, palette: ComponentPalette) -> Ele
         if r.added + r.removed > 0 {
             line.push(
                 text(format!("+{}", r.added))
-                    .foreground(look::ADDED)
+                    .foreground(look::added())
                     .centered_y(),
             );
             line.push(
                 text(format!("−{}", r.removed))
-                    .foreground(look::REMOVED)
+                    .foreground(look::removed())
                     .centered_y(),
             );
         }
@@ -1340,19 +1721,34 @@ fn step_row(step: &Step, ui: &Ui, column: f32, palette: ComponentPalette) -> Ele
             line.push(muted("Stopped").centered_y());
         }
     }
-    line.push(caret(open));
+    if !agent {
+        line.push(caret(open));
+    }
     let row_palette = ComponentPalette {
-        hover: look::ROW_HOVER,
+        hover: look::row_hover(),
         ..palette
     };
+    let id = if agent {
+        format!("agent:{}", step.call)
+    } else {
+        format!("tool:{}", step.call)
+    };
     let row = row_palette.interactive_surface(Element::clickable(
-        format!("tool:{}", step.call),
+        id,
         Element::row(line).gap(6.0).size(Some(column), Some(31.0)),
     ));
     if !open {
         return row;
     }
-    let inner = column - 24.0;
+    Element::column(vec![
+        row,
+        pad(step_body(step, column - 24.0, palette), 12.0, 4.0),
+    ])
+}
+
+/// What a step did, as its row unfolds it: a command and its output, a file's diff, or the
+/// tool's output.
+fn step_body(step: &Step, inner: f32, palette: ComponentPalette) -> Element {
     let mut body = vec![];
     let result = step.result;
     match step.name {
@@ -1362,13 +1758,13 @@ fn step_row(step: &Step, ui: &Ui, column: f32, palette: ComponentPalette) -> Ele
             body.push(
                 Element::panel(
                     Element::row(vec![
-                        mono("$").foreground(look::MUTED),
+                        mono("$").foreground(look::muted()),
                         mono(command).size(Some(inner - 40.0), None),
                     ])
                     .gap(8.0),
                 )
                 .background(palette.surface)
-                .border(look::CARD_BORDER, 1.0)
+                .border(look::card_border(), 1.0)
                 .radius(6.0)
                 .padding(10.0)
                 .size(Some(inner), None),
@@ -1376,7 +1772,7 @@ fn step_row(step: &Step, ui: &Ui, column: f32, palette: ComponentPalette) -> Ele
             if let Some(r) = result.filter(|r| !r.output.trim().is_empty()) {
                 body.push(
                     mono(r.output.trim_end())
-                        .foreground(look::MUTED)
+                        .foreground(look::muted())
                         .size(Some(inner), None),
                 );
             }
@@ -1385,28 +1781,13 @@ fn step_row(step: &Step, ui: &Ui, column: f32, palette: ComponentPalette) -> Ele
             let files = result.map(|r| r.files.as_slice()).unwrap_or_default();
             for file in files {
                 body.push(muted(file.path.display().to_string()).font_size(SMALL));
-                let lines = line_diff(
+                body.push(diff_box(
+                    &format!("diff:{}:{}", step.call, file.path.display()),
                     file.before.as_deref().unwrap_or_default(),
                     file.after.as_deref().unwrap_or_default(),
-                );
-                let rows = lines.len().max(1) as f32;
-                let words = word_ranges(&lines);
-                body.push(
-                    Element::panel(
-                        limn::CodeDiff::new(
-                            format!("diff:{}:{}", step.call, file.path.display()),
-                            lines,
-                        )
-                        .word_ranges(words)
-                        .palette(palette)
-                        .font_size(12.0)
-                        .height((rows * 19.0 + 16.0).min(480.0))
-                        .render(),
-                    )
-                    .border(look::CARD_BORDER, 1.0)
-                    .radius(6.0)
-                    .size(Some(inner), None),
-                );
+                    inner,
+                    palette,
+                ));
             }
             if files.is_empty() {
                 if let Some(r) = result.filter(|r| !r.output.trim().is_empty()) {
@@ -1419,19 +1800,89 @@ fn step_row(step: &Step, ui: &Ui, column: f32, palette: ComponentPalette) -> Ele
             }
         }
     }
-    Element::column(vec![row, pad(Element::column(body).gap(8.0), 12.0, 4.0)])
+    Element::column(body).gap(8.0)
+}
+
+/// Two versions of a file as a bordered diff, up to 480 px high.
+fn diff_box(id: &str, before: &str, after: &str, width: f32, palette: ComponentPalette) -> Element {
+    let lines = line_diff(before, after);
+    let rows = lines.len().max(1) as f32;
+    let words = word_ranges(&lines);
+    Element::panel(
+        limn::CodeDiff::new(id, lines)
+            .word_ranges(words)
+            .palette(palette)
+            .font_size(12.0)
+            .height((rows * 19.0 + 16.0).min(480.0))
+            .render(),
+    )
+    .border(look::card_border(), 1.0)
+    .radius(6.0)
+    .size(Some(width), None)
+}
+
+/// A step Desktop sets on its own line: a proposed plan as "Proposed plan ▸",
+/// which opens the plan, and answered questions as a card of
+/// each question and its answer. Until they answer, their cards
+/// are the permission's.
+fn lone_step(step: &Step, column: f32, palette: ComponentPalette) -> Option<Element> {
+    let result = step.result.filter(|r| !r.stopped && !r.is_error)?;
+    if step.name == "ExitPlanMode" {
+        let line = Element::row(vec![
+            muted("Proposed plan").font_size(CHAT).centered_y(),
+            caret(false),
+        ])
+        .gap(8.0)
+        .size(None, Some(24.0));
+        return Some(Element::clickable(format!("plan:{}", step.call), line));
+    }
+    let questions = step.input["questions"].as_array()?;
+    let rows: Vec<Element> = questions
+        .iter()
+        .enumerate()
+        .flat_map(|(i, q)| {
+            let question = q["question"].as_str().unwrap_or_default();
+            let answer = answered(&result.output, question).unwrap_or_else(|| "Skipped".into());
+            let row = Element::column(vec![
+                text(question.to_owned()).font_size(BODY),
+                muted(answer).font_size(BODY),
+            ])
+            .gap(4.0)
+            .padding(16.0);
+            let line = (i > 0).then(|| hline(column.min(480.0), look::card_border()));
+            line.into_iter().chain([row])
+        })
+        .collect();
+    Some(
+        Element::panel(Element::column(rows))
+            .background(palette.surface)
+            .border(look::card_border(), 1.0)
+            .radius(8.0)
+            .size(Some(column.min(480.0)), None),
+    )
+}
+
+/// The answer the agent was given to `question`, as the CLI words it:
+/// `The user answered: "Pick red or blue?"="blue". …` ([F:ask]).
+/// shortcut: an answer holding a quote is cut there; parse the tool's structured result when
+/// one reaches the UI.
+pub fn answered(output: &str, question: &str) -> Option<String> {
+    let start = output.find(&format!("\"{question}\"=\""))? + question.len() + 4;
+    let rest = &output[start..];
+    Some(rest[..rest.find('"')?].to_owned())
 }
 
 fn mono(s: impl Into<String>) -> Element {
     Element::text(s.into())
         .font_family(FontFamily::Monospace)
         .font_size(SMALL)
-        .foreground(look::PALETTE.text)
+        .foreground(look::palette().text)
 }
 
 /// The inline approval card, as Desktop 3.6556.2 draws it: a 480 px card with what
 /// Claude wants to run, Deny, and the way the person allowed last as its main button with
-/// the other in its menu. Once answered it goes, leaving the tool's row.
+/// the other in its menu. An edit names its file and shows its diff
+///. Once answered it goes, leaving the tool's row.
 fn permission(item: &Item, ui: &Ui, column: f32, palette: ComponentPalette) -> Element {
     let Item::Permission {
         id,
@@ -1455,51 +1906,225 @@ fn permission(item: &Item, ui: &Ui, column: f32, palette: ComponentPalette) -> E
     let command = input["command"].as_str();
     // Bash says what it runs in its own words: "Run saludo.py".
     let what = input["description"].as_str();
+    let path = input["file_path"]
+        .as_str()
+        .or(input["notebook_path"].as_str());
+    let file = file_of(input);
     let heading = match (tool.as_str(), what) {
         ("Bash", Some(what)) => format!("Allow Claude to run {what}?"),
+        ("Edit" | "MultiEdit" | "NotebookEdit" | "Write", _) if path.is_some() => {
+            format!("Allow Claude to edit {file}?")
+        }
         _ => format!("Allow Claude to use {tool}?"),
     };
     let mut rows = vec![wrapped(text(heading).font_family(FontFamily::SansBold))];
     if let Some(what) = what {
         rows.push(wrapped(muted(what.to_owned())));
+    } else if path.is_some() {
+        rows.push(wrapped(muted(file)));
     }
     if let Some(title) = title {
         rows.push(wrapped(muted(title.clone())));
     }
-    let shown = command
-        .or(input["file_path"].as_str())
-        .map(str::to_owned)
-        .unwrap_or_else(|| {
-            serde_json::to_string(input)
-                .unwrap_or_default()
-                .chars()
-                .take(200)
-                .collect()
-        });
+    let shown = command.or(path).map(str::to_owned).unwrap_or_else(|| {
+        serde_json::to_string(input)
+            .unwrap_or_default()
+            .chars()
+            .take(200)
+            .collect()
+    });
     rows.push(
         Element::panel(
             text(shown)
                 .font_family(FontFamily::Monospace)
                 .font_size(SMALL)
-                .foreground(look::COMMAND_INK)
+                .foreground(look::command_ink())
                 .size(Some(inner - 32.0), None),
         )
-        .background(look::COMMAND_BOX)
+        .background(look::command_box())
         .radius(6.0)
         .padding(14.0),
     );
+    // What the edit changes, before the person allows it.
+    let change = match tool.as_str() {
+        "Edit" => Some((
+            input["old_string"].as_str().unwrap_or_default(),
+            input["new_string"].as_str().unwrap_or_default(),
+        )),
+        "Write" => Some(("", input["content"].as_str().unwrap_or_default())),
+        _ => None,
+    };
+    if let Some((before, after)) = change {
+        rows.push(diff_box(
+            &format!("perm-diff:{id}"),
+            before,
+            after,
+            inner,
+            palette,
+        ));
+    }
     if *interactive {
-        // Questions get their own card (plan Q3.7); until then they are allowed as asked.
         rows.push(Button::new(format!("perm:{id}:once"), "Continue", palette).render());
     } else {
         rows.push(permission_actions(id, !suggestions.is_empty(), ui, palette));
     }
     Element::panel(Element::column(rows).gap(10.0))
         .background(palette.surface)
-        .border(look::CARD_BORDER, 1.0)
+        .border(look::card_border(), 1.0)
         .radius(12.0)
         .padding(16.0)
         .size(Some(width), None)
+}
+
+/// A button with its keys in caps after the label, Desktop's "Revise… Esc" and
+/// "Next Ctrl ⏎": the light fill, or the near-black one when
+/// `primary`.
+fn keyed_button(
+    id: &str,
+    label: &str,
+    keys: &str,
+    primary: bool,
+    enabled: bool,
+    palette: ComponentPalette,
+) -> Element {
+    let (fill, hover, ink) = if primary {
+        (look::palette().text, look::primary_hover(), palette.surface)
+    } else {
+        (look::cancel(), look::tool_hover(), look::palette().text)
+    };
+    let ink = if enabled { ink } else { look::muted() };
+    let mut content = vec![
+        hgap(10.0),
+        text(label).font_size(BODY).foreground(ink).centered_y(),
+    ];
+    if !keys.is_empty() {
+        content.push(
+            limn::Kbd::new(
+                keys,
+                ComponentPalette {
+                    text: ink,
+                    ..palette
+                },
+            )
+            .render()
+            .centered_y(),
+        );
+    }
+    content.push(hgap(10.0));
+    let row = Element::row(content).gap(8.0).size(None, Some(30.0));
+    if !enabled {
+        return row.background(look::cancel()).radius(8.0);
+    }
+    Element::clickable(id, row)
+        .background(fill)
+        .hover_background(hover)
+        .radius(8.0)
+}
+
+/// The plan Claude proposed, before the person decides: "Claude
+/// proposed a plan" and "Open plan"; Reject, "Revise…", "Accept", and the main button
+/// accepting into the most trusting mode offered, the other modes in its menu
+///.
+fn plan_card(
+    id: &str,
+    session: Option<&Session>,
+    ui: &Ui,
+    column: f32,
+    palette: ComponentPalette,
+) -> Element {
+    let inner = column - 32.0;
+    let head = Element::row(vec![
+        text("Claude proposed a plan")
+            .font_family(FontFamily::SansBold)
+            .centered_y(),
+        Element::spacer().flex(1.0),
+        limn::Link::new(format!("plan:{id}"), "Open plan", palette)
+            .ink(look::handle())
+            .font_size(BODY)
+            .render()
+            .centered_y(),
+    ])
+    .size(Some(inner), None);
+    let modes = offered_modes(session);
+    let trusting = if modes.iter().any(|m| m == "auto") {
+        ("auto", "Accept and auto mode")
+    } else {
+        ("acceptEdits", "Accept and allow edits")
+    };
+    let menu: Vec<limn::DropdownMenuEntry> = [
+        ("acceptEdits", "Accept and allow edits"),
+        ("auto", "Accept and auto mode"),
+    ]
+    .into_iter()
+    .filter(|(mode, _)| modes.iter().any(|m| m == mode))
+    .map(|(mode, label)| limn::DropdownMenuItem::new(format!("planok:{id}:{mode}"), label).into())
+    .collect();
+    let accept = limn::SplitButton::new(
+        format!("planok:{id}:{}", trusting.0),
+        trusting.1,
+        format!("perm:{id}:menu"),
+        palette,
+    )
+    .keys(&["Ctrl", "⏎"])
+    .menu(
+        menu,
+        ui.perm_menu.as_deref() == Some(id),
+        format!("perm:{id}:menu-dismiss"),
+    )
+    .render();
+    let mut rows = vec![
+        head,
+        Element::row(vec![
+            keyed_button(
+                &format!("perm:{id}:deny"),
+                "Reject",
+                "",
+                false,
+                true,
+                palette,
+            ),
+            keyed_button(
+                &format!("revise:{id}"),
+                "Revise…",
+                "Esc",
+                false,
+                true,
+                palette,
+            ),
+            hgap(12.0),
+            keyed_button(
+                &format!("planok:{id}:default"),
+                "Accept",
+                "Ctrl+Shift+⏎",
+                false,
+                true,
+                palette,
+            ),
+            accept.centered_y(),
+        ])
+        .gap(8.0)
+        // In a narrow column the buttons go on a second line.
+        .wrap()
+        .size(Some(inner), None),
+    ];
+    if ui.revising.as_deref() == Some(id) {
+        rows.push(
+            limn::TextField::new(
+                format!("revise-text:{id}"),
+                ui.revision.as_str(),
+                "What should change? (optional)",
+                palette,
+            )
+            .width(inner)
+            .render(),
+        );
+    }
+    Element::panel(Element::column(rows).gap(14.0))
+        .background(palette.surface)
+        .border(look::card_border(), 1.0)
+        .radius(12.0)
+        .padding(16.0)
+        .size(Some(column), None)
 }
 
 /// Deny, then the last way of allowing as the main button with its keys, and the other way
@@ -1538,7 +2163,7 @@ fn permission_actions(id: &str, can_always: bool, ui: &Ui, palette: ComponentPal
         format!("perm:{id}:deny"),
         "Deny",
         ComponentPalette {
-            raised: look::CANCEL,
+            raised: look::cancel(),
             ..palette
         },
     )
@@ -1572,6 +2197,16 @@ fn composer(
     } else {
         send_button(!ui.prompt.trim().is_empty())
     };
+    // While a plan waits, its card is the way to answer: Desktop hides the box and keeps
+    // the footer under it.
+    let plan_waiting = session.is_some_and(|s| {
+        s.items.iter().any(
+            |i| matches!(i, Item::Permission { tool, decided: None, .. } if tool == "ExitPlanMode"),
+        )
+    });
+    if plan_waiting {
+        return composer_footer(store, session, ui, palette).size(Some(column), None);
+    }
     let placeholder = if session.is_some() {
         "Type / for commands"
     } else {
@@ -1582,15 +2217,15 @@ fn composer(
         ui.prompt.clone(),
         placeholder,
         column,
-        look::COMPOSER_PALETTE,
+        look::composer_palette(),
     )
     .enter_submits(true)
     .auto_grow(28.0, 184.0)
     .editor_font_size(15.0)
     .pill_controls(Element::spacer().size(Some(0.0), None), trailing)
     .inline_controls(true)
-    .border_color(look::COMPOSER_BORDER)
-    .shadow_color(look::COMPOSER_SHADOW)
+    .border_color(look::composer_border())
+    .shadow_color(look::composer_shadow())
     .card_radius(14.0)
     .context(composer_footer(store, session, ui, palette))
     .render();
@@ -1601,11 +2236,11 @@ fn composer(
     let local = Element::row(vec![
         hgap(8.0),
         chip_icon(icons::of(icons::LAPTOP)),
-        chip_text("Local", look::PALETTE.text),
+        chip_text("Local", look::palette().text),
         hgap(8.0),
     ])
     .gap(6.0)
-    .background(look::CANCEL)
+    .background(look::cancel())
     .radius(6.0)
     .size(None, Some(24.0));
     Element::column(vec![
@@ -1619,12 +2254,12 @@ fn composer(
 /// its menu is open.
 fn composer_button(id: &str, icon: limn::Icon, label: &str, open: bool, side: f32) -> Element {
     let palette = ComponentPalette {
-        hover: look::COMPOSER_HOVER,
-        selected: look::COMPOSER_OPEN,
-        ..look::PALETTE
+        hover: look::composer_hover(),
+        selected: look::composer_open(),
+        ..look::palette()
     };
     let glyph = Element::icon(icon)
-        .foreground(look::PALETTE.text)
+        .foreground(look::palette().text)
         .size(Some(16.0), Some(16.0))
         .centered();
     let button = palette
@@ -1632,25 +2267,25 @@ fn composer_button(id: &str, icon: limn::Icon, label: &str, open: bool, side: f3
         .radius(8.0)
         .size(Some(side), Some(side));
     let button = if open {
-        button.background(look::COMPOSER_OPEN)
+        button.background(look::composer_open())
     } else {
         button
     };
-    limn::Tooltip::new(button, id, label, look::PALETTE).render()
+    limn::Tooltip::new(button, id, label, look::palette()).render()
 }
 
 /// Send, drawn as Desktop's return arrow; limn has no such icon, so it is the character.
 fn send_button(ready: bool) -> Element {
     let palette = ComponentPalette {
-        hover: look::COMPOSER_HOVER,
-        selected: look::COMPOSER_OPEN,
-        ..look::PALETTE
+        hover: look::composer_hover(),
+        selected: look::composer_open(),
+        ..look::palette()
     };
     // Muted while there is nothing to send, as Desktop's.
     let ink = if ready {
-        look::PALETTE.text
+        look::palette().text
     } else {
-        look::MUTED
+        look::muted()
     };
     let glyph = Element::icon(icons::of(icons::RETURN))
         .foreground(ink)
@@ -1661,7 +2296,7 @@ fn send_button(ready: bool) -> Element {
         .radius(8.0)
         // 28 px: limn centers it in the first line's 28 px, so it sits mid-box.
         .size(Some(28.0), Some(28.0));
-    limn::Tooltip::new(button, SEND, "Send", look::PALETTE).render()
+    limn::Tooltip::new(button, SEND, "Send", look::palette()).render()
 }
 
 /// "+": what can go into the message, as far as quill can: files and folders
@@ -1719,11 +2354,11 @@ fn menu(
         entries,
         open,
         format!("{id}:dismiss"),
-        look::MENU_PALETTE,
+        look::menu_palette(),
     )
     .sizing(sizing)
     // The current row has only Desktop's blue check, no fill (limn #127).
-    .check_ink(look::HANDLE)
+    .check_ink(look::handle())
     .selected_fill(false)
     .placement(placement)
     .render()
@@ -1739,9 +2374,9 @@ fn chip(
     shortcut: Option<&str>,
 ) -> Element {
     let palette = ComponentPalette {
-        hover: look::CHIP_HOVER,
-        selected: look::CHIP_OPEN,
-        ..look::PALETTE
+        hover: look::chip_hover(),
+        selected: look::chip_open(),
+        ..look::palette()
     };
     let mut items = vec![hgap(6.0)];
     items.extend(content);
@@ -1752,13 +2387,13 @@ fn chip(
         .radius(6.0);
     // Above the composer the chips are filled at rest.
     let chip = if open {
-        chip.background(look::CHIP_OPEN)
+        chip.background(look::chip_open())
     } else if id == FOLDER_MENU {
-        chip.background(look::CANCEL)
+        chip.background(look::cancel())
     } else {
         chip
     };
-    let tip = limn::Tooltip::new(chip, id, tooltip, look::PALETTE);
+    let tip = limn::Tooltip::new(chip, id, tooltip, look::palette());
     match shortcut {
         Some(keys) => tip.shortcut(keys),
         None => tip,
@@ -1772,7 +2407,7 @@ fn chip_text(s: impl Into<String>, ink: limn::Color) -> Element {
 
 fn chip_icon(icon: limn::Icon) -> Element {
     Element::icon(icon)
-        .foreground(look::PALETTE.text)
+        .foreground(look::palette().text)
         .size(Some(14.0), Some(14.0))
         .centered_y()
 }
@@ -1831,10 +2466,10 @@ pub fn resets_in(resets_at: u64, now: u64, offset: i64) -> String {
 fn usage_bar(share: f32, width: f32) -> Element {
     let fill = (width * share.clamp(0.0, 1.0)).max(if share > 0.0 { 4.0 } else { 0.0 });
     Element::row(vec![Element::spacer()
-        .background(look::HANDLE)
+        .background(look::handle())
         .radius(2.0)
         .size(Some(fill), Some(4.0))])
-    .background(look::ACTIVE)
+    .background(look::active())
     .radius(2.0)
     .size(Some(width), Some(4.0))
 }
@@ -1866,25 +2501,25 @@ fn usage_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
     let spent = limits.session.map_or(0.0, |w| w.utilization);
     // A 14 px ring, blue over gray, as Desktop's.
     let ring_palette = ComponentPalette {
-        text: look::HANDLE,
+        text: look::handle(),
         // Seen on the hover's #E5E5E5 too; Desktop darkens it there.
-        selected: look::RING_TRACK,
-        ..look::PALETTE
+        selected: look::ring_track(),
+        ..look::palette()
     };
     let ring = limn::Progress::new(spent, ring_palette)
         .ring(14.0)
         .render()
         .centered();
     let palette = ComponentPalette {
-        hover: look::TOOL_HOVER,
-        ..look::PALETTE
+        hover: look::tool_hover(),
+        ..look::palette()
     };
     let anchor = palette
         .interactive_surface(Element::clickable(USAGE_MENU, ring))
         .radius(6.0)
         .size(Some(28.0), Some(28.0));
     let anchor = if open {
-        anchor.background(look::TOOL_HOVER)
+        anchor.background(look::tool_hover())
     } else {
         anchor
     };
@@ -1919,7 +2554,7 @@ fn usage_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
         .map(|p| effort_label(p.trim_start_matches("Claude ").trim()));
     let mut rows = vec![
         usage_row("Context window", tokens.clone(), share, width, true),
-        hline(width, look::DIVIDER),
+        hline(width, look::divider()),
         Element::row(vec![
             muted(match &plan {
                 Some(plan) => format!("Plan usage limits · {plan}"),
@@ -1955,7 +2590,7 @@ fn usage_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
         anchor,
         USAGE_MENU,
         format!("Context {tokens}"),
-        look::PALETTE,
+        look::palette(),
     )
     // At the window's right edge it opens to the left, to stay whole.
     .placement(limn::TooltipPlacement::Left);
@@ -1984,7 +2619,7 @@ fn folder_menu(store: &Store, ui: &Ui) -> Element {
         FOLDER_MENU,
         vec![
             chip_icon(icons::of(icons::FOLDER)),
-            chip_text(folder_name(&ui.cwd), look::PALETTE.text),
+            chip_text(folder_name(&ui.cwd), look::palette().text),
         ],
         open,
         "Folder",
@@ -2097,9 +2732,9 @@ fn mode_menu(session: Option<&Session>, ui: &Ui) -> Element {
     let current = session.map_or(ui.mode.as_str(), |s| s.mode.as_str());
     let label = mode_entry(current).map_or("Manual", |(label, _)| label);
     let ink = if current == "default" {
-        look::MANUAL
+        look::manual()
     } else {
-        look::PALETTE.text
+        look::palette().text
     };
     // Desktop's tooltip says what the mode does.
     let about = mode_entry(current).map_or("", |(_, about)| about);
@@ -2166,7 +2801,7 @@ fn model_menu(
         || ui.model.clone().unwrap_or_else(|| "Default".into()),
         |m| m.name.clone(),
     );
-    let content = vec![chip_text(name, look::PALETTE.text)];
+    let content = vec![chip_text(name, look::palette().text)];
     let anchor = chip(MODEL_MENU, content, open, "Model", Some("Ctrl+Shift+I"));
     // The person's Desktop lists the models bare; effort has its own chip.
     let mut entries = vec![];
@@ -2235,7 +2870,7 @@ fn effort_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
         .unwrap_or_else(|| efforts[0].clone());
     let anchor = chip(
         EFFORT_MENU,
-        vec![chip_text(effort_label(&effort), look::PALETTE.text)],
+        vec![chip_text(effort_label(&effort), look::palette().text)],
         open,
         "Effort",
         None,
@@ -2258,8 +2893,8 @@ fn effort_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
             let (mark, side) = if *e == effort {
                 (
                     Element::spacer()
-                        .background(look::PALETTE.surface)
-                        .border(look::COMPOSER_BORDER, 1.0)
+                        .background(look::palette().surface)
+                        .border(look::composer_border(), 1.0)
                         .radius(10.0)
                         .size(Some(20.0), Some(20.0)),
                     20.0,
@@ -2267,7 +2902,7 @@ fn effort_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
             } else if Some(i) == recommended {
                 (
                     Element::spacer()
-                        .background(look::SLIDER_MARK)
+                        .background(look::slider_mark())
                         .radius(1.0)
                         .size(Some(2.0), Some(9.0)),
                     2.0,
@@ -2275,7 +2910,7 @@ fn effort_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
             } else {
                 (
                     Element::spacer()
-                        .background(look::SLIDER_MARK)
+                        .background(look::slider_mark())
                         .radius(1.5)
                         .size(Some(3.0), Some(3.0)),
                     3.0,
@@ -2299,7 +2934,7 @@ fn effort_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
         })
         .collect();
     let track = Element::row(stops)
-        .background(look::SLIDER_TRACK)
+        .background(look::slider_track())
         .radius(11.5)
         .size(Some(width), Some(23.0));
     let mut rows = vec![
@@ -2309,11 +2944,11 @@ fn effort_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
             Element::spacer().flex(1.0),
             limn::Tooltip::new(
                 Element::icon(icons::of(icons::QUESTION))
-                    .foreground(look::MUTED)
+                    .foreground(look::muted())
                     .size(Some(16.0), Some(16.0)),
                 "effort:help",
                 "How long Claude thinks before it answers",
-                look::PALETTE,
+                look::palette(),
             )
             .render(),
         ])
@@ -2367,8 +3002,8 @@ fn changes_card(
     };
     let head = Element::row(vec![
         text(format!("Changed {count}")),
-        text(format!("+{added}")).foreground(look::ADDED),
-        text(format!("−{removed}")).foreground(look::REMOVED),
+        text(format!("+{added}")).foreground(look::added()),
+        text(format!("−{removed}")).foreground(look::removed()),
     ])
     .gap(6.0);
     let mut card = FramedCard::new(palette).width(column).section(head);
@@ -2376,10 +3011,10 @@ fn changes_card(
         .iter()
         .map(|f| {
             let (mark, color) = match &f.kind {
-                ChangeKind::Added => ("A".to_string(), look::ADDED),
-                ChangeKind::Deleted => ("D".to_string(), look::REMOVED),
-                ChangeKind::Renamed { from } => (format!("R ← {from}"), look::MUTED),
-                ChangeKind::Modified => ("M".to_string(), look::MUTED),
+                ChangeKind::Added => ("A".to_string(), look::added()),
+                ChangeKind::Deleted => ("D".to_string(), look::removed()),
+                ChangeKind::Renamed { from } => (format!("R ← {from}"), look::muted()),
+                ChangeKind::Modified => ("M".to_string(), look::muted()),
             };
             Element::row(vec![
                 text(f.path.clone())
@@ -2461,7 +3096,7 @@ fn diff_pane(
         Element::column(blocks).size(Some(width), None),
     );
     Element::column(vec![header, body.flex(1.0)])
-        .background(look::THEME.background)
+        .background(look::theme().background)
         .size(Some(width), Some(height))
 }
 
@@ -2478,24 +3113,24 @@ fn diff_file_band(file: &FileEffect, width: f32) -> Element {
         hgap(16.0),
         text("▾")
             .font_size(10.0)
-            .foreground(look::MUTED)
+            .foreground(look::muted())
             .centered_y(),
         text("‹›")
             .font_size(SMALL)
-            .foreground(look::MUTED)
+            .foreground(look::muted())
             .centered_y(),
-        text(name).foreground(look::COMMAND_INK).centered_y(),
+        text(name).foreground(look::command_ink()).centered_y(),
         Element::spacer().flex(1.0),
         text(format!("+{}", file.added))
-            .foreground(look::ADDED)
+            .foreground(look::added())
             .centered_y(),
         text(format!("−{}", file.removed))
-            .foreground(look::REMOVED)
+            .foreground(look::removed())
             .centered_y(),
         hgap(16.0),
     ])
     .gap(6.0)
-    .background(look::CANCEL)
+    .background(look::cancel())
     .size(Some(width), Some(32.0))
 }
 
@@ -2550,8 +3185,11 @@ pub fn parse_patch(patch: &str) -> Vec<limn::CodeDiffLine> {
     lines
 }
 
-/// A question the agent asks (AskUserQuestion): one block per question with its options,
-/// and Submit once each has an answer, as Desktop's question card.
+/// A question Claude asks, one at a time: a 480 px card with the
+/// question on a gray band and "‹ 1 of 2 ›" when there are more; each option a row with its
+/// mark (a radio, or a box when several may be chosen), label and muted description, lines
+/// between; "Other" with a field for the person's own words; Skip, and Next or
+/// Submit with Ctrl ⏎. A single choice starts on its first option, as Desktop's did.
 fn question_card(
     id: &str,
     input: &Value,
@@ -2560,55 +3198,164 @@ fn question_card(
     palette: ComponentPalette,
 ) -> Element {
     let questions = input["questions"].as_array().cloned().unwrap_or_default();
-    let mut card = FramedCard::new(palette).width(column);
-    for (q, question) in questions.iter().enumerate() {
-        let chosen = ui.answers.get(&(id.to_owned(), q));
-        let options = question["options"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .enumerate()
-            .map(|(o, option)| {
-                let label = option["label"].as_str().unwrap_or_default();
-                let picked = chosen.is_some_and(|c| c == label);
-                let mut button = Button::new(format!("ask:{id}:{q}:{o}"), label, palette)
-                    .variant(if picked {
-                        ButtonVariant::Default
-                    } else {
-                        ButtonVariant::Outline
-                    })
-                    .button_size(ButtonSize::Small);
-                if let Some(description) = option["description"].as_str() {
-                    button = button.tooltip(description);
-                }
-                button.render()
+    let width = column.min(480.0);
+    let count = questions.len().max(1);
+    let page = ui.question.get(id).copied().unwrap_or(0).min(count - 1);
+    let question = &questions.get(page).cloned().unwrap_or_default();
+    let multi = question["multiSelect"] == true;
+    let chosen = picked(ui, id, page, question);
+    let mut band = vec![
+        text(question["question"].as_str().unwrap_or_default().to_owned())
+            .font_size(BODY)
+            .size(Some(width - 140.0), None)
+            .centered_y(),
+        Element::spacer().flex(1.0),
+    ];
+    if count > 1 {
+        let arrow = |dir: &str, icon: &'static str, label: &str, on: bool| {
+            let glyph = Element::icon(icons::of(icon))
+                .foreground(if on {
+                    look::palette().text
+                } else {
+                    look::muted()
+                })
+                .size(Some(16.0), Some(16.0))
+                .centered();
+            let button = Element::panel(glyph)
+                .size(Some(24.0), Some(24.0))
+                .centered_y();
+            if on {
+                Element::clickable(format!("ask:{id}:{dir}"), button).accessibility_label(label)
+            } else {
+                button
+            }
+        };
+        band.push(arrow("prev", icons::CARET_LEFT, "Back", page > 0));
+        band.push(
+            muted(format!("{} of {count}", page + 1))
+                .font_size(12.0)
+                .centered_y(),
+        );
+        band.push(arrow("next", icons::CARET_RIGHT, "Next", page + 1 < count));
+    }
+    let mut rows = vec![
+        Element::panel(Element::row(band).gap(6.0).size(None, Some(24.0)))
+            .background(look::user_bubble())
+            // Inside the card's rounded edge.
+            .corner_radii(limn::CornerRadii {
+                top_left: 11.0,
+                top_right: 11.0,
+                ..Default::default()
             })
-            .collect();
-        card = card.section(
-            Element::column(vec![
-                muted(question["header"].as_str().unwrap_or_default().to_owned()),
-                text(question["question"].as_str().unwrap_or_default().to_owned()),
-                Element::row(options).gap(6.0).wrap(),
-            ])
-            .gap(6.0),
+            .padding(10.0)
+            .size(Some(width), None),
+    ];
+    let mut options: Vec<(String, String)> = question["options"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|o| {
+            (
+                o["label"].as_str().unwrap_or_default().to_owned(),
+                o["description"].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect();
+    options.push(("Other".into(), String::new()));
+    for (o, (label, description)) in options.iter().enumerate() {
+        if o > 0 {
+            rows.push(hline(width, look::card_border()));
+        }
+        let action = format!("ask:{id}:{page}:{o}");
+        let on = chosen.contains(label);
+        let mark = if multi {
+            limn::Checkbox::new(&action, on, palette)
+                .label(label.clone())
+                // Desktop's chosen marks are its blue.
+                .accent(look::handle())
+                .render()
+        } else {
+            let option =
+                limn::RadioOption::new(&action, label.clone()).description(description.clone());
+            limn::RadioGroup::new(
+                format!("{action}:group"),
+                vec![option],
+                on.then_some(action.as_str()),
+                palette,
+            )
+            .accent(look::handle())
+            .render()
+        };
+        let mut row = vec![mark];
+        if multi && !description.is_empty() {
+            row.push(pad(muted(description.clone()).font_size(BODY), 26.0, 0.0));
+        }
+        if label == "Other" && on {
+            let typed = ui
+                .other
+                .get(&(id.to_owned(), page))
+                .map_or("", String::as_str);
+            row.push(pad(
+                limn::TextField::new(
+                    format!("ask-other:{id}:{page}"),
+                    typed,
+                    "Type your own answer here",
+                    palette,
+                )
+                .width(width - 74.0)
+                .render(),
+                26.0,
+                0.0,
+            ));
+        }
+        rows.push(
+            Element::column(row)
+                .gap(6.0)
+                .padding(16.0)
+                .size(Some(width), None),
         );
     }
-    let ready = (0..questions.len()).all(|q| ui.answers.contains_key(&(id.to_owned(), q)));
-    card.foot(
-        ButtonGroup::new(vec![
-            Button::new(format!("perm:{id}:deny"), "Skip", palette)
-                .variant(ButtonVariant::Ghost)
-                .button_size(ButtonSize::Small)
-                .render(),
-            Button::new(format!("ask:{id}:submit"), "Submit", palette)
-                .button_size(ButtonSize::Small)
-                .enabled(ready)
-                .render(),
+    let last = page + 1 == count;
+    let (go, label) = if last {
+        ("submit", "Submit")
+    } else {
+        ("next", "Next")
+    };
+    rows.push(
+        Element::row(vec![
+            Element::spacer().flex(1.0),
+            keyed_button(&format!("ask:{id}:skip"), "Skip", "", false, true, palette),
+            keyed_button(
+                &format!("ask:{id}:{go}"),
+                label,
+                "Ctrl+⏎",
+                true,
+                !chosen.is_empty(),
+                palette,
+            ),
         ])
-        .align_end()
-        .render(),
-    )
-    .render()
+        .gap(8.0)
+        .padding(16.0)
+        .size(Some(width), None),
+    );
+    Element::panel(Element::column(rows))
+        .background(palette.surface)
+        .border(look::card_border(), 1.0)
+        .radius(12.0)
+        .size(Some(width), None)
+}
+
+/// The labels the person chose for question `page` of `permission`; a single choice not yet
+/// touched is its first option.
+pub fn picked(ui: &Ui, permission: &str, page: usize, question: &Value) -> Vec<String> {
+    match ui.answers.get(&(permission.to_owned(), page)) {
+        Some(labels) => labels.clone(),
+        None if question["multiSelect"] != true => question["options"][0]["label"]
+            .as_str()
+            .map(|l| vec![l.to_owned()])
+            .unwrap_or_default(),
+        None => vec![],
+    }
 }
 
 /// One card of the right panel, as Desktop's: a 280 px white card with a #EBEBEB
@@ -2630,8 +3377,8 @@ fn panel_card(
         content.extend(rows);
     }
     Element::panel(Element::column(content).gap(14.0))
-        .background(look::PALETTE.surface)
-        .border(look::CARD_BORDER, 1.0)
+        .background(look::palette().surface)
+        .border(look::card_border(), 1.0)
         .radius(12.0)
         .padding(18.0)
         .size(Some(width), None)
@@ -2641,7 +3388,7 @@ fn panel_card(
 fn panel_row(icon: limn::Icon, words: Element) -> Element {
     Element::row(vec![
         Element::icon(icon)
-            .foreground(look::PALETTE.text)
+            .foreground(look::palette().text)
             .size(Some(16.0), Some(16.0))
             .centered_y(),
         words.centered_y(),
@@ -2727,15 +3474,15 @@ fn right_panel(
             DIFF_TOGGLE,
             Element::row(vec![
                 Element::icon(icons::of(icons::DIFF))
-                    .foreground(look::PALETTE.text)
+                    .foreground(look::palette().text)
                     .size(Some(16.0), Some(16.0))
                     .centered_y(),
                 text(format!("+{added}"))
-                    .foreground(look::ADDED)
+                    .foreground(look::added())
                     .font_size(SMALL)
                     .centered_y(),
                 text(format!("−{removed}"))
-                    .foreground(look::REMOVED)
+                    .foreground(look::removed())
                     .font_size(SMALL)
                     .centered_y(),
             ])
@@ -2778,10 +3525,10 @@ fn right_panel(
 fn context_bar(share: f32) -> Element {
     let fill = (24.0 * share.clamp(0.0, 1.0)).max(3.0);
     Element::row(vec![Element::spacer()
-        .background(look::HANDLE)
+        .background(look::handle())
         .radius(3.0)
         .size(Some(fill), Some(6.0))])
-    .background(look::ACTIVE)
+    .background(look::active())
     .radius(3.0)
     .size(Some(24.0), Some(6.0))
     .centered_y()
@@ -2822,4 +3569,114 @@ pub fn word_ranges(lines: &[limn::CodeDiffLine]) -> Vec<Vec<std::ops::Range<usiz
         i = (after + added.len()).max(i + 1);
     }
     ranges
+}
+
+/// A helper agent's own pane: "‹" and what it was asked to do,
+/// then its prompt as the person's bubble, the model it ran on, and its steps and words.
+fn agent_pane(
+    store: &Store,
+    session: Option<&Session>,
+    ui: &Ui,
+    width: f32,
+    height: f32,
+    palette: ComponentPalette,
+) -> Element {
+    let found = session.zip(ui.helper.as_deref()).and_then(|(s, call)| {
+        s.items.iter().find_map(|i| match i {
+            Item::Tool { call: c, input, .. } if c == call => Some((s, c.as_str(), input)),
+            _ => None,
+        })
+    });
+    let title = found.map_or("", |(_, _, input)| {
+        input["description"].as_str().unwrap_or_default()
+    });
+    let back = icon_tool(
+        "pane:agent:close",
+        icons::of(icons::CARET_LEFT),
+        "Back",
+        28.0,
+        palette,
+    );
+    let lead = Element::row(vec![back, text(title.to_owned()).centered_y()]).gap(4.0);
+    let header = pane_header(lead, pane_tools(Pane::Agent, ui, palette), width);
+    let Some((session, call, input)) = found else {
+        return Element::column(vec![header]).size(Some(width), Some(height));
+    };
+    let inner = width - 48.0;
+    let mut body = vec![Element::panel(
+        text(input["prompt"].as_str().unwrap_or_default().to_owned())
+            .font_size(BODY)
+            .size(Some(inner - 32.0), None),
+    )
+    .background(look::user_bubble())
+    .radius(14.0)
+    .padding(16.0)];
+    // "Model Haiku 5.5": the model it was given, else the session's.
+    let models = offered_models(store, Some(session));
+    let model = input["model"]
+        .as_str()
+        .and_then(|id| {
+            models
+                .iter()
+                .find(|m| m.id == id || m.name.to_lowercase().contains(id))
+        })
+        .or_else(|| current_model(store, Some(session), ui));
+    body.push(Element::spacer().size(None, Some(16.0)));
+    if let Some(model) = model {
+        body.push(muted(format!("Model {}", model.name)).font_size(SMALL));
+    }
+    let running = session.task_running(call);
+    let helper = session.helpers.get(call).map_or(&[][..], Vec::as_slice);
+    body.extend(entries(session, helper, running, ui, inner, palette).0);
+    if running {
+        body.push(
+            Element::row(vec![
+                Spinner::new("agent:dots", look::spark())
+                    .variant(limn::SpinnerVariant::Dots)
+                    .size(16.0)
+                    .decorative()
+                    .render()
+                    .centered_y(),
+                muted("Working").font_size(BODY).centered_y(),
+            ])
+            .gap(12.0),
+        );
+    }
+    let content = Element::column(body).gap(12.0).padding(24.0);
+    let scroll = Element::scroll(format!("agent:{call}:scroll"), content);
+    Element::column(vec![header, scroll.flex(1.0)]).size(Some(width), Some(height))
+}
+
+/// The plan Claude proposed, in its own pane: "Plan" over the
+/// plan's markdown.
+fn plan_pane(session: Option<&Session>, ui: &Ui, width: f32, height: f32) -> Element {
+    let palette = look::palette();
+    let header = pane_header(
+        text("Plan").centered_y(),
+        pane_tools(Pane::Plan, ui, palette),
+        width,
+    );
+    let plan = session
+        .zip(ui.plan.as_deref())
+        .and_then(|(s, id)| plan_text(&s.items, id))
+        .unwrap_or_default();
+    let inner = width - 48.0;
+    let content = Markdown::new(&plan, palette)
+        .width(inner)
+        .font_size(BODY)
+        .render()
+        .element
+        .padding(24.0);
+    let scroll = Element::scroll("plan:scroll", content);
+    Element::column(vec![header, scroll.flex(1.0)]).size(Some(width), Some(height))
+}
+
+/// The plan a permission or a tool call `id` carries.
+pub fn plan_text(items: &[Item], id: &str) -> Option<String> {
+    items.iter().find_map(|i| match i {
+        Item::Permission { id: p, input, .. } | Item::Tool { call: p, input, .. } if p == id => {
+            input["plan"].as_str().map(str::to_owned)
+        }
+        _ => None,
+    })
 }

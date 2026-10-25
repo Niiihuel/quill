@@ -553,7 +553,7 @@ fn tab_menu_renames_closes_others_and_keys_move_tabs() {
 
 #[test]
 fn steps_are_named_in_desktops_words() {
-    use view::{group_summary, line_diff, past_tense, progressive, Step};
+    use view::{group_summary, line_diff, past_tense, progressive};
     // From Desktop's transcript.
     assert_eq!(
         past_tense("Run saludo.py to verify output"),
@@ -580,23 +580,26 @@ fn steps_are_named_in_desktops_words() {
     let bash =
         serde_json::json!({ "command": "python3 saludo.py", "description": "Run saludo.py" });
     let steps = [
-        Step {
+        view::Step {
             call: "1",
             name: "Read",
             input: &read,
             result: Some(&done),
+            running: false,
         },
-        Step {
+        view::Step {
             call: "2",
             name: "Edit",
             input: &read,
             result: Some(&done),
+            running: false,
         },
-        Step {
+        view::Step {
             call: "3",
             name: "Bash",
             input: &bash,
             result: Some(&done),
+            running: false,
         },
     ];
     assert_eq!(
@@ -627,6 +630,12 @@ fn limits_reset_as_desktop_says_it() {
 }
 
 #[test]
+fn running_clock_reads_as_desktop_writes_it() {
+    assert_eq!(view::elapsed(14), "14s");
+    assert_eq!(view::elapsed(9 * 60 + 4), "9m 4s");
+}
+
+#[test]
 fn every_icon_is_a_complete_svg_on_the_20_grid() {
     let sheet = std::env::var_os("QUILL_ICON_SHEET");
     for (name, svg) in icons::ALL {
@@ -636,4 +645,282 @@ fn every_icon_is_a_complete_svg_on_the_20_grid() {
             std::fs::write(std::path::Path::new(dir).join(format!("{name}.svg")), svg).unwrap();
         }
     }
+}
+
+fn tool(store: &mut Store, call: &str, name: &str, input: serde_json::Value, parent: Option<&str>) {
+    agent(
+        store,
+        AgentEvent::ToolUse {
+            call: call.into(),
+            name: name.into(),
+            input,
+            parent: parent.map(str::to_owned),
+        },
+    );
+}
+
+fn result(store: &mut Store, call: &str, output: &str) {
+    agent(
+        store,
+        AgentEvent::ToolResult {
+            call: call.into(),
+            output: output.into(),
+            is_error: false,
+            files: vec![],
+            command: None,
+        },
+    );
+}
+
+#[test]
+fn the_task_tools_keep_a_list_and_no_steps() {
+    let (mut store, _) = store_with_session();
+    for (call, subject) in [("c1", "Create a.txt"), ("c2", "List the files")] {
+        tool(
+            &mut store,
+            call,
+            "TaskCreate",
+            serde_json::json!({ "subject": subject }),
+            None,
+        );
+    }
+    result(
+        &mut store,
+        "c1",
+        "Task #1 created successfully: Create a.txt",
+    );
+    result(
+        &mut store,
+        "c2",
+        "Task #2 created successfully: List the files",
+    );
+    tool(
+        &mut store,
+        "u1",
+        "TaskUpdate",
+        serde_json::json!({ "taskId": "1", "status": "completed" }),
+        None,
+    );
+    tool(
+        &mut store,
+        "u2",
+        "TaskUpdate",
+        serde_json::json!({ "taskId": "2", "status": "in_progress" }),
+        None,
+    );
+    let list = view::todos(&store.session(1).unwrap().items);
+    let shown: Vec<_> = list
+        .iter()
+        .map(|t| (t.subject.as_str(), t.status.as_str()))
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            ("Create a.txt", "completed"),
+            ("List the files", "in_progress")
+        ]
+    );
+    assert!(view::is_task_tool("TaskUpdate") && !view::is_task_tool("Bash"));
+}
+
+#[test]
+fn a_helper_agent_keeps_its_steps_and_counts_as_running_work() {
+    let (mut store, _) = store_with_session();
+    tool(
+        &mut store,
+        "a1",
+        "Agent",
+        serde_json::json!({ "description": "List files in folder" }),
+        None,
+    );
+    agent(
+        &mut store,
+        AgentEvent::TaskStarted {
+            id: "t1".into(),
+            call: Some("a1".into()),
+            description: "List files in folder".into(),
+        },
+    );
+    tool(
+        &mut store,
+        "b1",
+        "Bash",
+        serde_json::json!({ "command": "ls" }),
+        Some("a1"),
+    );
+    result(&mut store, "b1", "README.md");
+    let session = store.session(1).unwrap();
+    // The helper's step is its own, not the conversation's, and it got its result.
+    assert!(!session
+        .items
+        .iter()
+        .any(|i| matches!(i, Item::Tool { call, .. } if call == "b1")));
+    assert!(matches!(
+        &session.helpers["a1"][..],
+        [Item::Tool {
+            result: Some(_),
+            ..
+        }]
+    ));
+    assert!(session.task_running("a1"));
+    let input = serde_json::json!({ "description": "List files in folder" });
+    let step = view::Step {
+        call: "a1",
+        name: "Agent",
+        input: &input,
+        result: None,
+        running: true,
+    };
+    assert_eq!(view::group_summary(&[step]), "Listing files in folder");
+    agent(
+        &mut store,
+        AgentEvent::TaskEnded {
+            id: "t1".into(),
+            call: Some("a1".into()),
+            summary: Some("Two files.".into()),
+            ok: true,
+        },
+    );
+    assert!(!store.session(1).unwrap().task_running("a1"));
+}
+
+#[test]
+fn a_finished_group_counts_agents_and_other_tools() {
+    let done = ToolResult {
+        output: String::new(),
+        is_error: false,
+        added: 0,
+        removed: 0,
+        files: vec![],
+        stopped: false,
+    };
+    let read = serde_json::json!({ "file_path": "/work/saludo.py" });
+    let agent_input = serde_json::json!({ "description": "List files" });
+    let other = serde_json::json!({});
+    let step = |call, name, input| view::Step {
+        call,
+        name,
+        input,
+        result: Some(&done),
+        running: false,
+    };
+    let steps = [
+        step("1", "Read", &read),
+        step("2", "Agent", &agent_input),
+        step("3", "WebFetch", &other),
+        step("4", "Skill", &other),
+    ];
+    assert_eq!(
+        view::group_summary(&steps),
+        "Read saludo.py, ran an agent, used 2 tools"
+    );
+}
+
+#[test]
+fn the_running_line_writes_time_and_tokens_as_desktop() {
+    assert_eq!(view::elapsed(3_723), "1h 2m 3s");
+    assert_eq!(view::tokens(140), "140 tokens");
+    assert_eq!(view::tokens(30_712), "30.7k tokens");
+}
+
+#[test]
+fn an_answer_is_read_back_from_the_tool_result() {
+    let output = "The user answered: \"Pick red or blue?\"=\"blue\". Read the answers carefully.";
+    assert_eq!(
+        view::answered(output, "Pick red or blue?").as_deref(),
+        Some("blue")
+    );
+    assert_eq!(view::answered(output, "Another?"), None);
+}
+
+#[test]
+fn questions_page_take_several_choices_their_own_words_and_skips() {
+    let (mut store, mut ui) = store_with_session();
+    agent(
+        &mut store,
+        AgentEvent::PermissionRequest {
+            id: "p1".into(),
+            call: None,
+            tool: "AskUserQuestion".into(),
+            input: serde_json::json!({ "questions": [
+                { "question": "Pets?", "multiSelect": true,
+                  "options": [{ "label": "Cat" }, { "label": "Dog" }, { "label": "Fish" }] },
+                { "question": "Color?", "options": [{ "label": "Red" }, { "label": "Blue" }] },
+                { "question": "Size?", "options": [{ "label": "S" }] }] }),
+            title: None,
+            interactive: true,
+            suggestions: vec![],
+        },
+    );
+    let click = |ui: &mut Ui, id: &str| update(&store, ui, &UiAction::Clicked { id: id.into() });
+    click(&mut ui, "ask:p1:0:0");
+    click(&mut ui, "ask:p1:0:2");
+    click(&mut ui, "ask:p1:0:1");
+    click(&mut ui, "ask:p1:0:1");
+    assert!(click(&mut ui, "ask:p1:next").is_empty());
+    // "Other" is the option after the last, and takes what the person wrote.
+    click(&mut ui, "ask:p1:1:2");
+    update(
+        &store,
+        &mut ui,
+        &UiAction::InputChanged {
+            id: "ask-other:p1:1".into(),
+            value: "Green".into(),
+        },
+    );
+    let click = |ui: &mut Ui, id: &str| update(&store, ui, &UiAction::Clicked { id: id.into() });
+    assert!(click(&mut ui, "ask:p1:next").is_empty());
+    let intents = click(&mut ui, "ask:p1:skip");
+    let [Intent::Decide {
+        decision: Decision::Answer(answers),
+        ..
+    }] = intents.as_slice()
+    else {
+        panic!("{intents:?}")
+    };
+    assert_eq!(answers["Pets?"], "Cat, Fish");
+    assert_eq!(answers["Color?"], "Green");
+    assert_eq!(answers["Size?"], "[No preference]");
+}
+
+#[test]
+fn accepting_a_plan_allows_it_and_sets_the_mode() {
+    let (mut store, mut ui) = store_with_session();
+    agent(
+        &mut store,
+        AgentEvent::PermissionRequest {
+            id: "p2".into(),
+            call: Some("x1".into()),
+            tool: "ExitPlanMode".into(),
+            input: serde_json::json!({ "plan": "# Plan" }),
+            title: None,
+            interactive: true,
+            suggestions: vec![],
+        },
+    );
+    assert_eq!(
+        shortcut(&store, &ui, limn::Key::Enter, true, true).as_deref(),
+        Some("planok:p2:default")
+    );
+    let intents = update(
+        &store,
+        &mut ui,
+        &UiAction::Clicked {
+            id: "planok:p2:acceptEdits".into(),
+        },
+    );
+    assert!(matches!(
+        intents.as_slice(),
+        [
+            Intent::Decide {
+                decision: Decision::Allow,
+                ..
+            },
+            Intent::SetMode { mode, .. }
+        ] if mode == "acceptEdits"
+    ));
+    assert_eq!(
+        view::plan_text(&store.session(1).unwrap().items, "p2").as_deref(),
+        Some("# Plan")
+    );
 }

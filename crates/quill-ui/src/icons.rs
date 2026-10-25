@@ -33,7 +33,7 @@ pub const SEARCH: &str = icon!("<circle cx='8.75' cy='8.75' r='5'/><path d='M12.
 pub const FILTER: &str = icon!("<path d='M3.5 6h13M6 10h8M8.5 14h3'/>");
 pub const SHARE: &str = icon!("<path d='M10 3.5v9M6.5 7L10 3.5 13.5 7M5 10.5v4.75A1.25 1.25 0 0 0 6.25 16.5h7.5A1.25 1.25 0 0 0 15 15.25V10.5'/>");
 pub const PIN: &str = icon!("<path d='M8 3.5h4M9 3.5v4L6.5 10.5h7L11 7.5v-4M10 10.5v6'/>");
-pub const STOP: &str = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'><rect x='5.5' y='5.5' width='9' height='9' rx='1.75' fill='currentColor'/></svg>";
+pub const STOP: &str = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'><rect x='2.5' y='2.5' width='15' height='15' rx='3.75' fill='currentColor'/></svg>";
 pub const STOP_CIRCLE: &str = icon!(
     "<circle cx='10' cy='10' r='6.75'/><rect x='7.75' y='7.75' width='4.5' height='4.5' rx='0.75' fill='currentColor' stroke='none'/>"
 );
@@ -114,6 +114,10 @@ pub const QUESTION: &str = icon!(
     "<circle cx='10' cy='10' r='6.75'/><path d='M8.1 8.1a2 2 0 0 1 3.85.65c0 1.35-1.95 1.75-1.95 2.75'/><circle cx='10' cy='13.6' r='0.55' fill='currentColor'/>"
 );
 
+/// A waiting task's dashed ring.
+pub const TASK_PENDING: &str =
+    icon!("<circle cx='10' cy='10' r='6.5' stroke-dasharray='2.2 2.1'/>");
+
 /// The greeting's mark: an eight-ray spark, quill's own.
 pub const SPARK: &str = icon!(
     "<path d='M10 2.5v15M2.5 10h15M4.7 4.7l10.6 10.6M15.3 4.7L4.7 15.3' stroke-width='1.6'/>"
@@ -166,5 +170,6 @@ pub const ALL: &[(&str, &str)] = &[
     ("sidebar", SIDEBAR),
     ("panel_right", PANEL_RIGHT),
     ("question", QUESTION),
+    ("task_pending", TASK_PENDING),
     ("spark", SPARK),
 ];

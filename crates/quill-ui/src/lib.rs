@@ -90,6 +90,37 @@ pub struct Session {
     pub cost: f64,
     /// What is uncommitted in its folder, as the engine last said.
     pub working: Option<Vec<quill_model::FileEffect>>,
+    /// When the turn under way began, for the running line's clock.
+    pub running_since: Option<std::time::Instant>,
+    /// The model is thinking: the running line reads "Thinking" until it writes or acts.
+    pub thinking: bool,
+    /// The running turn's tokens so far, its helpers' included.
+    pub tokens: u64,
+    /// When the turn's latest step began, for the running line's clock on it.
+    pub step_since: Option<std::time::Instant>,
+    /// Work running beside the turns (helper agents, background commands), oldest first.
+    pub tasks: Vec<Task>,
+    /// What each helper agent wrote and did, by the tool call that started it.
+    pub helpers: std::collections::HashMap<String, Vec<Item>>,
+}
+
+/// Work the agent runs beside its turns, as Desktop counts "1 running task".
+#[derive(Clone, Debug, PartialEq)]
+pub struct Task {
+    pub id: String,
+    pub call: Option<String>,
+    pub description: String,
+    pub summary: Option<String>,
+    pub running: bool,
+}
+
+impl Session {
+    /// Whether the tool call `call` started work that still runs.
+    pub fn task_running(&self, call: &str) -> bool {
+        self.tasks
+            .iter()
+            .any(|t| t.running && t.call.as_deref() == Some(call))
+    }
 }
 
 /// What the engine said, as the transcript and sidebar show it.
@@ -130,12 +161,32 @@ impl Store {
                 context_window: 0,
                 working: None,
                 cost: 0.0,
+                running_since: None,
+                thinking: false,
+                tokens: 0,
+                step_since: None,
+                tasks: vec![],
+                helpers: Default::default(),
             }),
             Event::Status { session, status } => {
                 if let Some(s) = self.session_mut(session) {
                     // A process that ended (or a session read back) answers nothing it asked.
                     if matches!(status, SessionStatus::Exited | SessionStatus::Failed(_)) {
                         close_open_permissions(&mut s.items);
+                        for task in &mut s.tasks {
+                            task.running = false;
+                        }
+                    }
+                    let busy = matches!(
+                        status,
+                        SessionStatus::Starting | SessionStatus::Running | SessionStatus::Awaiting
+                    );
+                    if !busy {
+                        s.running_since = None;
+                        s.thinking = false;
+                        s.tokens = 0;
+                    } else if s.running_since.is_none() {
+                        s.running_since = Some(std::time::Instant::now());
                     }
                     s.status = status;
                 }
@@ -225,6 +276,13 @@ impl Store {
 }
 
 fn agent_event(s: &mut Session, event: AgentEvent) {
+    match &event {
+        AgentEvent::Thinking { parent: None } => s.thinking = true,
+        AgentEvent::TextDelta { parent: None, .. }
+        | AgentEvent::Text { parent: None, .. }
+        | AgentEvent::ToolUse { parent: None, .. } => s.thinking = false,
+        _ => {}
+    }
     match event {
         AgentEvent::Ready {
             capabilities, mode, ..
@@ -235,6 +293,43 @@ fn agent_event(s: &mut Session, event: AgentEvent) {
             }
         }
         AgentEvent::ModeChanged { mode } => s.mode = mode,
+        AgentEvent::Tokens { tokens } => s.tokens = tokens,
+        AgentEvent::TaskStarted {
+            id,
+            call,
+            description,
+        } if !s.tasks.iter().any(|t| t.id == id) => s.tasks.push(Task {
+            id,
+            call,
+            description,
+            summary: None,
+            running: true,
+        }),
+        AgentEvent::TaskEnded { id, summary, .. } => {
+            if let Some(task) = s.tasks.iter_mut().find(|t| t.id == id) {
+                task.running = false;
+                task.summary = summary;
+            }
+        }
+        // A helper's own steps and words go with the call that started it, for its pane.
+        AgentEvent::ToolUse {
+            call,
+            name,
+            input,
+            parent: Some(parent),
+        } => s.helpers.entry(parent).or_default().push(Item::Tool {
+            call,
+            name,
+            input,
+            result: None,
+        }),
+        AgentEvent::Text {
+            text,
+            parent: Some(parent),
+        } => s.helpers.entry(parent).or_default().push(Item::Assistant {
+            text,
+            streaming: false,
+        }),
         // Subagents' own text stays out of the main transcript for now.
         AgentEvent::TextDelta { text, parent: None } => match s.items.last_mut() {
             Some(Item::Assistant {
@@ -264,12 +359,15 @@ fn agent_event(s: &mut Session, event: AgentEvent) {
             name,
             input,
             parent: None,
-        } => s.items.push(Item::Tool {
-            call,
-            name,
-            input,
-            result: None,
-        }),
+        } => {
+            s.step_since = Some(std::time::Instant::now());
+            s.items.push(Item::Tool {
+                call,
+                name,
+                input,
+                result: None,
+            });
+        }
         AgentEvent::ToolResult {
             call,
             output,
@@ -284,7 +382,8 @@ fn agent_event(s: &mut Session, event: AgentEvent) {
             let denied = s.items.iter().any(|item| {
                 matches!(item, Item::Permission { call: Some(c), decided: Some("Denied"), .. } if *c == call)
             });
-            for item in s.items.iter_mut().rev() {
+            let helpers = s.helpers.values_mut().flat_map(|items| items.iter_mut());
+            for item in s.items.iter_mut().rev().chain(helpers) {
                 if let Item::Tool {
                     call: c, result, ..
                 } = item
@@ -413,10 +512,21 @@ pub struct Ui {
     pub column_fraction: Option<f32>,
     /// The top pane's share of two stacked panes, once their boundary was dragged.
     pub stack_fraction: Option<f32>,
-    /// Answers picked on question cards, by permission and question index.
-    pub answers: std::collections::HashMap<(String, usize), String>,
+    /// The labels picked on question cards, by permission and question index.
+    pub answers: std::collections::HashMap<(String, usize), Vec<String>>,
     /// The permission whose "Always allow" menu is open.
     pub perm_menu: Option<String>,
+    /// The tool call of the helper agent its pane shows.
+    pub helper: Option<String>,
+    /// The permission or tool call whose plan its pane shows.
+    pub plan: Option<String>,
+    /// The question a question card shows, by permission.
+    pub question: std::collections::HashMap<String, usize>,
+    /// What the person wrote under "Other", by permission and question.
+    pub other: std::collections::HashMap<(String, usize), String>,
+    /// The plan whose "Revise…" field is open, and what it holds.
+    pub revising: Option<String>,
+    pub revision: String,
     pub terminal: TerminalPane,
 }
 
@@ -427,22 +537,40 @@ pub enum Allow {
     Always,
 }
 
-/// The click a key press stands for: Ctrl+Enter allows the waiting permission once and
-/// Ctrl+Shift+Enter always, wherever the focus is, as in Desktop.
+/// The click a key press stands for, wherever the focus is, as in Desktop: on a
+/// permission Ctrl+Enter allows once and Ctrl+Shift+Enter always; on a question Ctrl+Enter
+/// goes on or submits; on a plan Ctrl+Enter accepts into the
+/// most trusting mode offered and Ctrl+Shift+Enter into Manual.
 pub fn shortcut(store: &Store, ui: &Ui, key: limn::Key, ctrl: bool, shift: bool) -> Option<String> {
     if key != limn::Key::Enter || !ctrl {
         return None;
     }
     let session = store.session(ui.selected?)?;
-    let id = session.items.iter().rev().find_map(|item| match item {
+    let (id, tool, input) = session.items.iter().rev().find_map(|item| match item {
         Item::Permission {
             id,
-            interactive: false,
+            tool,
+            input,
             decided: None,
             ..
-        } => Some(id),
+        } => Some((id, tool, input)),
         _ => None,
     })?;
+    if input["questions"].is_array() {
+        return Some(format!("ask:{id}:next"));
+    }
+    if tool == "ExitPlanMode" {
+        let auto = session
+            .capabilities
+            .as_ref()
+            .is_some_and(|c| c.modes.iter().any(|m| m == "auto"));
+        let mode = match (shift, auto) {
+            (true, _) => "default",
+            (false, true) => "auto",
+            (false, false) => "acceptEdits",
+        };
+        return Some(format!("planok:{id}:{mode}"));
+    }
     Some(format!(
         "perm:{id}:{}",
         if shift { "always" } else { "once" }
@@ -454,13 +582,21 @@ pub fn shortcut(store: &Store, ui: &Ui, key: limn::Key, ctrl: bool, shift: bool)
 pub enum Pane {
     Diff,
     Terminal,
+    /// A helper agent's steps and words, the one `Ui::helper` names.
+    Agent,
+    /// The plan `Ui::plan` names.
+    Plan,
 }
 
 impl Pane {
+    pub const ALL: [Pane; 4] = [Pane::Diff, Pane::Terminal, Pane::Agent, Pane::Plan];
+
     pub fn key(self) -> &'static str {
         match self {
             Pane::Diff => "diff",
             Pane::Terminal => "terminal",
+            Pane::Agent => "agent",
+            Pane::Plan => "plan",
         }
     }
 }
@@ -534,6 +670,12 @@ impl Ui {
             stack_fraction: None,
             answers: Default::default(),
             perm_menu: None,
+            helper: None,
+            plan: None,
+            question: Default::default(),
+            other: Default::default(),
+            revising: None,
+            revision: String::new(),
             terminal: TerminalPane::default(),
         }
     }
@@ -553,8 +695,11 @@ impl Ui {
         if self.expanded_pane == Some(pane) {
             self.expanded_pane = None;
         }
-        if pane == Pane::Diff {
-            self.diff = None;
+        match pane {
+            Pane::Diff => self.diff = None,
+            Pane::Agent => self.helper = None,
+            Pane::Plan => self.plan = None,
+            Pane::Terminal => {}
         }
     }
 
@@ -602,6 +747,38 @@ pub fn update(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Intent
                     .push(TerminalRequest::Rename(tab, Some(value.clone())));
             }
             vec![]
+        }
+        UiAction::InputChanged { id, value } if id.starts_with("ask-other:") => {
+            let rest = &id["ask-other:".len()..];
+            if let Some((permission, q)) = rest.rsplit_once(':') {
+                if let Ok(q) = q.parse() {
+                    ui.other.insert((permission.to_owned(), q), value.clone());
+                }
+            }
+            vec![]
+        }
+        UiAction::InputChanged { id, value } if id.starts_with("revise-text:") => {
+            ui.revision = value.clone();
+            vec![]
+        }
+        // "Revise…" sends what should change as the reason the plan is turned down.
+        UiAction::Submitted { id, value } if id.starts_with("revise-text:") => {
+            let permission = &id["revise-text:".len()..];
+            ui.revising = None;
+            ui.revision.clear();
+            let Some(session) = ui.selected else {
+                return vec![];
+            };
+            let message = if value.trim().is_empty() {
+                "The person wants the plan revised.".to_owned()
+            } else {
+                value.trim().to_owned()
+            };
+            vec![Intent::Decide {
+                session,
+                permission: permission.to_owned(),
+                decision: Decision::Deny { message },
+            }]
         }
         UiAction::InputChanged { id, value } if id == view::COMPOSER => {
             ui.prompt = value.clone();
@@ -777,7 +954,7 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         return vec![];
     }
     if let Some(rest) = id.strip_prefix("pane:") {
-        for pane in [Pane::Diff, Pane::Terminal] {
+        for pane in Pane::ALL {
             if rest == format!("{}:close", pane.key()) {
                 ui.close_pane(pane);
             } else if rest == format!("{}:expand", pane.key()) {
@@ -908,6 +1085,40 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         ui.selected = Some(session);
         return vec![Intent::WorkingTree { session }];
     }
+    if let Some(call) = id.strip_prefix("agent:") {
+        ui.helper = Some(call.to_owned());
+        ui.open_pane(Pane::Agent);
+        return vec![];
+    }
+    if let Some(permission) = id.strip_prefix("revise:") {
+        ui.revising = Some(permission.to_owned());
+        ui.revision.clear();
+        return vec![];
+    }
+    // Accepting a plan allows it and puts the session in the mode chosen.
+    if let Some((permission, mode)) = id.strip_prefix("planok:").and_then(|r| r.rsplit_once(':')) {
+        ui.perm_menu = None;
+        let Some(session) = ui.selected else {
+            return vec![];
+        };
+        ui.mode = mode.to_owned();
+        return vec![
+            Intent::Decide {
+                session,
+                permission: permission.to_owned(),
+                decision: Decision::Allow,
+            },
+            Intent::SetMode {
+                session,
+                mode: mode.to_owned(),
+            },
+        ];
+    }
+    if let Some(plan) = id.strip_prefix("plan:") {
+        ui.plan = Some(plan.to_owned());
+        ui.open_pane(Pane::Plan);
+        return vec![];
+    }
     if id.starts_with("steps:") || id.starts_with("panel:") {
         if let Some(at) = ui.expanded.iter().position(|c| c == id) {
             ui.expanded.remove(at);
@@ -1030,7 +1241,10 @@ fn mark_decided(items: &mut [Item], permission: &str, decision: &Decision) {
 #[cfg(test)]
 mod tests;
 
-/// A pick or a submit on a question card: `{permission}:{question}:{option}` or `{permission}:submit`.
+/// A question card's action: `{permission}:{question}:{option}`
+/// picks an option (several when the question allows it, the last being "Other"),
+/// `prev` and `next` turn the page, `skip` answers "[No preference]" and moves on
+///, and `submit` (or `next` on the last page) sends every answer.
 fn answer(store: &Store, ui: &mut Ui, rest: &str) -> Vec<Intent> {
     let Some(session) = ui.selected.and_then(|s| store.session(s)) else {
         return vec![];
@@ -1041,44 +1255,89 @@ fn answer(store: &Store, ui: &mut Ui, rest: &str) -> Vec<Intent> {
             _ => None,
         })
     };
-    if let Some(permission) = rest.strip_suffix(":submit") {
-        let Some(input) = find(permission) else {
-            return vec![];
-        };
-        let answers: serde_json::Map<String, Value> = input["questions"]
-            .as_array()
-            .into_iter()
-            .flatten()
+    let Some((permission, action)) = rest.split_once(':') else {
+        return vec![];
+    };
+    let Some(input) = find(permission) else {
+        return vec![];
+    };
+    let questions = input["questions"].as_array().cloned().unwrap_or_default();
+    let page = ui.question.get(permission).copied().unwrap_or(0);
+    let last = page + 1 >= questions.len();
+    let submit = |ui: &mut Ui| {
+        let answers: serde_json::Map<String, Value> = questions
+            .iter()
             .enumerate()
-            .filter_map(|(q, question)| {
-                let picked = ui.answers.get(&(permission.to_owned(), q))?;
-                Some((
-                    question["question"].as_str()?.to_owned(),
-                    Value::String(picked.clone()),
-                ))
+            .map(|(q, question)| {
+                let other = ui.other.get(&(permission.to_owned(), q));
+                let labels: Vec<String> = view::picked(ui, permission, q, question)
+                    .into_iter()
+                    .map(|l| match other {
+                        Some(typed) if l == "Other" && !typed.trim().is_empty() => typed.clone(),
+                        _ => l,
+                    })
+                    .collect();
+                let said = if labels.is_empty() {
+                    "[No preference]".to_owned()
+                } else {
+                    labels.join(", ")
+                };
+                let asked = question["question"].as_str().unwrap_or_default().to_owned();
+                (asked, Value::String(said))
             })
             .collect();
-        return vec![Intent::Decide {
+        vec![Intent::Decide {
             session: session.id,
             permission: permission.to_owned(),
             decision: Decision::Answer(Value::Object(answers)),
-        }];
-    }
-    let mut parts = rest.rsplitn(3, ':');
-    let (Some(option), Some(question), Some(permission)) =
-        (parts.next(), parts.next(), parts.next())
-    else {
-        return vec![];
+        }]
     };
-    let (Ok(q), Ok(o)) = (question.parse::<usize>(), option.parse::<usize>()) else {
-        return vec![];
-    };
-    if let Some(label) = find(permission).and_then(|input| {
-        input["questions"][q]["options"][o]["label"]
-            .as_str()
-            .map(str::to_owned)
-    }) {
-        ui.answers.insert((permission.to_owned(), q), label);
+    match action {
+        "submit" => return submit(ui),
+        "next" if last => return submit(ui),
+        "skip" => {
+            ui.answers.insert((permission.to_owned(), page), vec![]);
+            if last {
+                return submit(ui);
+            }
+            ui.question.insert(permission.to_owned(), page + 1);
+        }
+        "next" => {
+            ui.question.insert(permission.to_owned(), page + 1);
+        }
+        "prev" => {
+            ui.question
+                .insert(permission.to_owned(), page.saturating_sub(1));
+        }
+        _ => {
+            let Some((q, o)) = action.split_once(':') else {
+                return vec![];
+            };
+            let (Ok(q), Ok(o)) = (q.parse::<usize>(), o.parse::<usize>()) else {
+                return vec![];
+            };
+            let question = &questions.get(q).cloned().unwrap_or_default();
+            let options = question["options"].as_array().map_or(0, Vec::len);
+            let label = if o == options {
+                "Other".to_owned()
+            } else {
+                match question["options"][o]["label"].as_str() {
+                    Some(label) => label.to_owned(),
+                    None => return vec![],
+                }
+            };
+            let mut labels = view::picked(ui, permission, q, question);
+            if question["multiSelect"] == true {
+                if let Some(at) = labels.iter().position(|l| *l == label) {
+                    labels.remove(at);
+                } else {
+                    labels.push(label);
+                }
+            } else {
+                labels = vec![label];
+            }
+            ui.answers.insert((permission.to_owned(), q), labels);
+        }
     }
     vec![]
 }
