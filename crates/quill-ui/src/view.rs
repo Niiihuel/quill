@@ -161,10 +161,12 @@ fn status_dot(status: &SessionStatus) -> Element {
         SessionStatus::Failed(_) => look::REMOVED,
         _ => return Element::spacer().size(Some(6.0), Some(6.0)),
     };
-    Element::spacer()
-        .background(color)
-        .radius(3.0)
-        .size(Some(6.0), Some(6.0))
+    // A running session's dot pulses, as Desktop's does.
+    let running = matches!(status, SessionStatus::Running | SessionStatus::Starting);
+    limn::StatusDot::new(color)
+        .pulse(running)
+        .size(6.0)
+        .render()
         .centered_y()
 }
 
@@ -246,14 +248,7 @@ fn item(item: &Item, ui: &Ui, column: f32, palette: ComponentPalette) -> Element
             decided: None,
             ..
         } if input["questions"].is_array() => question_card(id, input, ui, column, palette),
-        Item::Permission {
-            id,
-            tool,
-            input,
-            interactive,
-            decided,
-            ..
-        } => permission(id, tool, input, *interactive, *decided, column, palette),
+        Item::Permission { .. } => permission(item, ui, column, palette),
         Item::TurnEnd {
             ok: false,
             interrupted: true,
@@ -326,15 +321,20 @@ fn tool(
 }
 
 /// The inline approval card: question, what it runs, Deny / Allow once / Always allow.
-fn permission(
-    id: &str,
-    tool: &str,
-    input: &Value,
-    interactive: bool,
-    decided: Option<&str>,
-    column: f32,
-    palette: ComponentPalette,
-) -> Element {
+fn permission(item: &Item, ui: &Ui, column: f32, palette: ComponentPalette) -> Element {
+    let Item::Permission {
+        id,
+        tool,
+        input,
+        interactive,
+        decided,
+        ..
+    } = item
+    else {
+        return Element::spacer();
+    };
+    let (interactive, decided) = (*interactive, *decided);
+    let menu_open = ui.perm_menu.as_deref() == Some(id.as_str());
     let what = input["command"]
         .as_str()
         .or(input["file_path"].as_str())
@@ -361,18 +361,27 @@ fn permission(
         // Questions get their own card (plan Q3.7); until then they are allowed as asked.
         card = card.foot(Button::new(format!("perm:{id}:once"), "Continue", palette).render());
     } else {
+        // Deny, then "Always allow" with "Allow once" in its menu.
+        let once = limn::DropdownMenuItem::new(format!("perm:{id}:once"), "Allow once")
+            .shortcut("Ctrl+Enter");
         let actions = ButtonGroup::new(vec![
             Button::new(format!("perm:{id}:deny"), "Deny", palette)
                 .variant(ButtonVariant::Ghost)
                 .button_size(ButtonSize::Small)
                 .render(),
-            Button::new(format!("perm:{id}:once"), "Allow once", palette)
-                .variant(ButtonVariant::Outline)
-                .button_size(ButtonSize::Small)
-                .render(),
-            Button::new(format!("perm:{id}:always"), "Always allow", palette)
-                .button_size(ButtonSize::Small)
-                .render(),
+            limn::SplitButton::new(
+                format!("perm:{id}:always"),
+                "Always allow",
+                format!("perm:{id}:menu"),
+                palette,
+            )
+            .keys(&["Ctrl", "Shift", "⏎"])
+            .menu(
+                vec![once.into()],
+                menu_open,
+                format!("perm:{id}:menu-dismiss"),
+            )
+            .render(),
         ])
         .align_end()
         .render();
@@ -538,20 +547,16 @@ fn diff_panel(files: &[FileEffect], width: f32, height: f32, palette: ComponentP
     let mut blocks = vec![];
     for (index, file) in files.iter().enumerate() {
         blocks.push(
-            Element::row(vec![
-                text(file.path.clone())
-                    .font_family(FontFamily::Monospace)
-                    .flex(1.0),
-                text(format!("+{}", file.added)).foreground(look::ADDED),
-                text(format!("−{}", file.removed)).foreground(look::REMOVED),
-            ])
-            .gap(6.0)
-            .padding(8.0),
+            limn::DiffFileHeader::new(format!("diff:file:{index}"), file.path.clone(), palette)
+                .stat(file.added as usize, file.removed as usize)
+                .render(),
         );
         let lines = parse_patch(&file.patch);
         let rows = lines.len().max(1) as f32;
+        let words = word_ranges(&lines);
         blocks.push(
             limn::CodeDiff::new(format!("diff:{index}"), lines)
+                .word_ranges(words)
                 .palette(palette)
                 .font_size(12.0)
                 .height((rows * 18.0 + 8.0).min(600.0))
@@ -602,7 +607,8 @@ pub fn parse_patch(patch: &str) -> Vec<limn::CodeDiffLine> {
         let (old_line, new_line) = match kind {
             CodeDiffLineKind::Added => (None, Some(new)),
             CodeDiffLineKind::Removed => (Some(old), None),
-            CodeDiffLineKind::Context => (Some(old), Some(new)),
+            // The parser makes no folded rows; they are the panel's own (plan Q5.5).
+            CodeDiffLineKind::Context | CodeDiffLineKind::Folded => (Some(old), Some(new)),
         };
         if old_line.is_some() {
             old += 1;
@@ -753,4 +759,41 @@ fn right_panel(session: &Session, width: f32, height: f32, palette: ComponentPal
     .gap(8.0)
     .padding(8.0)
     .size(Some(width), Some(height))
+}
+
+/// What changed inside each rewritten line, for the word highlights of the diff:
+/// each run of removed lines is paired with the added run after it, line by line, and the
+/// characters between their common start and common end are marked.
+pub fn word_ranges(lines: &[limn::CodeDiffLine]) -> Vec<Vec<std::ops::Range<usize>>> {
+    use limn::CodeDiffLineKind::{Added, Removed};
+    let mut ranges = vec![Vec::new(); lines.len()];
+    let mut i = 0;
+    while i < lines.len() {
+        let removed: Vec<usize> = (i..lines.len())
+            .take_while(|&j| lines[j].kind == Removed)
+            .collect();
+        let after = i + removed.len();
+        let added: Vec<usize> = (after..lines.len())
+            .take_while(|&j| lines[j].kind == Added)
+            .collect();
+        for (&r, &a) in removed.iter().zip(&added) {
+            let old: Vec<char> = lines[r].text.chars().collect();
+            let new: Vec<char> = lines[a].text.chars().collect();
+            let start = old.iter().zip(&new).take_while(|(x, y)| x == y).count();
+            let end = old[start..]
+                .iter()
+                .rev()
+                .zip(new[start..].iter().rev())
+                .take_while(|(x, y)| x == y)
+                .count();
+            if start + end < old.len() {
+                ranges[r].push(start..old.len() - end);
+            }
+            if start + end < new.len() {
+                ranges[a].push(start..new.len() - end);
+            }
+        }
+        i = (after + added.len()).max(i + 1);
+    }
+    ranges
 }

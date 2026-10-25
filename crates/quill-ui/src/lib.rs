@@ -328,6 +328,8 @@ pub struct Ui {
     pub diff: Option<(SessionId, RequestId)>,
     /// Answers picked on question cards, by permission and question index.
     pub answers: std::collections::HashMap<(String, usize), String>,
+    /// The permission whose "Always allow" menu is open.
+    pub perm_menu: Option<String>,
 }
 
 impl Ui {
@@ -344,6 +346,7 @@ impl Ui {
             waiting: None,
             diff: None,
             answers: Default::default(),
+            perm_menu: None,
         }
     }
 
@@ -481,6 +484,16 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         return vec![];
     }
     if let Some(rest) = id.strip_prefix("perm:") {
+        if let Some(permission) = rest.strip_suffix(":menu") {
+            ui.perm_menu =
+                (ui.perm_menu.as_deref() != Some(permission)).then(|| permission.to_owned());
+            return vec![];
+        }
+        if rest.ends_with(":menu-dismiss") {
+            ui.perm_menu = None;
+            return vec![];
+        }
+        ui.perm_menu = None;
         let Some((permission, choice)) = rest.rsplit_once(':') else {
             return vec![];
         };

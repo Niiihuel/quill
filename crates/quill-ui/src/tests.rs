@@ -170,7 +170,7 @@ fn the_window_lays_out_with_a_permission_and_a_finished_turn() {
     let frame = tree.layout(window);
     for id in [
         "perm:p1:deny",
-        "perm:p1:once",
+        "perm:p1:menu",
         "perm:p1:always",
         view::COMPOSER,
         "session:1",
@@ -226,4 +226,15 @@ fn a_question_is_answered_with_the_picked_option() {
         panic!("{intents:?}")
     };
     assert_eq!(answers["Red or blue?"], "Blue");
+}
+
+#[test]
+fn a_rewritten_line_marks_only_what_changed() {
+    let lines = view::parse_patch("@@ -1,2 +1,2 @@\n-    print(\"Hola \" + nombre)\n+    print(f\"Hola, {nombre}!\")\n context\n");
+    let words = view::word_ranges(&lines);
+    assert_eq!(lines.len(), 3);
+    // Common start "    print(" (10) and common end ")" (1).
+    assert_eq!(words[0], vec![10..26]);
+    assert_eq!(words[1], vec![10..28]);
+    assert!(words[2].is_empty());
 }
