@@ -1,0 +1,18 @@
+[package]
+name = "quill-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "quill's engine: one actor per session owning its agent's process."
+publish = false
+
+[dependencies]
+quill-model = { path = "../quill-model" }
+quill-agent = { path = "../quill-agent" }
+quill-agent-claude = { path = "../quill-agent-claude" }
+serde_json.workspace = true
+# Processes, pipes and one actor per session.
+tokio = { version = "1", features = ["rt-multi-thread", "process", "io-util", "sync", "macros", "time"] }
+# Request ids, as the agent receives them for each prompt.
+uuid = { version = "1", features = ["v4"] }

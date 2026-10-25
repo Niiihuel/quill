@@ -10,3 +10,6 @@ description = "quill: a native desktop app for coding-agent CLIs, drawn with lim
 limn.workspace = true
 limn-egui.workspace = true
 eframe.workspace = true
+quill-ui = { path = "../../crates/quill-ui" }
+quill-model = { path = "../../crates/quill-model" }
+quill-engine = { path = "../../crates/quill-engine" }

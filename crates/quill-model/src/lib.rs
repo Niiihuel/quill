@@ -1,0 +1,86 @@
+//! The contract between quill's UI and its engine (spec.md D7): the UI sends [`Intent`]s,
+//! the engine answers with [`Event`]s. Neither side knows the other's crate.
+
+use std::path::PathBuf;
+
+pub use quill_agent::{AgentCapabilities, AgentEvent, Decision, Suggestion, Usage};
+
+/// quill's own id of a session.
+pub type SessionId = u64;
+/// quill's own id of one message the person sent; the agent receives it as the prompt's id.
+pub type RequestId = String;
+
+/// What a new session starts with.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NewSession {
+    pub agent: String,
+    pub cwd: PathBuf,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub mode: Option<String>,
+}
+
+/// What the UI asks of the engine.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Intent {
+    NewSession(NewSession),
+    Send {
+        session: SessionId,
+        text: String,
+    },
+    Decide {
+        session: SessionId,
+        permission: String,
+        decision: Decision,
+    },
+    Interrupt {
+        session: SessionId,
+    },
+    SetMode {
+        session: SessionId,
+        mode: String,
+    },
+    SetModel {
+        session: SessionId,
+        model: String,
+    },
+}
+
+/// Where a session's agent process is.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SessionStatus {
+    Starting,
+    Idle,
+    Running,
+    /// Waiting for the person to decide a permission or answer a question.
+    Awaiting,
+    /// The process ended; the next message starts it again, resuming the conversation.
+    Exited,
+    Failed(String),
+}
+
+/// What the engine tells the UI.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Event {
+    SessionCreated {
+        session: SessionId,
+        agent: String,
+        cwd: PathBuf,
+    },
+    Status {
+        session: SessionId,
+        status: SessionStatus,
+    },
+    /// The engine took a message and gave it its id; it is sent to the agent at once.
+    Queued {
+        session: SessionId,
+        request: RequestId,
+        text: String,
+    },
+    /// Something the agent said, tied to the request it answers when known.
+    Agent {
+        session: SessionId,
+        request: Option<RequestId>,
+        event: AgentEvent,
+    },
+}
