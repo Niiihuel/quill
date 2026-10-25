@@ -1882,7 +1882,7 @@ fn mode_menu(session: Option<&Session>, ui: &Ui) -> Element {
         entries,
         open,
         MODE_MENU,
-        300.0,
+        256.0,
         limn::PopoverPlacement::TopStart,
     )
 }
@@ -1937,7 +1937,14 @@ fn model_menu(
             .selected(current.is_some_and(|c| c.id == model.id))
     };
     for (n, model) in latest.iter().enumerate() {
-        entries.push(item(model).shortcut((n + 1).to_string()).into());
+        // The current model shows its check in place of its number.
+        let row = item(model);
+        let row = if current.is_some_and(|c| c.id == model.id) {
+            row
+        } else {
+            row.shortcut((n + 1).to_string())
+        };
+        entries.push(row.into());
     }
     if !efforts.is_empty() {
         entries.push(limn::DropdownMenuEntry::Separator);
