@@ -4,7 +4,8 @@
 //! `out` (quill → CLI), `in` (CLI → quill) or `stderr`.
 //!
 //! Usage: quill-capture <scenario> [--model <m>] [--settings <sources>] [--resume <session-id>] [--fork]
-//! Scenarios: simple, edit-bash, deny, always, ask, plan, steer, interrupt, resume, rewind.
+//! Scenarios: simple, edit-bash, deny, always, ask, plan, steer, interrupt, resume, rewind,
+//! todos, agent, think.
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -42,6 +43,9 @@ struct Scenario {
     policy: Policy,
     mode: &'static str,
     steps: Vec<Step>,
+    /// More CLI flags and environment the scenario needs.
+    flags: &'static [&'static str],
+    env: &'static [(&'static str, &'static str)],
 }
 
 fn scenario(name: &str) -> Option<Scenario> {
@@ -90,12 +94,43 @@ fn scenario(name: &str) -> Option<Scenario> {
             "acceptEdits",
             vec![Prompt("Create rewind.txt containing the line one."), RewindDryRun],
         ),
+        "todos" => (
+            Policy::Allow,
+            "default",
+            vec![Prompt(
+                "Use the task tools to list three steps: create a.txt, create b.txt, list the files. \
+                 Then do each step with the Bash tool, updating the todos as you go.",
+            )],
+        ),
+        "agent" => (
+            Policy::Allow,
+            "default",
+            vec![Prompt(
+                "Use the Agent tool to launch one general-purpose subagent that reads README.md and \
+                 runs `ls`, and reports what it found in one sentence. Then tell me its report.",
+            )],
+        ),
+        "think" => (Policy::Allow, "default", vec![Prompt("Think it through, then answer in one line: is 391 prime?")]),
         _ => return None,
+    };
+    let flags: &[&str] = match name {
+        "think" => &["--effort", "high"],
+        _ => &[],
+    };
+    // The CLI offers its task tools (TaskCreate, TaskUpdate…) only with these set.
+    let env: &[(&str, &str)] = match name {
+        "todos" => &[
+            ("CLAUDE_CODE_ENABLE_TASKS", "true"),
+            ("CLAUDE_CODE_ENABLE_TODO_TOOLS", "true"),
+        ],
+        _ => &[],
     };
     Some(Scenario {
         policy,
         mode,
         steps,
+        flags,
+        env,
     })
 }
 
@@ -242,6 +277,7 @@ fn run(
     .iter()
     .map(|s| s.to_string())
     .collect();
+    args.extend(scenario.flags.iter().map(|s| s.to_string()));
     if let Some(id) = resume {
         args.push(format!("--resume={id}"));
         if fork {
@@ -278,6 +314,7 @@ fn run(
         .env("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING", "true")
         .env("CLAUDE_CODE_EMIT_TOOL_USE_SUMMARIES", "false")
         .env("CLAUDE_CODE_DISABLE_TERMINAL_TITLE", "1")
+        .envs(scenario.env.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

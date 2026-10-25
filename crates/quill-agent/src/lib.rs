@@ -148,6 +148,24 @@ pub enum AgentEvent {
     Thinking {
         parent: Option<String>,
     },
+    /// The tokens the running turn has used so far, its helpers' included.
+    Tokens {
+        tokens: u64,
+    },
+    /// Work the agent runs beside its turn began: a helper agent, a command in the
+    /// background. `call` is the tool call that started it.
+    TaskStarted {
+        id: String,
+        call: Option<String>,
+        description: String,
+    },
+    /// That work ended; `summary` is its own account of what it did.
+    TaskEnded {
+        id: String,
+        call: Option<String>,
+        summary: Option<String>,
+        ok: bool,
+    },
     ToolUse {
         call: String,
         name: String,

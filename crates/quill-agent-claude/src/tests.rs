@@ -327,3 +327,40 @@ fn plan_usage_and_plan_come_from_rate_limits_and_initialize() {
     });
     assert!(plan.is_some());
 }
+
+#[test]
+fn a_helper_agent_is_a_task_tied_to_its_call() {
+    let (_, events, _) = replay("agent");
+    let call = events.iter().find_map(|e| match e {
+        AgentEvent::ToolUse { call, name, .. } if name == "Agent" => Some(call.clone()),
+        _ => None,
+    });
+    assert!(call.is_some());
+    assert!(events.iter().any(|e| matches!(e,
+        AgentEvent::TaskStarted { call: c, description, .. }
+            if *c == call && description == "Read README and list repo")));
+    assert!(events.iter().any(|e| matches!(e,
+        AgentEvent::TaskEnded { call: c, summary: Some(_), ok: true, .. } if *c == call)));
+    // Its own steps come tied to the call that started it.
+    assert!(events.iter().any(|e| matches!(e,
+        AgentEvent::ToolUse { name, parent: Some(p), .. } if name == "Bash" && Some(p) == call.as_ref())));
+}
+
+#[test]
+fn a_turn_counts_its_tokens_as_it_goes() {
+    let (_, events, _) = replay("think");
+    let counts: Vec<u64> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Tokens { tokens } => Some(*tokens),
+            _ => None,
+        })
+        .collect();
+    // It counts while the model thinks, and the thinking's estimate gives way to the answer's size.
+    let output = events.iter().find_map(|e| match e {
+        AgentEvent::TurnFinished { usage, .. } => Some(usage.output_tokens),
+        _ => None,
+    });
+    assert!(counts.len() >= 2 && counts[0] > 0, "{counts:?}");
+    assert_eq!(counts.last().copied(), output);
+}

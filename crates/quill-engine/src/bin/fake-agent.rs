@@ -4,6 +4,8 @@
 //! it did live and the engine attribution can be tested.
 //! Prints each line the real CLI sent, and where quill sent a line in the capture it
 //! waits for one on stdin, so the engine's writes pace the replay as they did live.
+//! `QUILL_FAKE_PACE=<factor>` also keeps the capture's time between lines, scaled, so a
+//! person can watch a turn run.
 
 use std::io::{BufRead, Write};
 
@@ -15,8 +17,18 @@ fn main() {
     let stdin = std::io::stdin();
     let mut input = stdin.lock().lines();
     let mut out = std::io::stdout().lock();
+    let pace: Option<f64> = std::env::var("QUILL_FAKE_PACE")
+        .ok()
+        .and_then(|p| p.parse().ok());
+    let mut last = 0u64;
     for line in text.lines() {
         let entry: serde_json::Value = serde_json::from_str(line).expect("fixture line");
+        let at = entry["t_ms"].as_u64().unwrap_or(last);
+        if let Some(pace) = pace {
+            let wait = at.saturating_sub(last) as f64 * pace;
+            std::thread::sleep(std::time::Duration::from_millis(wait as u64));
+        }
+        last = at;
         match entry["dir"].as_str() {
             Some("out") if input.next().is_none() => return,
             Some("in") => {

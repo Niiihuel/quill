@@ -30,6 +30,11 @@ pub struct Claude {
     calls: HashMap<String, (String, Value)>,
     /// The context the last answer was given, in tokens: what the conversation fills now.
     context: u64,
+    /// The running turn's tokens: its finished answers, the answer being written, and each
+    /// helper task's latest total.
+    turn_tokens: u64,
+    live_tokens: u64,
+    task_tokens: HashMap<String, u64>,
 }
 
 impl Claude {
@@ -41,6 +46,14 @@ impl Claude {
         self.next_request += 1;
         let id = format!("q_{}", self.next_request);
         json!({ "type": "control_request", "request_id": id, "request": request }).to_string()
+    }
+
+    /// The running turn's tokens as Desktop counts them ("30.7k tokens"); which tokens it adds
+    /// up is inferred from what a turn reports.
+    fn tokens(&self) -> AgentEvent {
+        AgentEvent::Tokens {
+            tokens: self.turn_tokens + self.live_tokens + self.task_tokens.values().sum::<u64>(),
+        }
     }
 
     fn last_request_id(&self) -> String {
@@ -179,6 +192,10 @@ impl AgentAdapter for Claude {
             ("CLAUDE_CODE_EMIT_TOOL_USE_SUMMARIES", "false"),
             ("CLAUDE_CODE_DISABLE_TERMINAL_TITLE", "1"),
             ("MCP_CONNECTION_NONBLOCKING", "true"),
+            // The task list (TaskCreate, TaskUpdate…) Desktop's sessions show;
+            // 2.1.310 offers those tools only with both set (tools/capture `todos`).
+            ("CLAUDE_CODE_ENABLE_TASKS", "true"),
+            ("CLAUDE_CODE_ENABLE_TODO_TOOLS", "true"),
         ];
         LaunchPlan {
             program: "claude".into(),
@@ -285,11 +302,46 @@ impl AgentAdapter for Claude {
                     });
                 }
             }
+            // Verified on 2.1.310: a thinking block reports its estimated size as it grows.
+            ("system", Some("thinking_tokens")) if parent.is_none() => {
+                self.live_tokens = msg["estimated_tokens"].as_u64().unwrap_or(0);
+                decoded.events.push(self.tokens());
+            }
+            // Verified on 2.1.310 ([F:agent]): a helper agent runs as a task tied to the
+            // tool call that started it, reports its tokens as it goes, and ends with a summary.
+            ("system", Some("task_started")) => decoded.events.push(AgentEvent::TaskStarted {
+                id: text(&msg["task_id"]),
+                call: msg["tool_use_id"].as_str().map(str::to_owned),
+                description: text(&msg["description"]),
+            }),
+            ("system", Some(kind @ ("task_progress" | "task_notification"))) => {
+                if let Some(total) = msg["usage"]["total_tokens"].as_u64() {
+                    self.task_tokens.insert(text(&msg["task_id"]), total);
+                    decoded.events.push(self.tokens());
+                }
+                if kind == "task_notification" {
+                    decoded.events.push(AgentEvent::TaskEnded {
+                        id: text(&msg["task_id"]),
+                        call: msg["tool_use_id"].as_str().map(str::to_owned),
+                        summary: msg["summary"].as_str().map(str::to_owned),
+                        ok: msg["status"] == "completed",
+                    });
+                }
+            }
             ("system", _) => {}
             ("stream_event", _) => {
-                if msg["event"]["delta"]["type"] == "text_delta" {
+                // Thinking shows as it starts; the finished block carries nothing quill shows.
+                if msg["event"]["content_block"]["type"] == "thinking" {
+                    decoded.events.push(AgentEvent::Thinking { parent });
+                } else if msg["event"]["delta"]["type"] == "text_delta" {
                     let text = text(&msg["event"]["delta"]["text"]);
                     decoded.events.push(AgentEvent::TextDelta { text, parent });
+                } else if msg["event"]["type"] == "message_delta" && parent.is_none() {
+                    // An answer's final size replaces the estimate of its thinking.
+                    self.turn_tokens +=
+                        msg["event"]["usage"]["output_tokens"].as_u64().unwrap_or(0);
+                    self.live_tokens = 0;
+                    decoded.events.push(self.tokens());
                 }
             }
             ("assistant", _) => {
@@ -308,9 +360,6 @@ impl AgentAdapter for Claude {
                     match block["type"].as_str() {
                         Some("text") => decoded.events.push(AgentEvent::Text {
                             text: text(&block["text"]),
-                            parent: parent.clone(),
-                        }),
-                        Some("thinking") => decoded.events.push(AgentEvent::Thinking {
                             parent: parent.clone(),
                         }),
                         Some("tool_use") => {
@@ -339,6 +388,9 @@ impl AgentAdapter for Claude {
                 }
             }
             ("result", _) if parent.is_none() => {
+                self.turn_tokens = 0;
+                self.live_tokens = 0;
+                self.task_tokens.clear();
                 let interrupted = std::mem::take(&mut self.interrupted)
                     && msg["subtype"] == "error_during_execution";
                 let errors = msg["errors"]

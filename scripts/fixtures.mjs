@@ -22,6 +22,8 @@ for (const dir of args) {
     let out = s.split(repo).join("/work").split(dash(repo)).join("-work");
     out = out.split(home).join("/home/user").split(dash(home)).join("-home-user");
     for (const e of emails) out = out.split(e).join("user@example.com");
+    // What is left of the login: `ls -l` owners, and paths a stream cuts into pieces.
+    out = out.replaceAll(os.userInfo().username, "user");
     return out;
   };
   const scrub = (v) => {
