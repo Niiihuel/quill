@@ -976,6 +976,15 @@ fn item(item: &Item, ui: &Ui, column: f32, palette: ComponentPalette) -> Element
                 .code_fit_content(true)
                 .code_copy_action_prefix(COPY_CODE)
                 .code_font_size(SMALL)
+                .inline_code_size(SMALL)
+                .code_syntax_colors(limn::CodeSyntaxColors {
+                    text: look::PALETTE.text,
+                    string: look::ADDED,
+                    keyword: look::KEYWORD,
+                    function: Some(look::CURSOR),
+                    interpolation: Some(look::REMOVED),
+                    ..limn::CodeSyntaxColors::for_palette(code_palette)
+                })
                 .streaming(*streaming)
                 .render()
                 .element

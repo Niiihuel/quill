@@ -75,6 +75,9 @@ pub const ROW_HOVER: Color = Color::rgb(0xed, 0xed, 0xed);
 pub const SELECTED_HOVER: Color = Color::rgb(0xd5, 0xd5, 0xd5);
 pub const TOOL_HOVER: Color = Color::rgb(0xe5, 0xe5, 0xe5);
 pub const ACTIVE_HOVER: Color = Color::rgb(0xd8, 0xd8, 0xd8);
+/// Keywords in code (`def`, the f of an f-string); functions take CURSOR's blue,
+/// strings ADDED's green and f-string braces REMOVED's red.
+pub const KEYWORD: Color = Color::rgb(0xc5, 0x62, 0x1b);
 /// An active toggle or tab.
 pub const ACTIVE: Color = Color::rgb(0xe5, 0xe5, 0xe5);
 
