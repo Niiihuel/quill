@@ -1,5 +1,6 @@
 //! The window: sidebar of sessions, transcript and composer (features/code-*.md, docs/ui.md §2).
 
+use crate::icons;
 use crate::look::{self, BODY, CHAT, COLUMN, SMALL};
 use crate::{Item, Pane, Session, Store, ToolResult, Ui};
 use limn::{
@@ -397,9 +398,9 @@ fn pane_tools(pane: Pane, ui: &Ui, palette: ComponentPalette) -> Vec<Element> {
         icon_tool(
             &format!("pane:{key}:expand"),
             if expanded {
-                limn::Icon::Collapse
+                icons::of(icons::COLLAPSE)
             } else {
-                limn::Icon::Expand
+                icons::of(icons::EXPAND)
             },
             if expanded { "Collapse" } else { "Expand" },
             28.0,
@@ -407,7 +408,7 @@ fn pane_tools(pane: Pane, ui: &Ui, palette: ComponentPalette) -> Vec<Element> {
         ),
         icon_tool(
             &format!("pane:{key}:close"),
-            limn::Icon::Close,
+            icons::of(icons::CLOSE),
             "Close",
             28.0,
             palette,
@@ -424,7 +425,13 @@ fn terminal_pane(
     height: f32,
     palette: ComponentPalette,
 ) -> Element {
-    let new = icon_tool(TERMINAL_NEW, limn::Icon::Add, "New terminal", 28.0, palette);
+    let new = icon_tool(
+        TERMINAL_NEW,
+        icons::of(icons::ADD),
+        "New terminal",
+        28.0,
+        palette,
+    );
     let tabs = &ui.terminal.tabs;
     let folder = folder_name(session.map_or(&ui.cwd, |s| &s.cwd));
     let lead = if tabs.len() <= 1 {
@@ -459,7 +466,7 @@ fn terminal_pane(
                 }
                 items.push(icon_tool(
                     &format!("terminal:close:{i}"),
-                    limn::Icon::Close,
+                    icons::of(icons::CLOSE),
                     "Close terminal",
                     20.0,
                     palette,
@@ -618,7 +625,7 @@ fn top_bar(session: Option<&Session>, ui: &Ui) -> Element {
         let shown = ui.panel_open && ui.panes.is_empty();
         row.push(toggle(
             PANEL_TOGGLE,
-            limn::Icon::PanelRight,
+            icons::of(icons::PANEL_RIGHT),
             if shown {
                 "Hide session rail"
             } else {
@@ -630,7 +637,7 @@ fn top_bar(session: Option<&Session>, ui: &Ui) -> Element {
     }
     row.push(toggle(
         TERMINAL_TOGGLE,
-        limn::Icon::Terminal,
+        icons::of(icons::TERMINAL),
         "Terminal",
         ui.pane_open(Pane::Terminal),
         Some("Ctrl+`"),
@@ -638,7 +645,7 @@ fn top_bar(session: Option<&Session>, ui: &Ui) -> Element {
     if session.is_some() {
         row.push(toggle(
             DIFF_TOGGLE,
-            limn::Icon::Code,
+            icons::of(icons::DIFF),
             "Diff",
             ui.pane_open(Pane::Diff),
             Some("Ctrl+Shift+D"),
@@ -658,7 +665,7 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
         side_row(
             NEW_SESSION.into(),
             vec![
-                Element::icon(limn::Icon::Add)
+                Element::icon(icons::of(icons::ADD))
                     .foreground(look::PALETTE.text)
                     .size(Some(16.0), Some(16.0))
                     .centered_y(),
@@ -683,9 +690,9 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
     for folder in folders {
         let open = !ui.collapsed.contains(folder);
         let caret = Element::icon(if open {
-            limn::Icon::ChevronDown
+            icons::of(icons::CARET_DOWN)
         } else {
-            limn::Icon::ChevronRight
+            icons::of(icons::CARET_RIGHT)
         })
         .foreground(look::MUTED)
         .size(Some(10.0), Some(10.0))
@@ -699,7 +706,7 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
             Element::spacer().flex(1.0),
             tool_surface(
                 &new_here,
-                limn::Icon::Add,
+                icons::of(icons::ADD),
                 "New session",
                 22.0,
                 None,
@@ -814,9 +821,9 @@ fn empty(ui: &Ui, column: f32) -> Element {
         None => "What's up next?".into(),
     };
     let line = Element::row(vec![
-        text("✳")
-            .font_size(26.0)
+        Element::icon(icons::of(icons::SPARK))
             .foreground(look::SPARK)
+            .size(Some(24.0), Some(24.0))
             .centered_y(),
         text(greeting).font_size(20.0).centered_y(),
     ])
@@ -881,7 +888,7 @@ fn transcript(session: &Session, ui: &Ui, column: f32, palette: ComponentPalette
                             element,
                             tool_surface(
                                 &copy,
-                                limn::Icon::Copy,
+                                icons::of(icons::COPY),
                                 "Copy",
                                 24.0,
                                 None,
@@ -924,7 +931,7 @@ fn transcript(session: &Session, ui: &Ui, column: f32, palette: ComponentPalette
     }
     .interactive_surface(Element::icon_button(
         SCROLL_END,
-        limn::Icon::ArrowDown,
+        icons::of(icons::ARROW_DOWN),
         "Scroll to bottom",
     ))
     .foreground(look::PALETTE.text)
@@ -1556,7 +1563,7 @@ fn composer(
         )
     });
     let trailing = if running && ui.prompt.trim().is_empty() {
-        composer_button(STOP, limn::Icon::StopFill, "Stop", false, 34.0)
+        composer_button(STOP, icons::of(icons::STOP), "Stop", false, 34.0)
     } else {
         send_button(!ui.prompt.trim().is_empty())
     };
@@ -1589,7 +1596,7 @@ fn composer(
     // quill runs sessions on this computer only, so "Local" is a label, not a menu.
     let local = Element::row(vec![
         hgap(8.0),
-        chip_icon(limn::Icon::Laptop),
+        chip_icon(icons::of(icons::LAPTOP)),
         chip_text("Local", look::PALETTE.text),
         hgap(8.0),
     ])
@@ -1638,7 +1645,10 @@ fn send_button(ready: bool) -> Element {
     } else {
         look::MUTED
     };
-    let glyph = text("↵").font_size(18.0).foreground(ink).center_content();
+    let glyph = Element::icon(icons::of(icons::RETURN))
+        .foreground(ink)
+        .size(Some(22.0), Some(22.0))
+        .centered();
     let button = palette
         .interactive_surface(Element::clickable(SEND, glyph))
         .radius(8.0)
@@ -1650,17 +1660,17 @@ fn send_button(ready: bool) -> Element {
 /// as @-mentions the agent reads, and the slash that opens its commands.
 fn plus_menu(ui: &Ui) -> Element {
     let open = ui.open_menu == Some(PLUS_MENU);
-    let anchor = composer_button(PLUS_MENU, limn::Icon::Add, "Add", open, 28.0);
+    let anchor = composer_button(PLUS_MENU, icons::of(icons::ADD), "Add", open, 28.0);
     let entries = vec![
         limn::DropdownMenuItem::new(ATTACH_FILES, "Add files or photos")
-            .icon(limn::Icon::Paperclip)
+            .icon(icons::of(icons::PAPERCLIP))
             .shortcut("Ctrl+U")
             .into(),
         limn::DropdownMenuItem::new(ATTACH_FOLDER, "Add folder")
-            .icon(limn::Icon::Folder)
+            .icon(icons::of(icons::FOLDER))
             .into(),
         limn::DropdownMenuItem::new(SLASH, "Slash commands")
-            .icon(limn::Icon::Hash)
+            .icon(icons::of(icons::SLASH))
             .into(),
     ];
     menu(
@@ -1767,7 +1777,7 @@ fn composer_footer(
     ui: &Ui,
     palette: ComponentPalette,
 ) -> Element {
-    Element::row(vec![
+    let row = Element::row(vec![
         plus_menu(ui),
         mode_menu(session, ui),
         Element::spacer().flex(1.0),
@@ -1775,7 +1785,9 @@ fn composer_footer(
         usage_menu(store, session, ui),
     ])
     .gap(2.0)
-    .size(None, Some(28.0))
+    .size(None, Some(28.0));
+    // 20 px under the box, as Desktop's, so the row's tooltips clear the message.
+    Element::column(vec![Element::spacer().size(None, Some(6.0)), row])
 }
 
 /// When a window starts again, as Desktop says it: "Resets in 4 hr 53 min"
@@ -1846,7 +1858,8 @@ fn usage_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
     // A 14 px ring, blue over gray, as Desktop's.
     let ring_palette = ComponentPalette {
         text: look::HANDLE,
-        selected: look::ACTIVE,
+        // Seen on the hover's #E5E5E5 too; Desktop darkens it there.
+        selected: look::RING_TRACK,
         ..look::PALETTE
     };
     let ring = limn::Progress::new(spent, ring_palette)
@@ -1896,7 +1909,7 @@ fn usage_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
         // The agent says "Claude Max"; Desktop's popover says "Max".
         .map(|p| effort_label(p.trim_start_matches("Claude ").trim()));
     let mut rows = vec![
-        usage_row("Context window", tokens, share, width, true),
+        usage_row("Context window", tokens.clone(), share, width, true),
         hline(width, look::DIVIDER),
         Element::row(vec![
             muted(match &plan {
@@ -1928,6 +1941,23 @@ fn usage_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
         }
     }
     let card = Element::column(rows).gap(14.0).padding(16.0);
+    // Its hint sums it up, as Desktop's: "Context 30.0k", the week's share and reset.
+    let mut tip = limn::Tooltip::new(
+        anchor,
+        USAGE_MENU,
+        format!("Context {tokens}"),
+        look::PALETTE,
+    )
+    // At the window's right edge it opens to the left, to stay whole.
+    .placement(limn::TooltipPlacement::Left);
+    if let Some(w) = limits.weekly {
+        tip = tip.description(format!(
+            "Weekly · all models: {}% · {}",
+            (w.utilization * 100.0).round() as u32,
+            resets_in(w.resets_at, now, ui.utc_offset)
+        ));
+    }
+    let anchor = tip.render();
     menu(
         anchor,
         vec![limn::DropdownMenuEntry::Custom(Box::new(card))],
@@ -1944,7 +1974,7 @@ fn folder_menu(store: &Store, ui: &Ui) -> Element {
     let anchor = chip(
         FOLDER_MENU,
         vec![
-            chip_icon(limn::Icon::Folder),
+            chip_icon(icons::of(icons::FOLDER)),
             chip_text(folder_name(&ui.cwd), look::PALETTE.text),
         ],
         open,
@@ -2501,11 +2531,14 @@ fn right_panel(
     let inner = width - 16.0;
     let open = |key: &str, default: bool| ui.expanded.iter().any(|k| k == key) != default;
     let mut environment = vec![
-        panel_row(limn::Icon::Laptop, text("This computer")),
-        panel_row(limn::Icon::Folder, text(folder_name(&session.cwd))),
+        panel_row(icons::of(icons::LAPTOP), text("This computer")),
+        panel_row(icons::of(icons::FOLDER), text(folder_name(&session.cwd))),
     ];
     if let Some(branch) = &session.branch {
-        environment.push(panel_row(limn::Icon::Tree, text(branch.clone())));
+        environment.push(panel_row(
+            icons::of(icons::GIT_BRANCH),
+            text(branch.clone()),
+        ));
     }
     // How full the context is, as Desktop's percentage and bar: the window comes from the
     // agent's own report of its model.
@@ -2563,7 +2596,7 @@ fn right_panel(
         Element::clickable(
             DIFF_TOGGLE,
             Element::row(vec![
-                Element::icon(limn::Icon::Code)
+                Element::icon(icons::of(icons::DIFF))
                     .foreground(look::PALETTE.text)
                     .size(Some(16.0), Some(16.0))
                     .centered_y(),

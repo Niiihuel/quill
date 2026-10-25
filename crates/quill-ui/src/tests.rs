@@ -625,3 +625,15 @@ fn limits_reset_as_desktop_says_it() {
         "Resets Sun 3:00 AM"
     );
 }
+
+#[test]
+fn every_icon_is_a_complete_svg_on_the_20_grid() {
+    let sheet = std::env::var_os("QUILL_ICON_SHEET");
+    for (name, svg) in icons::ALL {
+        assert!(svg.starts_with("<svg") && svg.ends_with("</svg>"), "{name}");
+        assert!(svg.contains("viewBox='0 0 20 20'"), "{name}");
+        if let Some(dir) = &sheet {
+            std::fs::write(std::path::Path::new(dir).join(format!("{name}.svg")), svg).unwrap();
+        }
+    }
+}

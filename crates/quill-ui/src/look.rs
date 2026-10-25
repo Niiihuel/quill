@@ -80,6 +80,9 @@ pub const ACTIVE_HOVER: Color = Color::rgb(0xd8, 0xd8, 0xd8);
 pub const KEYWORD: Color = Color::rgb(0xc5, 0x62, 0x1b);
 /// The greeting's spark, Claude's orange.
 pub const SPARK: Color = Color::rgb(0xd9, 0x77, 0x57);
+/// The usage ring's track: Desktop's #E5E5E5 at rest, #CDCDCD under the pointer, met
+/// halfway so it shows on both.
+pub const RING_TRACK: Color = Color::rgb(0xd6, 0xd6, 0xd6);
 /// An active toggle or tab.
 pub const ACTIVE: Color = Color::rgb(0xe5, 0xe5, 0xe5);
 
