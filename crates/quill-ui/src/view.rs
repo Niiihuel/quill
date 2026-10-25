@@ -24,6 +24,7 @@ pub const PLUS_MENU: &str = "plus-menu";
 pub const FOLDER_MENU: &str = "folder-menu";
 pub const SEND: &str = "send";
 pub const USAGE_MENU: &str = "usage-menu";
+pub const EFFORT_MENU: &str = "effort-menu";
 /// "See all →": the plan's usage page, which the host opens in the browser.
 pub const USAGE_ALL: &str = "usage:all";
 pub const SCROLL_END: &str = "scroll-end";
@@ -573,9 +574,13 @@ fn tool_surface(
         selected: hover,
         ..look::PALETTE
     };
-    let button = palette
-        .interactive_surface(Element::icon_button(id, icon, label))
+    // The icon is centered by hand: limn's icon button sets it a pixel to the left.
+    let glyph = Element::icon(icon)
         .foreground(look::PALETTE.text)
+        .size(Some(16.0), Some(16.0))
+        .centered();
+    let button = palette
+        .interactive_surface(Element::clickable(id, glyph).accessibility_label(label))
         .radius(6.0)
         .size(Some(side), Some(side));
     let button = match fill {
@@ -1563,7 +1568,7 @@ fn composer(
         )
     });
     let trailing = if running && ui.prompt.trim().is_empty() {
-        composer_button(STOP, icons::of(icons::STOP), "Stop", false, 34.0)
+        composer_button(STOP, icons::of(icons::STOP), "Stop", false, 28.0)
     } else {
         send_button(!ui.prompt.trim().is_empty())
     };
@@ -1584,7 +1589,6 @@ fn composer(
     .editor_font_size(15.0)
     .pill_controls(Element::spacer().size(Some(0.0), None), trailing)
     .inline_controls(true)
-    .controls_at_last_line(true)
     .border_color(look::COMPOSER_BORDER)
     .shadow_color(look::COMPOSER_SHADOW)
     .card_radius(14.0)
@@ -1619,9 +1623,12 @@ fn composer_button(id: &str, icon: limn::Icon, label: &str, open: bool, side: f3
         selected: look::COMPOSER_OPEN,
         ..look::PALETTE
     };
-    let button = palette
-        .interactive_surface(Element::icon_button(id, icon, label))
+    let glyph = Element::icon(icon)
         .foreground(look::PALETTE.text)
+        .size(Some(16.0), Some(16.0))
+        .centered();
+    let button = palette
+        .interactive_surface(Element::clickable(id, glyph).accessibility_label(label))
         .radius(8.0)
         .size(Some(side), Some(side));
     let button = if open {
@@ -1652,7 +1659,8 @@ fn send_button(ready: bool) -> Element {
     let button = palette
         .interactive_surface(Element::clickable(SEND, glyph))
         .radius(8.0)
-        .size(Some(34.0), Some(34.0));
+        // 28 px: limn centers it in the first line's 28 px, so it sits mid-box.
+        .size(Some(28.0), Some(28.0));
     limn::Tooltip::new(button, SEND, "Send", look::PALETTE).render()
 }
 
@@ -1782,6 +1790,7 @@ fn composer_footer(
         mode_menu(session, ui),
         Element::spacer().flex(1.0),
         model_menu(store, session, ui, palette),
+        effort_menu(store, session, ui),
         usage_menu(store, session, ui),
     ])
     .gap(2.0)
@@ -1940,7 +1949,7 @@ fn usage_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
             ));
         }
     }
-    let card = Element::column(rows).gap(14.0).padding(16.0);
+    let card = Element::column(rows).gap(14.0).padding(8.0);
     // Its hint sums it up, as Desktop's: "Context 30.0k", the week's share and reset.
     let mut tip = limn::Tooltip::new(
         anchor,
@@ -2157,16 +2166,10 @@ fn model_menu(
         || ui.model.clone().unwrap_or_else(|| "Default".into()),
         |m| m.name.clone(),
     );
-    let efforts = current.map(|m| m.efforts.as_slice()).unwrap_or_default();
-    let effort = ui.effort.clone().or_else(|| efforts.first().cloned());
-    let mut content = vec![chip_text(name, look::PALETTE.text)];
-    if let Some(effort) = &effort {
-        content.push(chip_text(effort_label(effort), look::PALETTE.text));
-    }
+    let content = vec![chip_text(name, look::PALETTE.text)];
     let anchor = chip(MODEL_MENU, content, open, "Model", Some("Ctrl+Shift+I"));
-    let mut entries = vec![limn::DropdownMenuEntry::Heading(
-        "Model · this session".into(),
-    )];
+    // The person's Desktop lists the models bare; effort has its own chip.
+    let mut entries = vec![];
     let (latest, more) = split_models(models);
     let item = |model: &quill_model::ModelInfo| {
         limn::DropdownMenuItem::new(format!("model:{}", model.id), model.name.clone())
@@ -2181,23 +2184,6 @@ fn model_menu(
             row.shortcut((n + 1).to_string())
         };
         entries.push(row.into());
-    }
-    if !efforts.is_empty() {
-        entries.push(limn::DropdownMenuEntry::Separator);
-        let levels = efforts
-            .iter()
-            .map(|e| {
-                limn::DropdownMenuItem::new(format!("effort:{e}"), effort_label(e))
-                    .selected(effort.as_ref() == Some(e))
-                    .into()
-            })
-            .collect();
-        let mut effort_item =
-            limn::DropdownMenuItem::new(format!("{MODEL_MENU}:effort"), "Effort").submenu(levels);
-        if let Some(effort) = &effort {
-            effort_item = effort_item.annotation(effort_label(effort));
-        }
-        entries.push(effort_item.into());
     }
     if !more.is_empty() {
         entries.push(limn::DropdownMenuEntry::Separator);
@@ -2214,6 +2200,150 @@ fn model_menu(
         open,
         MODEL_MENU,
         200.0,
+        limn::PopoverPlacement::TopEnd,
+    )
+}
+
+/// The model the composer runs: the one picked, matched by id or by name.
+fn current_model<'a>(
+    store: &'a Store,
+    session: Option<&'a Session>,
+    ui: &Ui,
+) -> Option<&'a quill_model::ModelInfo> {
+    offered_models(store, session).iter().find(|m| {
+        ui.model
+            .as_deref()
+            .is_some_and(|id| m.id == id || m.name.to_lowercase().contains(id))
+    })
+}
+
+/// The effort chip and its popover, as the person's Desktop has them:
+/// "Effort  Low", "Faster … Smarter" over a slider with a stop per level the model
+/// accepts, and "Recommended" under medium.
+fn effort_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
+    let efforts = current_model(store, session, ui)
+        .map(|m| m.efforts.clone())
+        .unwrap_or_default();
+    if efforts.is_empty() {
+        return Element::spacer().size(Some(0.0), Some(0.0));
+    }
+    let open = ui.open_menu == Some(EFFORT_MENU);
+    let effort = ui
+        .effort
+        .clone()
+        .filter(|e| efforts.contains(e))
+        .unwrap_or_else(|| efforts[0].clone());
+    let anchor = chip(
+        EFFORT_MENU,
+        vec![chip_text(effort_label(&effort), look::PALETTE.text)],
+        open,
+        "Effort",
+        None,
+    );
+    let width = 188.0;
+    let recommended = efforts.iter().position(|e| e == "medium");
+    // Desktop's slider: a 23 px #E6E6E6 pill, a white 20 px thumb on the level,
+    // a tick on the recommended one and dots on the rest; each stop is a click away.
+    // The ends sit 11.5 px in, a thumb's half and a hair; the stops between share the rest.
+    let n = efforts.len();
+    let step = if n > 1 {
+        (width - 23.0) / (n - 1) as f32
+    } else {
+        0.0
+    };
+    let stops: Vec<Element> = efforts
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            let (mark, side) = if *e == effort {
+                (
+                    Element::spacer()
+                        .background(look::PALETTE.surface)
+                        .border(look::COMPOSER_BORDER, 1.0)
+                        .radius(10.0)
+                        .size(Some(20.0), Some(20.0)),
+                    20.0,
+                )
+            } else if Some(i) == recommended {
+                (
+                    Element::spacer()
+                        .background(look::SLIDER_MARK)
+                        .radius(1.0)
+                        .size(Some(2.0), Some(9.0)),
+                    2.0,
+                )
+            } else {
+                (
+                    Element::spacer()
+                        .background(look::SLIDER_MARK)
+                        .radius(1.5)
+                        .size(Some(3.0), Some(3.0)),
+                    3.0,
+                )
+            };
+            let inset = 11.5 - side / 2.0;
+            let end = 11.5 + step / 2.0;
+            let (cell, content) = if n == 1 {
+                (width, mark.centered())
+            } else if i == 0 {
+                (end, Element::row(vec![hgap(inset), mark]).centered_y())
+            } else if i == n - 1 {
+                (
+                    end,
+                    Element::row(vec![hgap(end - inset - side), mark]).centered_y(),
+                )
+            } else {
+                (step, mark.centered())
+            };
+            Element::clickable(format!("effort:{e}"), content).size(Some(cell), Some(23.0))
+        })
+        .collect();
+    let track = Element::row(stops)
+        .background(look::SLIDER_TRACK)
+        .radius(11.5)
+        .size(Some(width), Some(23.0));
+    let mut rows = vec![
+        Element::row(vec![
+            muted("Effort").font_size(BODY),
+            text(effort_label(&effort)).font_size(BODY),
+            Element::spacer().flex(1.0),
+            limn::Tooltip::new(
+                Element::icon(icons::of(icons::QUESTION))
+                    .foreground(look::MUTED)
+                    .size(Some(16.0), Some(16.0)),
+                "effort:help",
+                "How long Claude thinks before it answers",
+                look::PALETTE,
+            )
+            .render(),
+        ])
+        .gap(10.0)
+        .size(Some(width), None),
+        Element::spacer().size(None, Some(6.0)),
+        Element::row(vec![
+            muted("Faster").font_size(SMALL),
+            Element::spacer().flex(1.0),
+            muted("Smarter").font_size(SMALL),
+        ])
+        .size(Some(width), None),
+        track,
+    ];
+    if let Some(recommended) = recommended {
+        // Under its stop, as Desktop labels the recommended level.
+        let x = (11.5 + step * recommended as f32 - 42.0).max(0.0);
+        rows.push(Element::row(vec![
+            hgap(x),
+            muted("Recommended").font_size(SMALL),
+        ]));
+    }
+    // The menu adds 8 px of its own: 16 in all, as Desktop's.
+    let card = Element::column(rows).gap(10.0).padding(8.0);
+    menu(
+        anchor,
+        vec![limn::DropdownMenuEntry::Custom(Box::new(card))],
+        open,
+        EFFORT_MENU,
+        width + 32.0,
         limn::PopoverPlacement::TopEnd,
     )
 }

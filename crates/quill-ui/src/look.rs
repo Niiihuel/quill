@@ -83,6 +83,9 @@ pub const SPARK: Color = Color::rgb(0xd9, 0x77, 0x57);
 /// The usage ring's track: Desktop's #E5E5E5 at rest, #CDCDCD under the pointer, met
 /// halfway so it shows on both.
 pub const RING_TRACK: Color = Color::rgb(0xd6, 0xd6, 0xd6);
+/// The effort slider's pill and its marks.
+pub const SLIDER_TRACK: Color = Color::rgb(0xe6, 0xe6, 0xe6);
+pub const SLIDER_MARK: Color = Color::rgb(0xaf, 0xaf, 0xaf);
 /// An active toggle or tab.
 pub const ACTIVE: Color = Color::rgb(0xe5, 0xe5, 0xe5);
 

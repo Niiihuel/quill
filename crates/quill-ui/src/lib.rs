@@ -863,6 +863,7 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         view::PLUS_MENU,
         view::FOLDER_MENU,
         view::USAGE_MENU,
+        view::EFFORT_MENU,
     ] {
         if id == menu {
             ui.open_menu = if ui.open_menu == Some(menu) {

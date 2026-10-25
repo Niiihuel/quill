@@ -110,6 +110,10 @@ pub const SIDEBAR: &str =
 pub const PANEL_RIGHT: &str =
     icon!("<rect x='3' y='4' width='14' height='12' rx='2'/><path d='M12 4v12'/>");
 
+pub const QUESTION: &str = icon!(
+    "<circle cx='10' cy='10' r='6.75'/><path d='M8.1 8.1a2 2 0 0 1 3.85.65c0 1.35-1.95 1.75-1.95 2.75'/><circle cx='10' cy='13.6' r='0.55' fill='currentColor'/>"
+);
+
 /// The greeting's mark: an eight-ray spark, quill's own.
 pub const SPARK: &str = icon!(
     "<path d='M10 2.5v15M2.5 10h15M4.7 4.7l10.6 10.6M15.3 4.7L4.7 15.3' stroke-width='1.6'/>"
@@ -161,5 +165,6 @@ pub const ALL: &[(&str, &str)] = &[
     ("slash", SLASH),
     ("sidebar", SIDEBAR),
     ("panel_right", PANEL_RIGHT),
+    ("question", QUESTION),
     ("spark", SPARK),
 ];
