@@ -392,6 +392,8 @@ pub struct Ui {
     pub collapsed: Vec<PathBuf>,
     /// How the person allowed last, which the next permission card offers first.
     pub last_allow: Allow,
+    /// Whether the transcript shows its end, which the host sets every frame.
+    pub at_end: bool,
     /// The window's size, which the host sets every frame; a dragged boundary needs it.
     pub window: limn::Size,
     /// The column of panes' share of the space right of the sidebar, once the person dragged
@@ -513,6 +515,7 @@ impl Ui {
             collapsed: vec![],
             last_allow: Allow::Once,
             window: limn::Size::new(1408.0, 844.0),
+            at_end: true,
             column_fraction: None,
             stack_fraction: None,
             answers: Default::default(),

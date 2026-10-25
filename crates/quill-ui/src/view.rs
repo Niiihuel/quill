@@ -22,6 +22,9 @@ pub const PICK_FOLDER: &str = "pick-folder";
 pub const PLUS_MENU: &str = "plus-menu";
 pub const FOLDER_MENU: &str = "folder-menu";
 pub const SEND: &str = "send";
+pub const SCROLL_END: &str = "scroll-end";
+/// The prefix of a code block's copy button; the code follows it.
+pub const COPY_CODE: &str = "copy-code:";
 /// "+" menu actions the host carries out: pickers for @-mentions, and the slash.
 pub const ATTACH_FILES: &str = "attach:files";
 pub const ATTACH_FOLDER: &str = "attach:folder";
@@ -890,7 +893,35 @@ fn transcript(session: &Session, ui: &Ui, column: f32, palette: ComponentPalette
         .size(Some(column), None)
         .padding(16.0)
         .centered_x();
-    Element::scroll(format!("transcript:{}", session.id), content)
+    let scroll = Element::scroll(format!("transcript:{}", session.id), content);
+    if ui.at_end {
+        return scroll;
+    }
+    // Away from the end, Desktop floats a round "↓" over the conversation.
+    let down = ComponentPalette {
+        hover: look::TOOL_HOVER,
+        ..palette
+    }
+    .interactive_surface(Element::icon_button(
+        SCROLL_END,
+        limn::Icon::ArrowDown,
+        "Scroll to bottom",
+    ))
+    .foreground(look::PALETTE.text)
+    .background(palette.surface)
+    .border(look::CARD_BORDER, 1.0)
+    .radius(16.0)
+    .size(Some(32.0), Some(32.0));
+    let float = Element::column(vec![
+        Element::spacer().flex(1.0),
+        Element::row(vec![
+            Element::spacer().flex(1.0),
+            down,
+            Element::spacer().flex(1.0),
+        ]),
+        Element::spacer().size(None, Some(12.0)),
+    ]);
+    Element::overlay(scroll, float)
 }
 
 fn status_line(status: &SessionStatus, palette: ComponentPalette) -> Option<Element> {
@@ -925,9 +956,26 @@ fn item(item: &Item, ui: &Ui, column: f32, palette: ComponentPalette) -> Element
             Element::row(vec![Element::spacer().flex(1.0), bubble])
         }
         Item::Assistant { text: t, streaming } => {
-            Markdown::new(t, palette)
+            // Desktop's code: blocks in a white bordered box as wide as their
+            // code, no language line, a copy button, 13 px; inline code on a light fill.
+            let code_palette = ComponentPalette {
+                raised: look::PALETTE.surface,
+                border: look::DIVIDER,
+                ..palette
+            };
+            let colors = limn::MarkdownColors {
+                code_ink: look::PALETTE.text,
+                code_fill: look::COMMAND_BOX,
+                ..limn::MarkdownColors::for_palette(code_palette)
+            };
+            Markdown::new(t, code_palette)
                 .width(column)
                 .font_size(CHAT)
+                .colors(colors)
+                .code_label(false)
+                .code_fit_content(true)
+                .code_copy_action_prefix(COPY_CODE)
+                .code_font_size(SMALL)
                 .streaming(*streaming)
                 .render()
                 .element

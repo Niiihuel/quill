@@ -172,6 +172,7 @@ impl eframe::App for App {
         let at_end = self
             .transcript
             .is_none_or(|(id, ..)| self.tree.is_scroll_at_end(&format!("transcript:{id}"), 8.0));
+        self.ui.at_end = at_end;
         let events = std::mem::take(&mut *self.inbox.lock().unwrap());
         for event in events {
             let intents = self.ui.applied(&event);
@@ -310,11 +311,19 @@ impl eframe::App for App {
                 if let Some(words) = quill_ui::copied_text(&self.store, id) {
                     ctx.copy_text(words);
                 }
+                if let Some(code) = id.strip_prefix(quill_ui::view::COPY_CODE) {
+                    ctx.copy_text(code.to_owned());
+                }
                 match id.as_str() {
                     quill_ui::view::ATTACH_FILES => self.attach(&ctx, false),
                     quill_ui::view::ATTACH_FOLDER => self.attach(&ctx, true),
                     quill_ui::view::SLASH if !self.ui.prompt.starts_with('/') => {
                         self.set_prompt(format!("/{}", self.ui.prompt));
+                    }
+                    quill_ui::view::SCROLL_END => {
+                        if let Some(session) = self.ui.selected {
+                            self.tree.scroll_to_end(&format!("transcript:{session}"));
+                        }
                     }
                     quill_ui::view::SEND if !self.ui.prompt.trim().is_empty() => {
                         self.tree.set_input_value(quill_ui::view::COMPOSER, "");
