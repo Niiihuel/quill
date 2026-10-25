@@ -426,21 +426,43 @@ impl Pane {
 /// The terminal pane: what the host's shells last showed, and what the person asked of them.
 #[derive(Default)]
 pub struct TerminalPane {
-    /// The folder's tabs: title, and whether a command runs in it.
-    pub tabs: Vec<(String, bool)>,
+    /// The folder's tabs, as the host's shells last were.
+    pub tabs: Vec<TerminalTab>,
     pub active: usize,
     pub screen: Option<std::sync::Arc<limn::TerminalScreen>>,
-    /// The tab whose close waits for the person to confirm, as a command runs in it.
-    pub closing: Option<usize>,
+    /// A close that waits for the person to confirm, as a command runs where it closes.
+    pub closing: Option<Closing>,
+    /// The tab whose pill is a name field, and what the field holds.
+    pub renaming: Option<(usize, String)>,
     /// What the host does with the folder's shells on the next frame.
     pub requests: Vec<TerminalRequest>,
 }
 
+/// One terminal tab as the pane shows it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TerminalTab {
+    pub title: String,
+    pub busy: bool,
+    /// Named by the person: its pill drops the folder.
+    pub named: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Closing {
+    One(usize),
+    /// Every tab but this one.
+    Others(usize),
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum TerminalRequest {
     New,
     Select(usize),
     Close(usize),
+    CloseOthers(usize),
+    Rename(usize, Option<String>),
+    Clear(usize),
+    Move { from: usize, to: usize },
 }
 
 impl Ui {
@@ -510,6 +532,20 @@ impl Ui {
 pub fn update(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Intent> {
     use limn::UiAction;
     match action {
+        UiAction::InputChanged { id, value } if id == view::TERMINAL_RENAME => {
+            if let Some((_, name)) = &mut ui.terminal.renaming {
+                *name = value.clone();
+            }
+            vec![]
+        }
+        UiAction::Submitted { id, value } if id == view::TERMINAL_RENAME => {
+            if let Some((tab, _)) = ui.terminal.renaming.take() {
+                ui.terminal
+                    .requests
+                    .push(TerminalRequest::Rename(tab, Some(value.clone())));
+            }
+            vec![]
+        }
         UiAction::InputChanged { id, value } if id == view::COMPOSER => {
             ui.prompt = value.clone();
             vec![]
@@ -575,19 +611,77 @@ fn terminal_clicked(pane: &mut TerminalPane, id: &str) {
         pane.requests.push(TerminalRequest::New);
     } else if id == view::TERMINAL_CLOSE_CONFIRM {
         pane.requests
-            .extend(pane.closing.take().map(TerminalRequest::Close));
+            .extend(pane.closing.take().map(|closing| match closing {
+                Closing::One(tab) => TerminalRequest::Close(tab),
+                Closing::Others(tab) => TerminalRequest::CloseOthers(tab),
+            }));
     } else if id == view::TERMINAL_CLOSE_CANCEL {
         pane.closing = None;
+    } else if let Some(tab) = index("terminal:menu:rename:") {
+        // Desktop's field starts empty.
+        pane.renaming = Some((tab, String::new()));
+    } else if let Some(tab) = index("terminal:menu:clear:") {
+        pane.requests.push(TerminalRequest::Clear(tab));
+    } else if let Some(tab) = index("terminal:menu:others:") {
+        let busy = pane
+            .tabs
+            .iter()
+            .enumerate()
+            .any(|(i, t)| i != tab && t.busy);
+        if busy {
+            pane.closing = Some(Closing::Others(tab));
+        } else {
+            pane.requests.push(TerminalRequest::CloseOthers(tab));
+        }
     } else if let Some(tab) = index("terminal:tab:") {
         pane.requests.push(TerminalRequest::Select(tab));
-    } else if let Some(tab) = index("terminal:close:") {
+    } else if let Some(tab) = index("terminal:close:").or_else(|| index("terminal:menu:close:")) {
         // A running command is stopped only once the person confirms.
-        if pane.tabs.get(tab).is_some_and(|(_, busy)| *busy) {
-            pane.closing = Some(tab);
+        if pane.tabs.get(tab).is_some_and(|t| t.busy) {
+            pane.closing = Some(Closing::One(tab));
         } else {
             pane.requests.push(TerminalRequest::Close(tab));
         }
     }
+}
+
+/// Keys for the terminal's tabs, which the host passes before the window takes them: on a
+/// focused pill Delete or Backspace closes it and Ctrl+Shift+arrows move it; in the name
+/// field Escape gives up. Whether the key was taken.
+pub fn terminal_key(
+    ui: &mut Ui,
+    focused: Option<&str>,
+    key: limn::Key,
+    ctrl: bool,
+    shift: bool,
+) -> bool {
+    use limn::Key;
+    let pane = &mut ui.terminal;
+    if focused == Some(view::TERMINAL_RENAME) && key == Key::Escape {
+        pane.renaming = None;
+        return true;
+    }
+    let Some(tab) = focused
+        .and_then(|f| f.strip_prefix("terminal:tab:"))
+        .and_then(|i| i.parse::<usize>().ok())
+    else {
+        return false;
+    };
+    match key {
+        Key::Delete | Key::Backspace => terminal_clicked(pane, &format!("terminal:close:{tab}")),
+        Key::ArrowLeft | Key::ArrowRight if ctrl && shift => {
+            let to = if key == Key::ArrowLeft {
+                tab.checked_sub(1)
+            } else {
+                Some(tab + 1).filter(|to| *to < pane.tabs.len())
+            };
+            if let Some(to) = to {
+                pane.requests.push(TerminalRequest::Move { from: tab, to });
+            }
+        }
+        _ => return false,
+    }
+    true
 }
 
 fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {

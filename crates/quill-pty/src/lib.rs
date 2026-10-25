@@ -131,6 +131,14 @@ impl Terminal {
         matches!((self.master.process_group_leader(), shell), (Some(leader), Some(shell)) if leader != shell)
     }
 
+    /// Forget the lines above the screen and have the shell clear it (Ctrl+L), as a
+    /// terminal's "Clear" does.
+    pub fn clear(&mut self) {
+        self.parser.lock().unwrap().process(b"\x1b[3J");
+        self.write(&[0x0c]);
+        self.dirty.store(true, Ordering::Release);
+    }
+
     /// Whether the shell is still running.
     pub fn alive(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
@@ -237,9 +245,26 @@ fn scrollback_of(screen: &mut vt100::Screen) -> Vec<Vec<TerminalCell>> {
 /// The terminals of one folder, as the pane's tabs.
 #[derive(Default)]
 pub struct Tabs {
-    tabs: Vec<(u32, Terminal)>,
+    tabs: Vec<Tab>,
     active: usize,
     next: u32,
+}
+
+struct Tab {
+    number: u32,
+    /// The name the person gave it, in place of "Terminal {n}".
+    name: Option<String>,
+    terminal: Terminal,
+}
+
+/// What the pane shows of a tab.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TabInfo {
+    pub title: String,
+    /// A command runs in it, so closing it asks first.
+    pub busy: bool,
+    /// The person named it; Desktop then drops the folder from its pill.
+    pub named: bool,
 }
 
 impl Tabs {
@@ -253,7 +278,11 @@ impl Tabs {
     ) -> std::io::Result<()> {
         let terminal = Terminal::spawn(cwd, cols, rows, wake)?;
         self.next += 1;
-        self.tabs.push((self.next, terminal));
+        self.tabs.push(Tab {
+            number: self.next,
+            name: None,
+            terminal,
+        });
         self.active = self.tabs.len() - 1;
         Ok(())
     }
@@ -268,6 +297,48 @@ impl Tabs {
         }
     }
 
+    /// Close every tab but `index`, which becomes the active one.
+    pub fn close_others(&mut self, index: usize) {
+        if index < self.tabs.len() {
+            let kept = self.tabs.swap_remove(index);
+            self.tabs = vec![kept];
+            self.active = 0;
+        }
+    }
+
+    /// Name a tab; `None` or a blank name gives it back "Terminal {n}".
+    pub fn rename(&mut self, index: usize, name: Option<String>) {
+        if let Some(tab) = self.tabs.get_mut(index) {
+            tab.name = name.filter(|n| !n.trim().is_empty());
+        }
+    }
+
+    /// Move a tab to `to`, keeping the same tab active.
+    pub fn move_tab(&mut self, from: usize, to: usize) {
+        if from >= self.tabs.len() || to >= self.tabs.len() || from == to {
+            return;
+        }
+        let active = self.active;
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+        self.active = if active == from {
+            to
+        } else if from < active && active <= to {
+            active - 1
+        } else if to <= active && active < from {
+            active + 1
+        } else {
+            active
+        };
+    }
+
+    /// Empty a tab's screen and the lines above it; the shell draws its prompt again.
+    pub fn clear(&mut self, index: usize) {
+        if let Some(tab) = self.tabs.get_mut(index) {
+            tab.terminal.clear();
+        }
+    }
+
     pub fn select(&mut self, index: usize) {
         if index < self.tabs.len() {
             self.active = index;
@@ -279,7 +350,7 @@ impl Tabs {
         let mut index = self.tabs.len();
         while index > 0 {
             index -= 1;
-            if !self.tabs[index].1.alive() {
+            if !self.tabs[index].terminal.alive() {
                 self.close(index);
             }
         }
@@ -294,15 +365,22 @@ impl Tabs {
     }
 
     pub fn active_mut(&mut self) -> Option<&mut Terminal> {
-        self.tabs.get_mut(self.active).map(|(_, t)| t)
+        self.tabs.get_mut(self.active).map(|tab| &mut tab.terminal)
     }
 
-    /// Each tab's title, "Terminal {n}" as Desktop numbers them, and whether a
-    /// command runs in it.
-    pub fn list(&self) -> Vec<(String, bool)> {
+    /// Each tab as the pane shows it: its name or "Terminal {n}" as Desktop numbers them
+    ///, and whether a command runs in it.
+    pub fn list(&self) -> Vec<TabInfo> {
         self.tabs
             .iter()
-            .map(|(n, t)| (format!("Terminal {n}"), t.busy()))
+            .map(|tab| TabInfo {
+                title: tab
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("Terminal {}", tab.number)),
+                busy: tab.terminal.busy(),
+                named: tab.name.is_some(),
+            })
             .collect()
     }
 }
@@ -405,17 +483,35 @@ mod tests {
         assert_eq!(tabs.active(), 1);
         tabs.active_mut().unwrap().write(b"sleep 5\r");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !tabs.list()[1].1 {
+        while !tabs.list()[1].busy {
             assert!(std::time::Instant::now() < deadline, "never busy");
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
+        let titles = |tabs: &Tabs| -> Vec<(String, bool)> {
+            tabs.list().into_iter().map(|t| (t.title, t.busy)).collect()
+        };
         assert_eq!(
-            tabs.list(),
+            titles(&tabs),
             [("Terminal 1".into(), false), ("Terminal 2".into(), true)]
         );
         tabs.close(1);
         assert_eq!((tabs.active(), tabs.list().len()), (0, 1));
         tabs.open(&dir, 40, 5, || {}).unwrap();
-        assert_eq!(tabs.list()[1].0, "Terminal 3");
+        assert_eq!(tabs.list()[1].title, "Terminal 3");
+        tabs.rename(1, Some("build".into()));
+        tabs.move_tab(1, 0);
+        assert_eq!(
+            (
+                tabs.list()[0].title.as_str(),
+                tabs.list()[0].named,
+                tabs.active()
+            ),
+            ("build", true, 0)
+        );
+        tabs.close_others(1);
+        assert_eq!(
+            (tabs.list().len(), tabs.list()[0].title.as_str()),
+            (1, "Terminal 1")
+        );
     }
 }

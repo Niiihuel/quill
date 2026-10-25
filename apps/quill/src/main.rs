@@ -55,6 +55,10 @@ impl App {
                 }
                 TerminalRequest::Select(tab) => tabs.select(tab),
                 TerminalRequest::Close(tab) => tabs.close(tab),
+                TerminalRequest::CloseOthers(tab) => tabs.close_others(tab),
+                TerminalRequest::Rename(tab, name) => tabs.rename(tab, name),
+                TerminalRequest::Clear(tab) => tabs.clear(tab),
+                TerminalRequest::Move { from, to } => tabs.move_tab(from, to),
             }
         }
         tabs.reap();
@@ -71,9 +75,19 @@ impl App {
         };
         terminal.resize(cols, rows);
         pane.screen = Some(terminal.screen());
-        pane.tabs = tabs.list();
+        pane.tabs = tabs
+            .list()
+            .into_iter()
+            .map(|tab| quill_ui::TerminalTab {
+                title: tab.title,
+                busy: tab.busy,
+                named: tab.named,
+            })
+            .collect();
         pane.active = tabs.active();
-        pane.closing = pane.closing.filter(|tab| *tab < pane.tabs.len());
+        pane.closing = pane.closing.filter(|closing| match closing {
+            quill_ui::Closing::One(tab) | quill_ui::Closing::Others(tab) => *tab < pane.tabs.len(),
+        });
     }
 
     /// Keys typed while the terminal has the focus go to its shell, not to the window.
@@ -154,6 +168,7 @@ impl eframe::App for App {
         self.tree.layout(window);
         let mut actions = vec![];
         let mut focus_terminal = false;
+        let was_renaming = self.ui.terminal.renaming.is_some();
         // Ctrl+` shows and hides the terminal, as in Desktop; limn has no key for it.
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Backtick)) {
             actions.push(limn::UiAction::Clicked {
@@ -165,6 +180,10 @@ impl eframe::App for App {
             if let limn::UiEvent::Key { key, shift, ctrl } = &event {
                 if let Some(id) = quill_ui::shortcut(&self.store, &self.ui, *key, *ctrl, *shift) {
                     actions.push(limn::UiAction::Clicked { id });
+                    continue;
+                }
+                let focused = self.tree.focused_id().map(str::to_owned);
+                if quill_ui::terminal_key(&mut self.ui, focused.as_deref(), *key, *ctrl, *shift) {
                     continue;
                 }
             }
@@ -199,12 +218,9 @@ impl eframe::App for App {
             self.dispatch(intents);
             // A pane just opened, or a tab just picked or made, takes the keys.
             focus_terminal |= (opened && self.ui.pane_open(Pane::Terminal))
-                || self
-                    .ui
-                    .terminal
-                    .requests
-                    .iter()
-                    .any(|r| !matches!(r, TerminalRequest::Close(_)));
+                || self.ui.terminal.requests.iter().any(|r| {
+                    !matches!(r, TerminalRequest::Close(_) | TerminalRequest::Move { .. })
+                });
         }
         self.sync_terminal(&ctx, window);
         let changed = match (&shown, &self.ui.terminal.screen) {
@@ -224,6 +240,11 @@ impl eframe::App for App {
         self.tree
             .set_root(quill_ui::view(&self.store, &self.ui, window));
         let mut frame = self.tree.layout(window);
+        // A pill that just turned into a name field takes the keys.
+        if !was_renaming && self.ui.terminal.renaming.is_some() {
+            self.tree.focus(quill_ui::view::TERMINAL_RENAME);
+            frame = self.tree.layout(window);
+        }
         // A pane just opened takes the keys; focus needs the laid-out tree.
         if focus_terminal && self.tree.focus(quill_ui::view::TERMINAL) {
             frame = self.tree.layout(window);

@@ -2,6 +2,14 @@ use super::*;
 use limn::{UiAction, UiTree};
 use quill_model::{AgentEvent, Usage};
 
+fn tab(title: &str, busy: bool) -> TerminalTab {
+    TerminalTab {
+        title: title.into(),
+        busy,
+        named: false,
+    }
+}
+
 fn store_with_session() -> (Store, Ui) {
     let mut store = Store::default();
     store.apply(Event::SessionCreated {
@@ -286,7 +294,7 @@ fn the_terminal_toggles_and_takes_a_third_beside_the_conversation() {
 fn closing_a_terminal_with_a_running_command_asks_first() {
     let store = Store::default();
     let mut ui = Ui::new("/tmp".into());
-    ui.terminal.tabs = vec![("Terminal 1".into(), false), ("Terminal 2".into(), true)];
+    ui.terminal.tabs = vec![tab("Terminal 1", false), tab("Terminal 2", true)];
     let click = |ui: &mut Ui, id: &str| {
         update(&store, ui, &limn::UiAction::Clicked { id: id.into() });
     };
@@ -296,7 +304,7 @@ fn closing_a_terminal_with_a_running_command_asks_first() {
     click(&mut ui, "terminal:close:1");
     assert_eq!(
         (ui.terminal.closing, ui.terminal.requests.len()),
-        (Some(1), 0)
+        (Some(Closing::One(1)), 0)
     );
     click(&mut ui, view::TERMINAL_CLOSE_CANCEL);
     assert_eq!(ui.terminal.closing, None);
@@ -310,7 +318,7 @@ fn the_terminal_pane_and_its_tabs_fit_in_the_window() {
     let store = Store::default();
     let mut ui = Ui::new("/tmp".into());
     ui.open_pane(Pane::Terminal);
-    ui.terminal.tabs = vec![("Terminal 1".into(), false), ("Terminal 2".into(), false)];
+    ui.terminal.tabs = vec![tab("Terminal 1", false), tab("Terminal 2", false)];
     ui.terminal.screen = Some(std::sync::Arc::new(limn::TerminalScreen {
         cols: 80,
         rows: 14,
@@ -345,12 +353,12 @@ fn one_terminal_shows_its_folder_and_more_show_as_pills() {
     let store = Store::default();
     let mut ui = Ui::new("/tmp/work".into());
     ui.open_pane(Pane::Terminal);
-    ui.terminal.tabs = vec![("Terminal 1".into(), false)];
+    ui.terminal.tabs = vec![tab("Terminal 1", false)];
     ui.terminal.screen = Some(std::sync::Arc::default());
     let window = limn::Size::new(1408.0, 844.0);
     let frame = UiTree::new(view(&store, &ui, window)).layout(window);
     assert!(!frame.regions.iter().any(|r| r.id == "terminal:close:0"));
-    ui.terminal.tabs.push(("Terminal 2".into(), false));
+    ui.terminal.tabs.push(tab("Terminal 2", false));
     ui.terminal.screen = Some(std::sync::Arc::default());
     let window = limn::Size::new(1400.0, 844.0);
     let frame = UiTree::new(view(&store, &ui, window)).layout(window);
@@ -493,4 +501,52 @@ fn dragging_the_boundary_resizes_the_panes_within_their_minimums() {
         (ui.column_fraction.unwrap() * rest).round(),
         rest - view::MIN_CHAT
     );
+}
+
+#[test]
+fn tab_menu_renames_closes_others_and_keys_move_tabs() {
+    let store = Store::default();
+    let mut ui = Ui::new("/tmp".into());
+    ui.terminal.tabs = vec![tab("Terminal 1", true), tab("Terminal 2", false)];
+    let click = |ui: &mut Ui, id: &str| {
+        update(&store, ui, &UiAction::Clicked { id: id.into() });
+    };
+    click(&mut ui, "terminal:menu:rename:1");
+    update(
+        &store,
+        &mut ui,
+        &UiAction::Submitted {
+            id: view::TERMINAL_RENAME.into(),
+            value: "build".into(),
+        },
+    );
+    assert_eq!(
+        ui.terminal.requests,
+        [TerminalRequest::Rename(1, Some("build".into()))]
+    );
+    ui.terminal.requests.clear();
+    // Another tab runs a command: closing the others asks first, with Desktop's wording.
+    click(&mut ui, "terminal:menu:others:1");
+    assert_eq!(ui.terminal.closing, Some(Closing::Others(1)));
+    click(&mut ui, view::TERMINAL_CLOSE_CONFIRM);
+    assert_eq!(ui.terminal.requests, [TerminalRequest::CloseOthers(1)]);
+    ui.terminal.requests.clear();
+    assert!(terminal_key(
+        &mut ui,
+        Some("terminal:tab:1"),
+        limn::Key::ArrowLeft,
+        true,
+        true
+    ));
+    assert_eq!(
+        ui.terminal.requests,
+        [TerminalRequest::Move { from: 1, to: 0 }]
+    );
+    assert!(!terminal_key(
+        &mut ui,
+        Some("composer"),
+        limn::Key::Delete,
+        false,
+        false
+    ));
 }

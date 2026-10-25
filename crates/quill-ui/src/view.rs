@@ -26,6 +26,8 @@ pub const TERMINAL: &str = "terminal";
 /// The terminal's scroll area, which follows new output while it is at the end.
 pub const TERMINAL_SCROLL: &str = "terminal:scroll";
 pub const TERMINAL_NEW: &str = "terminal:new";
+/// The field a tab's pill turns into while the person renames it.
+pub const TERMINAL_RENAME: &str = "terminal:rename";
 pub const TERMINAL_CLOSE_CONFIRM: &str = "terminal:close-confirm";
 pub const TERMINAL_CLOSE_CANCEL: &str = "terminal:close-cancel";
 const TERMINAL_FONT: f32 = 12.0;
@@ -291,14 +293,42 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     ])
     .background(look::THEME.background)
     .size(Some(window.width), Some(window.height));
-    let closing = ui.terminal.closing.and_then(|i| ui.terminal.tabs.get(i));
+    // Desktop's own wording for both closes (Ion `cccc2cf0a`,).
+    let tabs = &ui.terminal.tabs;
+    let (title, description, confirm) = match ui.terminal.closing {
+        Some(crate::Closing::Others(keep)) => {
+            let busy = tabs
+                .iter()
+                .enumerate()
+                .filter(|(i, t)| *i != keep && t.busy)
+                .count();
+            let description = if busy == 1 {
+                "A command is still running in one of the other terminals. Closing them stops it."
+                    .to_string()
+            } else {
+                format!("Commands are still running in {busy} of the other terminals. Closing them stops those commands.")
+            };
+            (
+                "Close other terminals?",
+                description,
+                "Close other terminals",
+            )
+        }
+        Some(crate::Closing::One(tab)) => (
+            "Close terminal?",
+            format!(
+                "A command is still running in {}. Closing the terminal stops it.",
+                tabs.get(tab).map_or("the terminal", |t| t.title.as_str())
+            ),
+            "Close terminal",
+        ),
+        None => ("", String::new(), ""),
+    };
     limn::AlertDialog::new(
         root,
-        closing.is_some(),
-        "Close terminal?",
-        closing.map_or(String::new(), |(name, _)| {
-            format!("A command is still running in {name}. Closing the terminal stops it.")
-        }),
+        ui.terminal.closing.is_some(),
+        title,
+        description,
         TERMINAL_CLOSE_CONFIRM,
         TERMINAL_CLOSE_CANCEL,
         // Cancel is filled with `raised`: Desktop's light gray.
@@ -308,10 +338,11 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
         },
     )
     .width(400.0)
-    .confirm_label("Close terminal")
+    .confirm_label(confirm)
     .soft_destructive(look::DANGER_FILL, look::DANGER_BORDER, look::DANGER_INK)
     .cancel_variant(ButtonVariant::Secondary)
     .description_size(BODY)
+    .description_line_height(20.0)
     .closable(false)
     // Desktop's backdrop is lighter, its title closer, its buttons 30 px with 14 px labels.
     .scrim(look::SCRIM)
@@ -376,40 +407,55 @@ fn terminal_pane(
 ) -> Element {
     let new = icon_tool(TERMINAL_NEW, limn::Icon::Add, "New terminal", 28.0, palette);
     let tabs = &ui.terminal.tabs;
+    let folder = folder_name(session.map_or(&ui.cwd, |s| &s.cwd));
     let lead = if tabs.len() <= 1 {
-        let folder = session.map_or(&ui.cwd, |s| &s.cwd);
-        Element::row(vec![
-            text("Terminal").centered_y(),
-            muted(folder_name(folder)).centered_y(),
-            Element::spacer().size(Some(4.0), None),
-            new,
+        let title = match tabs.first() {
+            Some(tab) if tab.named => tab.title.clone(),
+            _ => "Terminal".into(),
+        };
+        let label = Element::row(vec![
+            text(title).centered_y(),
+            muted(folder.clone()).centered_y(),
         ])
-        .gap(8.0)
+        .gap(8.0);
+        let label = match ui.terminal.renaming {
+            Some((0, ref name)) => rename_field(name, palette),
+            _ => tab_menu(0, 1, label, palette),
+        };
+        Element::row(vec![label, Element::spacer().size(Some(4.0), None), new]).gap(8.0)
     } else {
         let mut pills: Vec<Element> = tabs
             .iter()
             .enumerate()
-            .map(|(i, (title, _))| {
-                let pill = Element::row(vec![
-                    hgap(8.0),
-                    text(title.clone()).centered_y(),
-                    icon_tool(
-                        &format!("terminal:close:{i}"),
-                        limn::Icon::Close,
-                        "Close terminal",
-                        20.0,
-                        palette,
-                    ),
-                ])
-                .gap(4.0)
-                .size(None, Some(28.0))
-                .radius(8.0);
+            .map(|(i, tab)| {
+                if let Some((at, name)) = &ui.terminal.renaming {
+                    if *at == i {
+                        return rename_field(name, palette);
+                    }
+                }
+                // "Terminal 2  work ×": a named tab drops the folder.
+                let mut items = vec![hgap(8.0), text(tab.title.clone()).centered_y()];
+                if !tab.named {
+                    items.push(muted(folder.clone()).centered_y());
+                }
+                items.push(icon_tool(
+                    &format!("terminal:close:{i}"),
+                    limn::Icon::Close,
+                    "Close terminal",
+                    20.0,
+                    palette,
+                ));
+                let pill = Element::row(items)
+                    .gap(6.0)
+                    .size(None, Some(28.0))
+                    .radius(8.0);
                 let pill = if i == ui.terminal.active {
                     pill.background(look::ACTIVE)
                 } else {
                     pill
                 };
-                Element::clickable(format!("terminal:tab:{i}"), pill).centered_y()
+                let pill = Element::clickable(format!("terminal:tab:{i}"), pill).centered_y();
+                tab_menu(i, tabs.len(), pill, palette)
             })
             .collect();
         pills.push(new);
@@ -438,6 +484,40 @@ fn terminal_pane(
         None => Element::spacer(),
     };
     Element::column(vec![header, body.flex(1.0)]).size(Some(width), Some(height))
+}
+
+/// A tab's right-click menu, Desktop's four actions: rename, clear, close, and
+/// close the others when there are others.
+fn tab_menu(tab: usize, count: usize, child: Element, palette: ComponentPalette) -> Element {
+    use limn::{ContextMenuEntry, ContextMenuItem};
+    let item = |action: &str, label: &str| {
+        ContextMenuEntry::Item(ContextMenuItem::new(
+            format!("terminal:menu:{action}:{tab}"),
+            label,
+        ))
+    };
+    let mut entries = vec![
+        item("rename", "Rename terminal"),
+        item("clear", "Clear terminal"),
+        ContextMenuEntry::Separator,
+        item("close", "Close terminal"),
+    ];
+    if count > 1 {
+        entries.push(item("others", "Close other terminals"));
+    }
+    limn::ContextMenu::new(format!("terminal:menu:{tab}"), child, entries, palette).render()
+}
+
+/// The name field a pill turns into while the person renames it.
+fn rename_field(name: &str, palette: ComponentPalette) -> Element {
+    limn::TextField::new(TERMINAL_RENAME, name, "", palette)
+        .size(ControlSize::Compact)
+        .width(160.0)
+        .render()
+        .border(look::CARD_BORDER, 1.0)
+        .focus_border(look::HANDLE, 1.0)
+        .radius(8.0)
+        .centered_y()
 }
 
 /// A square icon button with the palette's hover and press, as limn's own tools draw them.
