@@ -247,9 +247,88 @@ fn the_terminal_toggles_and_fits_the_main_column() {
         id: view::TERMINAL_TOGGLE.into(),
     };
     update(&store, &mut ui, &click);
-    assert!(ui.terminal_open);
+    assert!(ui.terminal.open);
     let (cols, rows) = view::terminal_grid(&store, &ui, limn::Size::new(1212.0, 800.0));
     assert!(cols > 100 && rows > 10, "{cols}x{rows}");
     update(&store, &mut ui, &click);
-    assert!(!ui.terminal_open);
+    assert!(!ui.terminal.open);
+}
+
+#[test]
+fn closing_a_terminal_with_a_running_command_asks_first() {
+    let store = Store::default();
+    let mut ui = Ui::new("/tmp".into());
+    ui.terminal.tabs = vec![("Terminal 1".into(), false), ("Terminal 2".into(), true)];
+    let click = |ui: &mut Ui, id: &str| {
+        update(&store, ui, &limn::UiAction::Clicked { id: id.into() });
+    };
+    click(&mut ui, "terminal:close:0");
+    assert_eq!(ui.terminal.requests, [TerminalRequest::Close(0)]);
+    ui.terminal.requests.clear();
+    click(&mut ui, "terminal:close:1");
+    assert_eq!(
+        (ui.terminal.closing, ui.terminal.requests.len()),
+        (Some(1), 0)
+    );
+    click(&mut ui, view::TERMINAL_CLOSE_CANCEL);
+    assert_eq!(ui.terminal.closing, None);
+    click(&mut ui, "terminal:close:1");
+    click(&mut ui, view::TERMINAL_CLOSE_CONFIRM);
+    assert_eq!(ui.terminal.requests, [TerminalRequest::Close(1)]);
+}
+
+#[test]
+fn the_terminal_pane_and_its_tabs_fit_in_the_window() {
+    let store = Store::default();
+    let mut ui = Ui::new("/tmp".into());
+    ui.terminal.open = true;
+    ui.terminal.tabs = vec![("Terminal 1".into(), false), ("Terminal 2".into(), false)];
+    ui.terminal.screen = Some(std::sync::Arc::new(limn::TerminalScreen {
+        cols: 80,
+        rows: 14,
+        cells: vec![limn::TerminalCell::new('x', limn::Color::rgb(0, 0, 0)); 80 * 14],
+        scrollback: vec![],
+        cursor: None,
+    }));
+    let window = limn::Size::new(1400.0, 844.0);
+    let mut tree = UiTree::new(view(&store, &ui, window));
+    let frame = tree.layout(window);
+    for id in [
+        view::TERMINAL,
+        view::TERMINAL_NEW,
+        "terminal:close:0",
+        "terminal:tab:1",
+    ] {
+        let region = frame
+            .regions
+            .iter()
+            .find(|r| r.id == id)
+            .unwrap_or_else(|| panic!("no {id}"));
+        let r = region.rect;
+        assert!(
+            r.width > 0.0 && r.x + r.width <= 1400.0 && r.y + r.height <= 844.0,
+            "{id} at {r:?}"
+        );
+    }
+}
+
+#[test]
+fn a_terminal_tab_close_button_keeps_its_slot() {
+    let store = Store::default();
+    let mut ui = Ui::new("/tmp".into());
+    ui.terminal.open = true;
+    ui.terminal.tabs = vec![("Terminal 1".into(), false)];
+    ui.terminal.screen = Some(std::sync::Arc::default());
+    let window = limn::Size::new(1400.0, 844.0);
+    let frame = UiTree::new(view(&store, &ui, window)).layout(window);
+    let close = frame
+        .regions
+        .iter()
+        .find(|r| r.id == "terminal:close:0")
+        .unwrap();
+    assert!(
+        close.rect.width <= limn::TabStrip::CLOSE_SIZE,
+        "{:?}",
+        close.rect
+    );
 }

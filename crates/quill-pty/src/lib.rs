@@ -6,6 +6,7 @@ use limn::{Color, Key, TerminalCell, TerminalCursor, TerminalCursorShape, Termin
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// The sixteen ANSI colors of Claude Desktop's light terminal theme, as
@@ -29,13 +30,18 @@ const ANSI: [Color; 16] = [
     Color::rgb(0xd6, 0xd6, 0xd6),
 ];
 const FOREGROUND: Color = Color::rgb(0x1a, 0x1a, 0x1a);
-const SCROLLBACK: usize = 2000;
+// shortcut: Desktop keeps 10000 lines; all of them are copied on new output, so
+// quill keeps fewer until the view reads vt100's rows in place.
+const SCROLLBACK: usize = 1000;
 
 pub struct Terminal {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     parser: Arc<Mutex<vt100::Parser>>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
+    /// Set by the reader when output arrived since `screen` last copied it.
+    dirty: Arc<AtomicBool>,
+    copied: Arc<TerminalScreen>,
 }
 
 impl Terminal {
@@ -72,6 +78,8 @@ impl Terminal {
         let writer = pair.master.take_writer().map_err(std::io::Error::other)?;
         let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, SCROLLBACK)));
         let output = parser.clone();
+        let dirty = Arc::new(AtomicBool::new(true));
+        let changed = dirty.clone();
         std::thread::spawn(move || {
             let mut buffer = [0u8; 8192];
             while let Ok(read) = reader.read(&mut buffer) {
@@ -79,6 +87,7 @@ impl Terminal {
                     break;
                 }
                 output.lock().unwrap().process(&buffer[..read]);
+                changed.store(true, Ordering::Release);
                 wake();
             }
         });
@@ -87,6 +96,8 @@ impl Terminal {
             writer,
             parser,
             child,
+            dirty,
+            copied: Arc::default(),
         })
     }
 
@@ -111,6 +122,13 @@ impl Terminal {
             .unwrap()
             .screen_mut()
             .set_size(rows, cols);
+        self.dirty.store(true, Ordering::Release);
+    }
+
+    /// Whether a program other than the shell holds the terminal, so closing it would stop one.
+    pub fn busy(&self) -> bool {
+        let shell = self.child.process_id().map(|pid| pid as i32);
+        matches!((self.master.process_group_leader(), shell), (Some(leader), Some(shell)) if leader != shell)
     }
 
     /// Whether the shell is still running.
@@ -118,9 +136,15 @@ impl Terminal {
         matches!(self.child.try_wait(), Ok(None))
     }
 
-    /// The screen as it is now, for `TerminalView`.
-    pub fn screen(&self) -> TerminalScreen {
-        screen_of(self.parser.lock().unwrap().screen())
+    /// The screen and the lines above it as they are now, for `TerminalView`.
+    pub fn screen(&mut self) -> Arc<TerminalScreen> {
+        if self.dirty.swap(false, Ordering::Acquire) {
+            let mut parser = self.parser.lock().unwrap();
+            let mut screen = screen_of(parser.screen());
+            screen.scrollback = scrollback_of(parser.screen_mut());
+            self.copied = Arc::new(screen);
+        }
+        self.copied.clone()
     }
 }
 
@@ -148,29 +172,28 @@ fn color(c: vt100::Color, fallback: Color) -> Color {
     }
 }
 
+fn cell_of(cell: Option<&vt100::Cell>) -> TerminalCell {
+    let Some(cell) = cell else {
+        return TerminalCell::new(' ', FOREGROUND);
+    };
+    let ch = cell.contents().chars().next().unwrap_or(' ');
+    let mut out = TerminalCell::new(ch, color(cell.fgcolor(), FOREGROUND));
+    out.bg = match cell.bgcolor() {
+        vt100::Color::Default => None,
+        other => Some(color(other, FOREGROUND)),
+    };
+    out.bold = cell.bold();
+    out.underline = cell.underline();
+    out.inverse = cell.inverse();
+    out
+}
+
 fn screen_of(screen: &vt100::Screen) -> TerminalScreen {
     let (rows, cols) = screen.size();
     let mut cells = Vec::with_capacity(rows as usize * cols as usize);
     for row in 0..rows {
         for col in 0..cols {
-            let cell = screen.cell(row, col);
-            let ch = cell
-                .and_then(|c| c.contents().chars().next())
-                .unwrap_or(' ');
-            let mut out = TerminalCell::new(
-                ch,
-                cell.map_or(FOREGROUND, |c| color(c.fgcolor(), FOREGROUND)),
-            );
-            if let Some(c) = cell {
-                out.bg = match c.bgcolor() {
-                    vt100::Color::Default => None,
-                    other => Some(color(other, FOREGROUND)),
-                };
-                out.bold = c.bold();
-                out.underline = c.underline();
-                out.inverse = c.inverse();
-            }
-            cells.push(out);
+            cells.push(cell_of(screen.cell(row, col)));
         }
     }
     let (row, col) = screen.cursor_position();
@@ -185,6 +208,102 @@ fn screen_of(screen: &vt100::Screen) -> TerminalScreen {
         cells,
         scrollback: vec![],
         cursor,
+    }
+}
+
+/// The lines scrolled off the top, oldest first. vt100 shows them only by moving its view
+/// back, so the view is walked back a screen at a time and put back at the bottom.
+fn scrollback_of(screen: &mut vt100::Screen) -> Vec<Vec<TerminalCell>> {
+    let (rows, cols) = screen.size();
+    screen.set_scrollback(usize::MAX);
+    let total = screen.scrollback();
+    let mut lines = Vec::with_capacity(total);
+    let mut offset = total;
+    while offset > 0 {
+        screen.set_scrollback(offset);
+        for row in 0..(rows as usize).min(offset) {
+            lines.push(
+                (0..cols)
+                    .map(|col| cell_of(screen.cell(row as u16, col)))
+                    .collect(),
+            );
+        }
+        offset = offset.saturating_sub(rows as usize);
+    }
+    screen.set_scrollback(0);
+    lines
+}
+
+/// The terminals of one folder, as the pane's tabs.
+#[derive(Default)]
+pub struct Tabs {
+    tabs: Vec<(u32, Terminal)>,
+    active: usize,
+    next: u32,
+}
+
+impl Tabs {
+    /// Open a new tab and make it the active one.
+    pub fn open(
+        &mut self,
+        cwd: &Path,
+        cols: u16,
+        rows: u16,
+        wake: impl Fn() + Send + 'static,
+    ) -> std::io::Result<()> {
+        let terminal = Terminal::spawn(cwd, cols, rows, wake)?;
+        self.next += 1;
+        self.tabs.push((self.next, terminal));
+        self.active = self.tabs.len() - 1;
+        Ok(())
+    }
+
+    /// Close a tab, stopping whatever runs in it.
+    pub fn close(&mut self, index: usize) {
+        if index < self.tabs.len() {
+            self.tabs.remove(index);
+        }
+        if index < self.active || self.active >= self.tabs.len() {
+            self.active = self.active.saturating_sub(1);
+        }
+    }
+
+    pub fn select(&mut self, index: usize) {
+        if index < self.tabs.len() {
+            self.active = index;
+        }
+    }
+
+    /// Drop the tabs whose shell ended.
+    pub fn reap(&mut self) {
+        let mut index = self.tabs.len();
+        while index > 0 {
+            index -= 1;
+            if !self.tabs[index].1.alive() {
+                self.close(index);
+            }
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tabs.is_empty()
+    }
+
+    pub fn active(&self) -> usize {
+        self.active
+    }
+
+    pub fn active_mut(&mut self) -> Option<&mut Terminal> {
+        self.tabs.get_mut(self.active).map(|(_, t)| t)
+    }
+
+    /// Each tab's title, "Terminal {n}" as Desktop numbers them, and whether a
+    /// command runs in it.
+    pub fn list(&self) -> Vec<(String, bool)> {
+        self.tabs
+            .iter()
+            .map(|(n, t)| (format!("Terminal {n}"), t.busy()))
+            .collect()
     }
 }
 
@@ -256,5 +375,47 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         assert!(terminal.alive());
+    }
+
+    #[test]
+    fn lines_scrolled_off_stay_above_the_screen() {
+        let mut parser = vt100::Parser::new(2, 6, 100);
+        parser.process(b"one\r\ntwo\r\nthree\r\nfour\r\nfive");
+        let lines = scrollback_of(parser.screen_mut());
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| {
+                l.iter()
+                    .map(|c| c.ch)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect();
+        assert_eq!(text, ["one", "two", "three"]);
+        assert_eq!(parser.screen().scrollback(), 0);
+    }
+
+    #[test]
+    fn tabs_open_close_and_report_a_running_command() {
+        let dir = std::env::temp_dir();
+        let mut tabs = Tabs::default();
+        tabs.open(&dir, 40, 5, || {}).unwrap();
+        tabs.open(&dir, 40, 5, || {}).unwrap();
+        assert_eq!(tabs.active(), 1);
+        tabs.active_mut().unwrap().write(b"sleep 5\r");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !tabs.list()[1].1 {
+            assert!(std::time::Instant::now() < deadline, "never busy");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert_eq!(
+            tabs.list(),
+            [("Terminal 1".into(), false), ("Terminal 2".into(), true)]
+        );
+        tabs.close(1);
+        assert_eq!((tabs.active(), tabs.list().len()), (0, 1));
+        tabs.open(&dir, 40, 5, || {}).unwrap();
+        assert_eq!(tabs.list()[1].0, "Terminal 3");
     }
 }

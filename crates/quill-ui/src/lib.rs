@@ -337,9 +337,28 @@ pub struct Ui {
     pub answers: std::collections::HashMap<(String, usize), String>,
     /// The permission whose "Always allow" menu is open.
     pub perm_menu: Option<String>,
-    /// Whether the terminal pane shows, and the screen the host's shell last drew.
-    pub terminal_open: bool,
-    pub terminal: Option<std::sync::Arc<limn::TerminalScreen>>,
+    pub terminal: TerminalPane,
+}
+
+/// The terminal pane: what the host's shells last showed, and what the person asked of them.
+#[derive(Default)]
+pub struct TerminalPane {
+    pub open: bool,
+    /// The folder's tabs: title, and whether a command runs in it.
+    pub tabs: Vec<(String, bool)>,
+    pub active: usize,
+    pub screen: Option<std::sync::Arc<limn::TerminalScreen>>,
+    /// The tab whose close waits for the person to confirm, as a command runs in it.
+    pub closing: Option<usize>,
+    /// What the host does with the folder's shells on the next frame.
+    pub requests: Vec<TerminalRequest>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TerminalRequest {
+    New,
+    Select(usize),
+    Close(usize),
 }
 
 impl Ui {
@@ -357,8 +376,7 @@ impl Ui {
             diff: None,
             answers: Default::default(),
             perm_menu: None,
-            terminal_open: false,
-            terminal: None,
+            terminal: TerminalPane::default(),
         }
     }
 
@@ -411,6 +429,29 @@ pub fn update(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Intent
     }
 }
 
+fn terminal_clicked(pane: &mut TerminalPane, id: &str) {
+    let index = |prefix: &str| id.strip_prefix(prefix)?.parse::<usize>().ok();
+    if id == view::TERMINAL_TOGGLE {
+        pane.open = !pane.open;
+    } else if id == view::TERMINAL_NEW {
+        pane.requests.push(TerminalRequest::New);
+    } else if id == view::TERMINAL_CLOSE_CONFIRM {
+        pane.requests
+            .extend(pane.closing.take().map(TerminalRequest::Close));
+    } else if id == view::TERMINAL_CLOSE_CANCEL {
+        pane.closing = None;
+    } else if let Some(tab) = index("terminal:tab:") {
+        pane.requests.push(TerminalRequest::Select(tab));
+    } else if let Some(tab) = index("terminal:close:") {
+        // A running command is stopped only once the person confirms.
+        if pane.tabs.get(tab).is_some_and(|(_, busy)| *busy) {
+            pane.closing = Some(tab);
+        } else {
+            pane.requests.push(TerminalRequest::Close(tab));
+        }
+    }
+}
+
 fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
     if id == view::NEW_SESSION {
         ui.selected = None;
@@ -419,8 +460,8 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
     if let Some(rest) = id.strip_prefix("ask:") {
         return answer(store, ui, rest);
     }
-    if id == view::TERMINAL_TOGGLE {
-        ui.terminal_open = !ui.terminal_open;
+    if id.starts_with("terminal:") {
+        terminal_clicked(&mut ui.terminal, id);
         return vec![];
     }
     if id == view::DIFF_CLOSE {

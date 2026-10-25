@@ -5,7 +5,7 @@ use eframe::egui;
 use limn::{Element, Size, UiTree};
 use quill_engine::Engine;
 use quill_model::{Event, Intent};
-use quill_ui::{Store, Ui};
+use quill_ui::{Store, TerminalRequest, Ui};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -19,40 +19,57 @@ struct App {
     inbox: Arc<Mutex<Vec<Event>>>,
     /// The folder the person chose in the platform's dialog, picked up on the next frame.
     picked: Arc<Mutex<Option<PathBuf>>>,
-    /// One shell per folder, kept while the window lives (features/terminal.md).
-    terminals: HashMap<PathBuf, quill_pty::Terminal>,
+    /// The terminal tabs of each folder, kept while the window lives (features/terminal.md).
+    terminals: HashMap<PathBuf, quill_pty::Tabs>,
     fonts_attached: bool,
 }
 
 impl App {
-    /// Start, size and read the shell of the folder on screen while the pane is open.
+    /// Start, size and read the shells of the folder on screen while the pane is open, and do
+    /// what the person asked of them.
     fn sync_terminal(&mut self, ctx: &egui::Context, window: Size) {
-        self.ui.terminal = None;
-        if !self.ui.terminal_open {
-            return;
-        }
         let folder = quill_ui::folder(&self.store, &self.ui);
         let (cols, rows) = quill_ui::view::terminal_grid(&self.store, &self.ui, window);
-        if !self.terminals.contains_key(&folder) {
-            let ctx = ctx.clone();
-            match quill_pty::Terminal::spawn(&folder, cols, rows, move || ctx.request_repaint()) {
-                Ok(terminal) => drop(self.terminals.insert(folder.clone(), terminal)),
-                Err(error) => {
-                    eprintln!("quill: no terminal in {}: {error}", folder.display());
-                    self.ui.terminal_open = false;
-                    return;
-                }
-            }
-        }
-        let terminal = self.terminals.get_mut(&folder).expect("started above");
-        // `exit` in the shell closes the pane; the next one starts fresh.
-        if !terminal.alive() {
-            self.terminals.remove(&folder);
-            self.ui.terminal_open = false;
+        let pane = &mut self.ui.terminal;
+        pane.screen = None;
+        let requests = std::mem::take(&mut pane.requests);
+        if !pane.open {
             return;
         }
+        let tabs = self.terminals.entry(folder.clone()).or_default();
+        let had = !tabs.is_empty();
+        let wake = || {
+            let ctx = ctx.clone();
+            move || ctx.request_repaint()
+        };
+        for request in requests {
+            match request {
+                TerminalRequest::New => {
+                    if let Err(error) = tabs.open(&folder, cols, rows, wake()) {
+                        eprintln!("quill: no terminal in {}: {error}", folder.display());
+                    }
+                }
+                TerminalRequest::Select(tab) => tabs.select(tab),
+                TerminalRequest::Close(tab) => tabs.close(tab),
+            }
+        }
+        tabs.reap();
+        if tabs.is_empty() && !had {
+            if let Err(error) = tabs.open(&folder, cols, rows, wake()) {
+                eprintln!("quill: no terminal in {}: {error}", folder.display());
+            }
+        }
+        // Closing the last tab, or `exit` in it, hides the pane; opening it again starts fresh.
+        let Some(terminal) = tabs.active_mut() else {
+            pane.open = false;
+            pane.tabs.clear();
+            return;
+        };
         terminal.resize(cols, rows);
-        self.ui.terminal = Some(Arc::new(terminal.screen()));
+        pane.screen = Some(terminal.screen());
+        pane.tabs = tabs.list();
+        pane.active = tabs.active();
+        pane.closing = pane.closing.filter(|tab| *tab < pane.tabs.len());
     }
 
     /// Keys typed while the terminal has the focus go to its shell, not to the window.
@@ -72,7 +89,7 @@ impl App {
             _ => return false,
         };
         let folder = quill_ui::folder(&self.store, &self.ui);
-        if let Some(terminal) = self.terminals.get_mut(&folder) {
+        if let Some(terminal) = self.terminals.get_mut(&folder).and_then(|t| t.active_mut()) {
             terminal.write(&bytes);
         }
         true
@@ -105,6 +122,12 @@ impl eframe::App for App {
         limn_egui::normalize_keyboard_input(&ctx);
         let area = ui.max_rect();
         let window = Size::new(area.width(), area.height());
+        // New output keeps the terminal at its end only if the person left it there.
+        let shown = self.ui.terminal.screen.clone();
+        let follow = shown.is_none()
+            || self
+                .tree
+                .is_scroll_at_end(quill_ui::view::TERMINAL_SCROLL, 4.0);
         self.sync_terminal(&ctx, window);
 
         self.tree
@@ -139,14 +162,27 @@ impl eframe::App for App {
             {
                 self.tree.set_input_value(quill_ui::view::COMPOSER, "");
             }
-            let opened = !self.ui.terminal_open;
+            let opened = !self.ui.terminal.open;
             let intents = quill_ui::update(&self.store, &mut self.ui, &action);
             self.dispatch(intents);
-            if opened && self.ui.terminal_open {
-                focus_terminal = true;
-            }
+            // A pane just opened, or a tab just picked or made, takes the keys.
+            focus_terminal |= (opened && self.ui.terminal.open)
+                || self
+                    .ui
+                    .terminal
+                    .requests
+                    .iter()
+                    .any(|r| !matches!(r, TerminalRequest::Close(_)));
         }
         self.sync_terminal(&ctx, window);
+        let changed = match (&shown, &self.ui.terminal.screen) {
+            (Some(before), Some(now)) => !Arc::ptr_eq(before, now),
+            (None, Some(_)) => true,
+            _ => false,
+        };
+        if (follow && changed) || focus_terminal {
+            self.tree.scroll_to_end(quill_ui::view::TERMINAL_SCROLL);
+        }
         self.tree
             .set_root(quill_ui::view(&self.store, &self.ui, window));
         let mut frame = self.tree.layout(window);

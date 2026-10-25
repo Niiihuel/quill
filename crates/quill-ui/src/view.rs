@@ -21,7 +21,13 @@ pub const PICK_FOLDER: &str = "pick-folder";
 pub const TERMINAL_TOGGLE: &str = "terminal:toggle";
 /// The terminal pane; while it has the focus the host sends keys to the shell.
 pub const TERMINAL: &str = "terminal";
-const TERMINAL_HEIGHT: f32 = 240.0;
+/// The terminal's scroll area, which follows new output while it is at the end.
+pub const TERMINAL_SCROLL: &str = "terminal:scroll";
+pub const TERMINAL_NEW: &str = "terminal:new";
+pub const TERMINAL_CLOSE_CONFIRM: &str = "terminal:close-confirm";
+pub const TERMINAL_CLOSE_CANCEL: &str = "terminal:close-cancel";
+const TERMINAL_HEIGHT: f32 = 272.0;
+const TERMINAL_TAB_WIDTH: f32 = 140.0;
 const TERMINAL_FONT: f32 = 12.0;
 const TERMINAL_PADDING: f32 = 8.0;
 
@@ -78,7 +84,7 @@ pub fn terminal_grid(store: &Store, ui: &Ui, window: Size) -> (u16, u16) {
     let (_, _, main_width) = widths(store, ui, window);
     let inner = Size::new(
         main_width - 2.0 * TERMINAL_PADDING,
-        TERMINAL_HEIGHT - 2.0 * TERMINAL_PADDING,
+        TERMINAL_HEIGHT - limn::TabStrip::HEADER_HEIGHT - 2.0 * TERMINAL_PADDING,
     );
     let (cols, rows) = limn::TerminalView::grid_size(inner, TERMINAL_FONT);
     (cols as u16, rows as u16)
@@ -102,19 +108,18 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
         Element::spacer().size(None, Some(12.0)),
     ];
     // The session's shell sits under the conversation (features/terminal.md).
-    if let (true, Some(screen)) = (ui.terminal_open, &ui.terminal) {
-        main.push(
-            Element::spacer()
-                .background(look::DIVIDER)
-                .size(Some(main_width), Some(1.0)),
-        );
+    if let (true, Some(screen)) = (ui.terminal.open, &ui.terminal.screen) {
+        main.push(terminal_tabs(ui, main_width, palette));
         main.push(
             limn::TerminalView::new(TERMINAL, screen.clone(), palette)
                 .font_size(TERMINAL_FONT)
                 .background(look::THEME.background)
                 .render()
                 .padding(TERMINAL_PADDING)
-                .size(Some(main_width), Some(TERMINAL_HEIGHT - 1.0)),
+                .size(
+                    Some(main_width),
+                    Some(TERMINAL_HEIGHT - limn::TabStrip::HEADER_HEIGHT),
+                ),
         );
     }
     let main = Element::column(main).size(Some(main_width), Some(window.height));
@@ -136,9 +141,73 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     if let (Some(session), true) = (session, panel_width > 0.0) {
         row.push(right_panel(session, panel_width, window.height, palette));
     }
-    Element::row(row)
+    let root = Element::row(row)
         .background(look::THEME.background)
-        .size(Some(window.width), Some(window.height))
+        .size(Some(window.width), Some(window.height));
+    let closing = ui.terminal.closing.and_then(|i| ui.terminal.tabs.get(i));
+    limn::AlertDialog::new(
+        root,
+        closing.is_some(),
+        "Close terminal?",
+        closing.map_or(String::new(), |(name, _)| {
+            format!("A command is still running in {name}. Closing the terminal stops it.")
+        }),
+        TERMINAL_CLOSE_CONFIRM,
+        TERMINAL_CLOSE_CANCEL,
+        palette,
+    )
+    .confirm_label("Close terminal")
+    .render()
+}
+
+/// The pane's tabs, each with its close button, and "New terminal".
+fn terminal_tabs(ui: &Ui, width: f32, palette: ComponentPalette) -> Element {
+    let tabs = ui
+        .terminal
+        .tabs
+        .iter()
+        .enumerate()
+        .map(|(i, (title, _))| {
+            limn::TabItem::new(
+                format!("terminal:tab:{i}"),
+                format!("terminal:extent:{i}"),
+                limn::Icon::Terminal,
+                title,
+                TERMINAL_TAB_WIDTH,
+            )
+            .active(i == ui.terminal.active)
+            .close(icon_tool(
+                &format!("terminal:close:{i}"),
+                limn::Icon::Close,
+                "Close terminal",
+                limn::TabStrip::CLOSE_SIZE,
+                palette,
+            ))
+        })
+        .collect();
+    let strip = limn::TabStrip::new("terminal:tabs", tabs, palette).render();
+    let new = icon_tool(
+        TERMINAL_NEW,
+        limn::Icon::Add,
+        "New terminal",
+        limn::TabStrip::TOOL_SIZE,
+        palette,
+    );
+    limn::TabStrip::header(strip, new, width, palette).render()
+}
+
+/// A square icon button with the palette's hover and press, as limn's own tools draw them.
+fn icon_tool(
+    id: &str,
+    icon: limn::Icon,
+    label: &str,
+    side: f32,
+    palette: ComponentPalette,
+) -> Element {
+    palette
+        .interactive_surface(Element::icon_button(id, icon, label))
+        .foreground(palette.muted)
+        .size(Some(side), Some(side))
 }
 
 fn top_bar(session: Option<&Session>, ui: &Ui, palette: ComponentPalette) -> Element {
@@ -159,7 +228,7 @@ fn top_bar(session: Option<&Session>, ui: &Ui, palette: ComponentPalette) -> Ele
                 .render(),
         );
     }
-    let label = if ui.terminal_open {
+    let label = if ui.terminal.open {
         "Hide terminal"
     } else {
         "Show terminal"
