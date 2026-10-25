@@ -288,7 +288,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
         row.push(right_panel(session, layout.panel, below, palette));
     }
     let content = Element::column(vec![
-        top_bar(session, ui, palette),
+        top_bar(session, ui),
         hline(rest, look::PANE_BORDER),
         Element::row(row).size(Some(rest), Some(below)),
     ])
@@ -533,28 +533,57 @@ fn icon_tool(
     icon: limn::Icon,
     label: &str,
     side: f32,
-    palette: ComponentPalette,
+    _palette: ComponentPalette,
 ) -> Element {
-    palette
+    tool_surface(id, icon, label, side, None, look::TOOL_HOVER, None).centered_y()
+}
+
+/// An icon button as Desktop draws them: rounded 6, its icon in the text's ink,
+/// `hover` under the pointer, an optional fill at rest, and a tooltip with its shortcut.
+fn tool_surface(
+    id: &str,
+    icon: limn::Icon,
+    label: &str,
+    side: f32,
+    fill: Option<limn::Color>,
+    hover: limn::Color,
+    shortcut: Option<&str>,
+) -> Element {
+    let palette = ComponentPalette {
+        hover,
+        selected: hover,
+        ..look::PALETTE
+    };
+    let button = palette
         .interactive_surface(Element::icon_button(id, icon, label))
-        .foreground(palette.text)
-        .size(Some(side), Some(side))
-        .centered_y()
+        .foreground(look::PALETTE.text)
+        .radius(6.0)
+        .size(Some(side), Some(side));
+    let button = match fill {
+        Some(fill) => button.background(fill),
+        None => button,
+    };
+    let tip = limn::Tooltip::new(button, id, label, look::PALETTE);
+    match shortcut {
+        Some(keys) => tip.shortcut(keys),
+        None => tip,
+    }
+    .render()
 }
 
 /// A top-bar toggle: its icon on the active fill while what it shows is open.
-fn toggle(id: &str, icon: limn::Icon, label: &str, on: bool, palette: ComponentPalette) -> Element {
-    let tool = icon_tool(id, icon, label, 26.0, palette);
-    if on {
-        tool.background(look::ACTIVE).radius(6.0)
+fn toggle(id: &str, icon: limn::Icon, label: &str, on: bool, shortcut: Option<&str>) -> Element {
+    let (fill, hover) = if on {
+        (Some(look::ACTIVE), look::ACTIVE_HOVER)
     } else {
-        tool
-    }
+        (None, look::TOOL_HOVER)
+    };
+    tool_surface(id, icon, label, 26.0, fill, hover, shortcut).centered_y()
 }
 
 /// The session's title, Stop while it works, and the toggles of the panel and the panes
 ///.
-fn top_bar(session: Option<&Session>, ui: &Ui, palette: ComponentPalette) -> Element {
+fn top_bar(session: Option<&Session>, ui: &Ui) -> Element {
     // An expanded pane leaves the bar empty, as Desktop's does.
     if ui.expanded_pane.is_some() {
         return Element::spacer().size(None, Some(look::TOP_BAR));
@@ -572,43 +601,35 @@ fn top_bar(session: Option<&Session>, ui: &Ui, palette: ComponentPalette) -> Ele
         muted(title)
     };
     let mut row = vec![title.centered_y(), Element::spacer().flex(1.0)];
-    if session.is_some_and(|s| matches!(s.status, SessionStatus::Running | SessionStatus::Awaiting))
-    {
-        row.push(
-            Button::new(STOP, "Stop", palette)
-                .variant(ButtonVariant::Ghost)
-                .button_size(ButtonSize::Small)
-                .render()
-                .centered_y(),
-        );
-    }
+    // Stop lives in the composer, as in Desktop.
     if session.is_some() {
+        let shown = ui.panel_open && ui.panes.is_empty();
         row.push(toggle(
             PANEL_TOGGLE,
             limn::Icon::PanelRight,
-            "Toggle panel",
-            ui.panel_open && ui.panes.is_empty(),
-            palette,
+            if shown {
+                "Hide session rail"
+            } else {
+                "Show session rail"
+            },
+            shown,
+            None,
         ));
     }
     row.push(toggle(
         TERMINAL_TOGGLE,
         limn::Icon::Terminal,
-        if ui.pane_open(Pane::Terminal) {
-            "Hide terminal"
-        } else {
-            "Show terminal"
-        },
+        "Terminal",
         ui.pane_open(Pane::Terminal),
-        palette,
+        Some("Ctrl+`"),
     ));
     if session.is_some() {
         row.push(toggle(
             DIFF_TOGGLE,
             limn::Icon::Code,
-            "Toggle diff",
+            "Diff",
             ui.pane_open(Pane::Diff),
-            palette,
+            Some("Ctrl+Shift+D"),
         ));
     }
     row.insert(0, hgap(20.0));
@@ -706,6 +727,16 @@ fn side_row(
     items.extend(content);
     items.push(hgap(10.0));
     let row = Element::row(items).gap(10.0).size(None, Some(32.0));
+    // Under the pointer a row turns #EDEDED, a selected one from #E0E0E0 to #D5D5D5
+    //.
+    let palette = ComponentPalette {
+        hover: if selected {
+            look::SELECTED_HOVER
+        } else {
+            look::ROW_HOVER
+        },
+        ..palette
+    };
     let row = palette
         .interactive_surface(Element::clickable(id, row))
         .radius(8.0);

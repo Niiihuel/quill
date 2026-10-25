@@ -69,6 +69,12 @@ pub const MENU_PALETTE: limn::ComponentPalette = limn::ComponentPalette {
     selected: Color::rgb(0xff, 0xff, 0xff),
     ..PALETTE
 };
+/// Hover fills: a sidebar row, a selected one, an icon button, and an
+/// active toggle.
+pub const ROW_HOVER: Color = Color::rgb(0xed, 0xed, 0xed);
+pub const SELECTED_HOVER: Color = Color::rgb(0xd5, 0xd5, 0xd5);
+pub const TOOL_HOVER: Color = Color::rgb(0xe5, 0xe5, 0xe5);
+pub const ACTIVE_HOVER: Color = Color::rgb(0xd8, 0xd8, 0xd8);
 /// An active toggle or tab.
 pub const ACTIVE: Color = Color::rgb(0xe5, 0xe5, 0xe5);
 
