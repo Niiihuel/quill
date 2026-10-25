@@ -19,8 +19,9 @@ pub const RUNNING: Color = Color::rgb(0x3b, 0x5b, 0xdb);
 pub const ADDED: Color = Color::rgb(0x1e, 0x9e, 0x3c);
 pub const REMOVED: Color = Color::rgb(0xcd, 0x20, 0x54);
 
-// Sizes are Desktop's at 1× (Xvfb at 96 dpi, 1408×844), captured 2026-10-25. The
-// earlier Xephyr captures () drew at 0.75×, so sizes read from them are scaled.
+// Sizes are Desktop's at 1× (Xvfb at 96 dpi, 1408×844), from private notes
+// `rea/evidence/runtime/20261025-062138-auth/`. The earlier Xephyr captures () drew
+// at 0.75×, so sizes read from them are scaled.
 /// Sidebar width with its 1 px border.
 pub const SIDEBAR_WIDTH: f32 = 288.0;
 /// The transcript and composer column, at most.
