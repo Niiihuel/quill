@@ -13,7 +13,7 @@ pub const SIDEBAR: Color = Color::rgb(0xfa, 0xfa, 0xfa);
 pub const DIVIDER: Color = Color::rgb(0xe5, 0xe5, 0xe5);
 pub const USER_BUBBLE: Color = Color::rgb(0xf3, 0xf3, 0xf3);
 pub const MUTED: Color = Color::rgb(0x7d, 0x7d, 0x7d);
-pub const COMMAND_BOX: Color = Color::rgb(0xf9, 0xf9, 0xf9);
+pub const COMMAND_BOX: Color = Color::rgb(0xf3, 0xf3, 0xf3);
 pub const AWAITING: Color = Color::rgb(0xf0, 0xac, 0x55);
 pub const RUNNING: Color = Color::rgb(0x3b, 0x5b, 0xdb);
 pub const ADDED: Color = Color::rgb(0x1e, 0x9e, 0x3c);
@@ -46,6 +46,11 @@ pub const CANCEL: Color = Color::rgb(0xf2, 0xf2, 0xf2);
 pub const DANGER_FILL: Color = Color::rgb(0xfb, 0xe7, 0xe7);
 pub const DANGER_BORDER: Color = Color::rgb(0xdc, 0x3c, 0x3d);
 pub const DANGER_INK: Color = Color::rgb(0xa4, 0x25, 0x28);
+/// The dialog's backdrop: black at about 41 %, #969696 over white.
+pub const SCRIM: Color = Color::rgba(0, 0, 0, 105);
+/// The permission card's hairline and the ink of the command it shows.
+pub const CARD_BORDER: Color = Color::rgb(0xeb, 0xeb, 0xeb);
+pub const COMMAND_INK: Color = Color::rgb(0x61, 0x61, 0x61);
 /// An active toggle or tab.
 pub const ACTIVE: Color = Color::rgb(0xe5, 0xe5, 0xe5);
 

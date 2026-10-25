@@ -4,7 +4,7 @@
 use eframe::egui;
 use limn::{Element, Size, UiTree};
 use quill_engine::Engine;
-use quill_model::{Event, Intent};
+use quill_model::{Event, Intent, SessionId};
 use quill_ui::{Pane, Store, TerminalRequest, Ui};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -22,6 +22,8 @@ struct App {
     /// The terminal tabs of each folder, kept while the window lives (features/terminal.md).
     terminals: HashMap<PathBuf, quill_pty::Tabs>,
     fonts_attached: bool,
+    /// The session on screen and how much its transcript held last frame.
+    transcript: Option<(SessionId, usize, usize)>,
 }
 
 impl App {
@@ -97,6 +99,16 @@ impl App {
         true
     }
 
+    /// The session on screen, its number of items and the length of a reply being written.
+    fn transcript_mark(&self) -> Option<(SessionId, usize, usize)> {
+        let session = self.store.session(self.ui.selected?)?;
+        let tail = match session.items.last() {
+            Some(quill_ui::Item::Assistant { text, .. }) => text.len(),
+            _ => 0,
+        };
+        Some((session.id, session.items.len(), tail))
+    }
+
     fn dispatch(&mut self, intents: Vec<Intent>) {
         for intent in intents {
             quill_ui::decided(&mut self.store, &intent);
@@ -112,6 +124,10 @@ impl eframe::App for App {
             limn_egui::attach_fonts(&mut self.tree, &ctx);
             self.fonts_attached = true;
         }
+        // Desktop opens a session at its end and follows it while the person stays there.
+        let at_end = self
+            .transcript
+            .is_none_or(|(id, ..)| self.tree.is_scroll_at_end(&format!("transcript:{id}"), 8.0));
         let events = std::mem::take(&mut *self.inbox.lock().unwrap());
         for event in events {
             let intents = self.ui.applied(&event);
@@ -137,7 +153,20 @@ impl eframe::App for App {
         self.tree.layout(window);
         let mut actions = vec![];
         let mut focus_terminal = false;
+        // Ctrl+` shows and hides the terminal, as in Desktop; limn has no key for it.
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Backtick)) {
+            actions.push(limn::UiAction::Clicked {
+                id: quill_ui::view::TERMINAL_TOGGLE.into(),
+            });
+        }
         for event in limn_egui::events(&ctx, area.min) {
+            // Permission keys work wherever the focus is, the composer included.
+            if let limn::UiEvent::Key { key, shift, ctrl } = &event {
+                if let Some(id) = quill_ui::shortcut(&self.store, &self.ui, *key, *ctrl, *shift) {
+                    actions.push(limn::UiAction::Clicked { id });
+                    continue;
+                }
+            }
             if !self.typed_into_terminal(&event) {
                 actions.extend(self.tree.handle_event(event));
             }
@@ -185,6 +214,12 @@ impl eframe::App for App {
         if (follow && changed) || focus_terminal {
             self.tree.scroll_to_end(quill_ui::view::TERMINAL_SCROLL);
         }
+        let mark = self.transcript_mark();
+        let opened = mark.map(|m| m.0) != self.transcript.map(|m| m.0);
+        if let Some((id, ..)) = mark.filter(|_| opened || (at_end && mark != self.transcript)) {
+            self.tree.scroll_to_end(&format!("transcript:{id}"));
+        }
+        self.transcript = mark;
         self.tree
             .set_root(quill_ui::view(&self.store, &self.ui, window));
         let mut frame = self.tree.layout(window);
@@ -240,6 +275,7 @@ fn main() -> eframe::Result {
                 inbox,
                 picked: Arc::default(),
                 terminals: HashMap::new(),
+                transcript: None,
                 fonts_attached: false,
             }))
         }),

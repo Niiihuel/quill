@@ -35,6 +35,8 @@ pub enum Item {
         id: String,
         tool: String,
         input: Value,
+        /// Why the agent asks, when it says.
+        title: Option<String>,
         interactive: bool,
         suggestions: Vec<Suggestion>,
         decided: Option<&'static str>,
@@ -115,6 +117,10 @@ impl Store {
             }),
             Event::Status { session, status } => {
                 if let Some(s) = self.session_mut(session) {
+                    // A process that ended (or a session read back) answers nothing it asked.
+                    if matches!(status, SessionStatus::Exited | SessionStatus::Failed(_)) {
+                        close_open_permissions(&mut s.items);
+                    }
                     s.status = status;
                 }
             }
@@ -271,6 +277,7 @@ fn agent_event(s: &mut Session, event: AgentEvent) {
             id,
             tool,
             input,
+            title,
             interactive,
             suggestions,
             ..
@@ -278,6 +285,7 @@ fn agent_event(s: &mut Session, event: AgentEvent) {
             id,
             tool,
             input,
+            title,
             interactive,
             suggestions,
             decided: None,
@@ -291,6 +299,9 @@ fn agent_event(s: &mut Session, event: AgentEvent) {
             if let Some(Item::Assistant { streaming, .. }) = s.items.last_mut() {
                 *streaming = false;
             }
+            // A finished turn waits on nothing: a permission it left open (interrupted, or
+            // answered before answers were kept) is closed.
+            close_open_permissions(&mut s.items);
             if usage.context_tokens > 0 {
                 s.context_tokens = usage.context_tokens;
             }
@@ -351,11 +362,42 @@ pub struct Ui {
     pub panel_open: bool,
     /// Folders whose sessions the sidebar folds away.
     pub collapsed: Vec<PathBuf>,
+    /// How the person allowed last, which the next permission card offers first.
+    pub last_allow: Allow,
     /// Answers picked on question cards, by permission and question index.
     pub answers: std::collections::HashMap<(String, usize), String>,
     /// The permission whose "Always allow" menu is open.
     pub perm_menu: Option<String>,
     pub terminal: TerminalPane,
+}
+
+/// The two ways to allow a permission; the card's main button is the one used last.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Allow {
+    Once,
+    Always,
+}
+
+/// The click a key press stands for: Ctrl+Enter allows the waiting permission once and
+/// Ctrl+Shift+Enter always, wherever the focus is, as in Desktop.
+pub fn shortcut(store: &Store, ui: &Ui, key: limn::Key, ctrl: bool, shift: bool) -> Option<String> {
+    if key != limn::Key::Enter || !ctrl {
+        return None;
+    }
+    let session = store.session(ui.selected?)?;
+    let id = session.items.iter().rev().find_map(|item| match item {
+        Item::Permission {
+            id,
+            interactive: false,
+            decided: None,
+            ..
+        } => Some(id),
+        _ => None,
+    })?;
+    Some(format!(
+        "perm:{id}:{}",
+        if shift { "always" } else { "once" }
+    ))
 }
 
 /// What can open in the column beside the conversation.
@@ -411,6 +453,7 @@ impl Ui {
             expanded_pane: None,
             panel_open: true,
             collapsed: vec![],
+            last_allow: Allow::Once,
             answers: Default::default(),
             perm_menu: None,
             terminal: TerminalPane::default(),
@@ -669,16 +712,17 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
             "deny" => Decision::Deny {
                 message: "The person denied this.".into(),
             },
-            // Rules only: a mode switch offered with them is the person's separate choice (engine.md §11.4).
-            "always" => Decision::AllowAlways(
-                suggestions
-                    .iter()
-                    .filter(|s| matches!(s, Suggestion::Rules(_)))
-                    .cloned()
-                    .collect(),
-            ),
+            // Everything the agent suggests, a mode switch included: Desktop's "Always allow" on
+            // a file-creating command left the session in Accept edits.
+            "always" => Decision::AllowAlways(suggestions.clone()),
             _ => Decision::Allow,
         };
+        // Desktop offers the last choice first on the next card.
+        match choice {
+            "once" => ui.last_allow = Allow::Once,
+            "always" => ui.last_allow = Allow::Always,
+            _ => {}
+        }
         return vec![Intent::Decide {
             session: session.id,
             permission: permission.to_owned(),
@@ -698,6 +742,31 @@ pub fn decided(store: &mut Store, intent: &Intent) {
     {
         if let Some(s) = store.session_mut(*session) {
             mark_decided(&mut s.items, permission, decision);
+        }
+    }
+}
+
+/// What a turn left open once nothing can answer it: its permissions close, and a tool that
+/// never reported stops spinning.
+fn close_open_permissions(items: &mut [Item]) {
+    for item in items {
+        match item {
+            Item::Permission {
+                decided: decided @ None,
+                ..
+            } => *decided = Some("Closed"),
+            Item::Tool {
+                result: result @ None,
+                ..
+            } => {
+                *result = Some(ToolResult {
+                    output: "Did not finish".into(),
+                    is_error: false,
+                    added: 0,
+                    removed: 0,
+                })
+            }
+            _ => {}
         }
     }
 }

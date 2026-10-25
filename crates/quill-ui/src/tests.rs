@@ -69,7 +69,7 @@ fn an_edit_counts_one_line_each_way() {
 }
 
 #[test]
-fn always_allow_sends_only_rules() {
+fn always_allow_applies_every_suggestion_and_leads_the_next_card() {
     let (mut store, mut ui) = store_with_session();
     agent(
         &mut store,
@@ -100,8 +100,35 @@ fn always_allow_sends_only_rules() {
     else {
         panic!("{intents:?}")
     };
-    assert_eq!(kept.len(), 1);
-    assert!(matches!(kept[0], Suggestion::Rules(_)));
+    assert_eq!(kept.len(), 2);
+    assert_eq!(ui.last_allow, Allow::Always);
+}
+
+#[test]
+fn ctrl_enter_answers_the_waiting_permission_from_anywhere() {
+    let (mut store, ui) = store_with_session();
+    assert_eq!(shortcut(&store, &ui, limn::Key::Enter, true, false), None);
+    agent(
+        &mut store,
+        AgentEvent::PermissionRequest {
+            id: "p1".into(),
+            call: Some("t1".into()),
+            tool: "Bash".into(),
+            input: serde_json::json!({ "command": "touch a" }),
+            title: None,
+            interactive: false,
+            suggestions: vec![],
+        },
+    );
+    assert_eq!(
+        shortcut(&store, &ui, limn::Key::Enter, true, false).as_deref(),
+        Some("perm:p1:once")
+    );
+    assert_eq!(
+        shortcut(&store, &ui, limn::Key::Enter, true, true).as_deref(),
+        Some("perm:p1:always")
+    );
+    assert_eq!(shortcut(&store, &ui, limn::Key::Enter, false, false), None);
 }
 
 #[test]
@@ -133,8 +160,17 @@ fn the_first_message_creates_a_session_then_sends_it() {
 }
 
 #[test]
-fn the_window_lays_out_with_a_permission_and_a_finished_turn() {
+fn the_window_lays_out_with_a_finished_turn_and_a_waiting_permission() {
     let (mut store, ui) = store_with_session();
+    agent(
+        &mut store,
+        AgentEvent::TurnFinished {
+            ok: true,
+            interrupted: false,
+            usage: Usage::default(),
+            error: None,
+        },
+    );
     agent(
         &mut store,
         AgentEvent::ToolUse {
@@ -150,19 +186,10 @@ fn the_window_lays_out_with_a_permission_and_a_finished_turn() {
             id: "p1".into(),
             call: Some("t1".into()),
             tool: "Bash".into(),
-            input: serde_json::json!({ "command": "ls" }),
+            input: serde_json::json!({ "command": "ls", "description": "List files" }),
             title: None,
             interactive: false,
-            suggestions: vec![],
-        },
-    );
-    agent(
-        &mut store,
-        AgentEvent::TurnFinished {
-            ok: true,
-            interrupted: false,
-            usage: Usage::default(),
-            error: None,
+            suggestions: vec![Suggestion::Rules(serde_json::json!({ "type": "addRules" }))],
         },
     );
     let window = limn::Size::new(1408.0, 844.0);
@@ -171,7 +198,7 @@ fn the_window_lays_out_with_a_permission_and_a_finished_turn() {
     for id in [
         "perm:p1:deny",
         "perm:p1:menu",
-        "perm:p1:always",
+        "perm:p1:once",
         view::COMPOSER,
         "session:1",
     ] {
@@ -411,4 +438,31 @@ fn the_sidebar_groups_sessions_by_folder_and_folds_a_group() {
         ids(&store, &ui),
         ["group:/work", "group:/other", "session:2"]
     );
+}
+
+#[test]
+fn a_finished_turn_closes_the_permissions_it_left_open() {
+    let (mut store, ui) = store_with_session();
+    agent(
+        &mut store,
+        AgentEvent::PermissionRequest {
+            id: "p1".into(),
+            call: Some("t1".into()),
+            tool: "Bash".into(),
+            input: serde_json::json!({ "command": "touch a" }),
+            title: None,
+            interactive: false,
+            suggestions: vec![],
+        },
+    );
+    agent(
+        &mut store,
+        AgentEvent::TurnFinished {
+            ok: false,
+            interrupted: true,
+            usage: Usage::default(),
+            error: None,
+        },
+    );
+    assert_eq!(shortcut(&store, &ui, limn::Key::Enter, true, false), None);
 }

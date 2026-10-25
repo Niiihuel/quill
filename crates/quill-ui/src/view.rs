@@ -240,6 +240,15 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     .cancel_variant(ButtonVariant::Secondary)
     .description_size(BODY)
     .closable(false)
+    // Desktop's backdrop is lighter, its title closer, its buttons 30 px with 14 px labels.
+    .scrim(look::SCRIM)
+    .title_gap(1.0)
+    .button_sizing(limn::ButtonSizing {
+        height: 30.0,
+        font_size: BODY,
+        horizontal_padding: 12.0,
+        ..ControlSize::Compact.button_sizing()
+    })
     .render()
 }
 
@@ -715,23 +724,44 @@ fn tool(
     row.render().size(Some(column), None)
 }
 
-/// The inline approval card: question, what it runs, Deny / Allow once / Always allow.
+/// The inline approval card, as Desktop 3.6556.2 draws it: a 480 px card with what
+/// Claude wants to run, Deny, and the way the person allowed last as its main button with
+/// the other in its menu. Once answered it goes, leaving the tool's row.
 fn permission(item: &Item, ui: &Ui, column: f32, palette: ComponentPalette) -> Element {
     let Item::Permission {
         id,
         tool,
         input,
+        title,
         interactive,
         decided,
+        suggestions,
         ..
     } = item
     else {
         return Element::spacer();
     };
-    let (interactive, decided) = (*interactive, *decided);
-    let menu_open = ui.perm_menu.as_deref() == Some(id.as_str());
-    let what = input["command"]
-        .as_str()
+    if decided.is_some() {
+        return Element::spacer().size(None, Some(0.0));
+    }
+    let width = column.min(480.0);
+    let inner = width - 32.0;
+    let wrapped = |e: Element| e.size(Some(inner), None);
+    let command = input["command"].as_str();
+    // Bash says what it runs in its own words: "Run saludo.py".
+    let what = input["description"].as_str();
+    let heading = match (tool.as_str(), what) {
+        ("Bash", Some(what)) => format!("Allow Claude to run {what}?"),
+        _ => format!("Allow Claude to use {tool}?"),
+    };
+    let mut rows = vec![wrapped(text(heading).font_family(FontFamily::SansBold))];
+    if let Some(what) = what {
+        rows.push(wrapped(muted(what.to_owned())));
+    }
+    if let Some(title) = title {
+        rows.push(wrapped(muted(title.clone())));
+    }
+    let shown = command
         .or(input["file_path"].as_str())
         .map(str::to_owned)
         .unwrap_or_else(|| {
@@ -741,48 +771,78 @@ fn permission(item: &Item, ui: &Ui, column: f32, palette: ComponentPalette) -> E
                 .take(200)
                 .collect()
         });
-    let mut card = FramedCard::new(palette)
-        .width(column)
-        .section(text(format!("Allow Claude to use {tool}?")).font_size(14.0))
-        .section(
-            Element::panel(text(what).font_family(FontFamily::Monospace))
-                .background(look::COMMAND_BOX)
-                .radius(6.0)
-                .padding(8.0),
-        );
-    if let Some(decided) = decided {
-        card = card.foot(muted(decided));
-    } else if interactive {
+    rows.push(
+        Element::panel(
+            text(shown)
+                .font_family(FontFamily::Monospace)
+                .font_size(SMALL)
+                .foreground(look::COMMAND_INK)
+                .size(Some(inner - 32.0), None),
+        )
+        .background(look::COMMAND_BOX)
+        .radius(6.0)
+        .padding(14.0),
+    );
+    if *interactive {
         // Questions get their own card (plan Q3.7); until then they are allowed as asked.
-        card = card.foot(Button::new(format!("perm:{id}:once"), "Continue", palette).render());
+        rows.push(Button::new(format!("perm:{id}:once"), "Continue", palette).render());
     } else {
-        // Deny, then "Always allow" with "Allow once" in its menu.
-        let once = limn::DropdownMenuItem::new(format!("perm:{id}:once"), "Allow once")
-            .shortcut("Ctrl+Enter");
-        let actions = ButtonGroup::new(vec![
-            Button::new(format!("perm:{id}:deny"), "Deny", palette)
-                .variant(ButtonVariant::Ghost)
-                .button_size(ButtonSize::Small)
-                .render(),
-            limn::SplitButton::new(
-                format!("perm:{id}:always"),
-                "Always allow",
-                format!("perm:{id}:menu"),
-                palette,
-            )
-            .keys(&["Ctrl", "Shift", "⏎"])
-            .menu(
-                vec![once.into()],
-                menu_open,
-                format!("perm:{id}:menu-dismiss"),
-            )
-            .render(),
-        ])
-        .align_end()
-        .render();
-        card = card.foot(actions);
+        rows.push(permission_actions(id, !suggestions.is_empty(), ui, palette));
     }
-    card.render()
+    Element::panel(Element::column(rows).gap(10.0))
+        .background(palette.surface)
+        .border(look::CARD_BORDER, 1.0)
+        .radius(12.0)
+        .padding(16.0)
+        .size(Some(width), None)
+}
+
+/// Deny, then the last way of allowing as the main button with its keys, and the other way
+/// in its menu.
+fn permission_actions(id: &str, can_always: bool, ui: &Ui, palette: ComponentPalette) -> Element {
+    let menu_open = ui.perm_menu.as_deref() == Some(id);
+    let always_first = can_always && ui.last_allow == crate::Allow::Always;
+    let once =
+        limn::DropdownMenuItem::new(format!("perm:{id}:once"), "Allow once").shortcut("Ctrl+Enter");
+    let always = limn::DropdownMenuItem::new(format!("perm:{id}:always"), "Always allow")
+        .description("Saves to local project settings")
+        .shortcut("Ctrl+Shift+Enter");
+    let (main, label, keys, others): (_, _, &[&str], Vec<_>) = if always_first {
+        (
+            "always",
+            "Always allow",
+            &["Ctrl", "Shift", "⏎"],
+            vec![once.into()],
+        )
+    } else if can_always {
+        ("once", "Allow once", &["Ctrl", "⏎"], vec![always.into()])
+    } else {
+        ("once", "Allow once", &["Ctrl", "⏎"], vec![])
+    };
+    let mut split = limn::SplitButton::new(
+        format!("perm:{id}:{main}"),
+        label,
+        format!("perm:{id}:menu"),
+        palette,
+    )
+    .keys(keys);
+    if !others.is_empty() {
+        split = split.menu(others, menu_open, format!("perm:{id}:menu-dismiss"));
+    }
+    let deny = Button::new(
+        format!("perm:{id}:deny"),
+        "Deny",
+        ComponentPalette {
+            raised: look::CANCEL,
+            ..palette
+        },
+    )
+    .variant(ButtonVariant::Secondary)
+    .button_size(ButtonSize::Small)
+    .render();
+    ButtonGroup::new(vec![deny, split.render()])
+        .align_end()
+        .render()
 }
 
 fn composer(session: Option<&Session>, ui: &Ui, column: f32, palette: ComponentPalette) -> Element {
