@@ -84,6 +84,8 @@ pub struct Session {
     pub branch: Option<String>,
     /// Tokens the conversation fills after its last turn, and what the session has cost.
     pub context_tokens: u64,
+    /// The model's context size, once a turn reported it.
+    pub context_window: u64,
     pub cost: f64,
 }
 
@@ -119,6 +121,7 @@ impl Store {
                 title: String::new(),
                 branch: None,
                 context_tokens: 0,
+                context_window: 0,
                 cost: 0.0,
             }),
             Event::Status { session, status } => {
@@ -314,6 +317,9 @@ fn agent_event(s: &mut Session, event: AgentEvent) {
             // A finished turn waits on nothing: a permission it left open (interrupted, or
             // answered before answers were kept) is closed.
             close_open_permissions(&mut s.items);
+            if usage.context_window > 0 {
+                s.context_window = usage.context_window;
+            }
             if usage.context_tokens > 0 {
                 s.context_tokens = usage.context_tokens;
             }
@@ -795,6 +801,11 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         ui.open_menu = None;
         return vec![];
     }
+    if let Some(folder) = id.strip_prefix("new-in:") {
+        ui.selected = None;
+        ui.cwd = PathBuf::from(folder);
+        return vec![];
+    }
     if let Some(folder) = id.strip_prefix("folder:") {
         ui.open_menu = None;
         ui.cwd = PathBuf::from(folder);
@@ -865,7 +876,7 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         ui.selected = Some(session);
         return vec![];
     }
-    if id.starts_with("steps:") {
+    if id.starts_with("steps:") || id.starts_with("panel:") {
         if let Some(at) = ui.expanded.iter().position(|c| c == id) {
             ui.expanded.remove(at);
         } else {
@@ -1038,4 +1049,14 @@ fn answer(store: &Store, ui: &mut Ui, rest: &str) -> Vec<Intent> {
         ui.answers.insert((permission.to_owned(), q), label);
     }
     vec![]
+}
+
+/// The words of the reply a "copy:{session}:{item}" button stands for.
+pub fn copied_text(store: &Store, id: &str) -> Option<String> {
+    let (session, at) = id.strip_prefix("copy:")?.split_once(':')?;
+    let session = store.session(session.parse().ok()?)?;
+    match session.items.get(at.parse::<usize>().ok()?)? {
+        Item::Assistant { text, .. } => Some(text.clone()),
+        _ => None,
+    }
 }

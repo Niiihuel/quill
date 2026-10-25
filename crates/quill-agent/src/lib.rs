@@ -96,6 +96,9 @@ pub struct Usage {
     /// How much of the model's context the conversation fills after the turn.
     #[serde(default)]
     pub context_tokens: u64,
+    /// The size of the model's context, when the agent says.
+    #[serde(default)]
+    pub context_window: u64,
 }
 
 /// Something the agent said, in quill's terms.

@@ -284,7 +284,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
         row.push(Element::column(stack).size(Some(width), Some(below)));
     }
     if let (Some(session), true) = (session, layout.panel > 0.0) {
-        row.push(right_panel(session, layout.panel, below, palette));
+        row.push(right_panel(session, ui, layout.panel, below, palette));
     }
     let content = Element::column(vec![
         top_bar(session, ui),
@@ -650,6 +650,11 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
                     .size(Some(16.0), Some(16.0))
                     .centered_y(),
                 text("New").centered_y(),
+                Element::spacer().flex(1.0),
+                muted("Ctrl+N")
+                    .font_size(12.0)
+                    .centered_y()
+                    .reveal_on_hover("new-session:keys"),
             ],
             false,
             palette,
@@ -672,17 +677,41 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
         .foreground(look::MUTED)
         .size(Some(10.0), Some(10.0))
         .centered_y();
+        // Under the pointer the header fills and offers a new session there.
+        let new_here = format!("new-in:{}", folder.display());
         let header = Element::row(vec![
             hgap(10.0),
             muted(folder_name(folder)).font_size(SMALL).centered_y(),
             caret,
+            Element::spacer().flex(1.0),
+            tool_surface(
+                &new_here,
+                limn::Icon::Add,
+                "New session",
+                22.0,
+                None,
+                look::TOOL_HOVER,
+                None,
+            )
+            .centered_y()
+            .reveal_on_hover(format!("{new_here}:reveal")),
+            hgap(4.0),
         ])
         .gap(6.0)
         .size(None, Some(28.0));
-        rows.push(Element::clickable(
-            format!("group:{}", folder.display()),
-            header,
-        ));
+        let header_palette = ComponentPalette {
+            hover: look::ROW_HOVER,
+            ..palette
+        };
+        rows.push(
+            header_palette
+                .interactive_surface(Element::clickable(
+                    format!("group:{}", folder.display()),
+                    header,
+                ))
+                .radius(8.0)
+                .hover_region(),
+        );
         if !open {
             continue;
         }
@@ -738,7 +767,8 @@ fn side_row(
     };
     let row = palette
         .interactive_surface(Element::clickable(id, row))
-        .radius(8.0);
+        .radius(8.0)
+        .hover_region();
     if selected {
         row.background(look::SELECTED)
     } else {
@@ -763,22 +793,20 @@ fn status_dot(status: &SessionStatus) -> Element {
         .centered_y()
 }
 
-fn empty(ui: &Ui) -> Element {
-    Element::column(vec![
-        text("What's up next?").font_size(22.0),
-        muted(format!(
-            "A new session runs Claude Code in {}",
-            folder_name(&ui.cwd)
-        )),
-    ])
-    .gap(8.0)
-    .centered()
+/// A new session's page is empty above the composer, as Desktop 3.6556.2's.
+fn empty(_ui: &Ui) -> Element {
+    Element::spacer()
 }
 
 fn transcript(session: &Session, ui: &Ui, column: f32, palette: ComponentPalette) -> Element {
     // Tool calls in a row fold into one group, as Desktop shows a turn's work;
     // an answered permission between them is gone, a waiting one ends the group.
-    let mut items: Vec<Element> = vec![];
+    // Desktop opens a session with where it started.
+    let mut items: Vec<Element> = vec![muted(format!(
+        "Started on this computer · {}",
+        folder_name(&session.cwd)
+    ))
+    .font_size(12.0)];
     let mut steps: Vec<Step> = vec![];
     for item in &session.items {
         match item {
@@ -801,7 +829,46 @@ fn transcript(session: &Session, ui: &Ui, column: f32, palette: ComponentPalette
                     items.push(step_group(&steps, ui, column, palette));
                     steps.clear();
                 }
-                items.push(self::item(other, ui, column, palette));
+                // Desktop sets each message apart: about 60 px between turns and
+                // 39 px under the person's words; the gap adds to the column's own 14.
+                let user = matches!(other, Item::User { .. });
+                if user && items.len() > 1 {
+                    items.push(Element::spacer().size(None, Some(32.0)));
+                }
+                let element = self::item(other, ui, column, palette);
+                // Under a reply, its actions show while the pointer is on it.
+                let element = match other {
+                    Item::Assistant {
+                        streaming: false, ..
+                    } => {
+                        let at = session
+                            .items
+                            .iter()
+                            .position(|i| std::ptr::eq(i, other))
+                            .unwrap_or_default();
+                        let copy = format!("copy:{}:{at}", session.id);
+                        Element::column(vec![
+                            element,
+                            tool_surface(
+                                &copy,
+                                limn::Icon::Copy,
+                                "Copy",
+                                24.0,
+                                None,
+                                look::TOOL_HOVER,
+                                None,
+                            )
+                            .reveal_on_hover(format!("{copy}:reveal")),
+                        ])
+                        .gap(4.0)
+                        .hover_region()
+                    }
+                    _ => element,
+                };
+                items.push(element);
+                if user {
+                    items.push(Element::spacer().size(None, Some(11.0)));
+                }
             }
         }
     }
@@ -2073,37 +2140,86 @@ fn question_card(
     .render()
 }
 
-/// One titled card of the right panel.
-fn panel_card(title: &str, rows: Vec<Element>, width: f32, palette: ComponentPalette) -> Element {
-    let mut content = vec![muted(title.to_owned())];
-    content.extend(rows);
-    Element::panel(Element::column(content).gap(6.0))
-        .background(palette.surface)
-        .border(look::DIVIDER, 1.0)
-        .radius(8.0)
-        .padding(10.0)
+/// One card of the right panel, as Desktop's: a 280 px white card with a #EBEBEB
+/// edge, radius 12 and 18 px in, a 13 px title with its caret, and what it holds.
+fn panel_card(
+    title: &str,
+    id: &str,
+    open: bool,
+    trailing: Vec<Element>,
+    rows: Vec<Element>,
+    width: f32,
+) -> Element {
+    let mut head = vec![text(title).font_size(SMALL).centered_y(), caret(open)];
+    head.push(Element::spacer().flex(1.0));
+    head.extend(trailing);
+    let head = Element::clickable(id, Element::row(head).gap(6.0).size(None, Some(20.0)));
+    let mut content = vec![head];
+    if open {
+        content.extend(rows);
+    }
+    Element::panel(Element::column(content).gap(14.0))
+        .background(look::PALETTE.surface)
+        .border(look::CARD_BORDER, 1.0)
+        .radius(12.0)
+        .padding(18.0)
         .size(Some(width), None)
 }
 
+/// A row of a panel card: a 16 px icon and its words.
+fn panel_row(icon: limn::Icon, words: Element) -> Element {
+    Element::row(vec![
+        Element::icon(icon)
+            .foreground(look::PALETTE.text)
+            .size(Some(16.0), Some(16.0))
+            .centered_y(),
+        words.centered_y(),
+    ])
+    .gap(10.0)
+    .size(None, Some(20.0))
+}
+
 /// Where the session works, how full its context is and what it changed.
-fn right_panel(session: &Session, width: f32, height: f32, palette: ComponentPalette) -> Element {
+fn right_panel(
+    session: &Session,
+    ui: &Ui,
+    width: f32,
+    height: f32,
+    _palette: ComponentPalette,
+) -> Element {
     let inner = width - 16.0;
+    let open = |key: &str, default: bool| ui.expanded.iter().any(|k| k == key) != default;
     let mut environment = vec![
-        text("This computer"),
-        text(format!("▣ {}", folder_name(&session.cwd))),
+        panel_row(limn::Icon::Laptop, text("This computer")),
+        panel_row(limn::Icon::Folder, text(folder_name(&session.cwd))),
     ];
     if let Some(branch) = &session.branch {
-        environment.push(text(format!("⑂ {branch}")));
+        environment.push(panel_row(limn::Icon::Tree, text(branch.clone())));
     }
-    let context = if session.context_tokens == 0 {
-        muted("No turns yet")
+    // How full the context is, as Desktop's percentage and bar: the window comes from the
+    // agent's own report of its model.
+    let share = (session.context_window > 0)
+        .then(|| session.context_tokens as f32 / session.context_window as f32);
+    let mut context_head = vec![];
+    if let Some(share) = share {
+        context_head.push(
+            muted(format!("{}%", (share * 100.0).round() as u32))
+                .font_size(SMALL)
+                .centered_y(),
+        );
+        context_head.push(context_bar(share));
+    }
+    let mut context_rows = vec![muted(if session.context_tokens == 0 {
+        "No turns yet".to_string()
+    } else if session.context_window > 0 {
+        format!(
+            "{:.1}k of {}k tokens",
+            session.context_tokens as f64 / 1000.0,
+            session.context_window / 1000
+        )
     } else {
-        text(format!(
-            "{:.1}k tokens",
-            session.context_tokens as f64 / 1000.0
-        ))
-    };
-    let mut context_rows = vec![context];
+        format!("{:.1}k tokens", session.context_tokens as f64 / 1000.0)
+    })];
     if session.cost > 0.0 {
         context_rows.push(muted(format!("${:.4} this session", session.cost)));
     }
@@ -2126,25 +2242,69 @@ fn right_panel(session: &Session, width: f32, height: f32, palette: ComponentPal
     let changes = if files == 0 {
         muted("Nothing changed yet")
     } else {
-        Element::row(vec![
-            text(if files == 1 {
-                "1 file".to_string()
-            } else {
-                format!("{files} files")
-            }),
-            text(format!("+{added}")).foreground(look::ADDED),
-            text(format!("−{removed}")).foreground(look::REMOVED),
-        ])
-        .gap(6.0)
+        // The row opens the diff, as Desktop's does.
+        Element::clickable(
+            DIFF_TOGGLE,
+            Element::row(vec![
+                Element::icon(limn::Icon::Code)
+                    .foreground(look::PALETTE.text)
+                    .size(Some(16.0), Some(16.0))
+                    .centered_y(),
+                text(format!("+{added}"))
+                    .foreground(look::ADDED)
+                    .font_size(SMALL)
+                    .centered_y(),
+                text(format!("−{removed}"))
+                    .foreground(look::REMOVED)
+                    .font_size(SMALL)
+                    .centered_y(),
+            ])
+            .gap(8.0)
+            .size(None, Some(24.0)),
+        )
     };
     Element::column(vec![
-        panel_card("Environment", environment, inner, palette),
-        panel_card("Context", context_rows, inner, palette),
-        panel_card("Changes", vec![changes], inner, palette),
+        panel_card(
+            "Environment",
+            "panel:environment",
+            open("panel:environment", true),
+            vec![],
+            environment,
+            inner,
+        ),
+        panel_card(
+            "Context",
+            "panel:context",
+            open("panel:context", false),
+            context_head,
+            context_rows,
+            inner,
+        ),
+        panel_card(
+            "Changes",
+            "panel:changes",
+            open("panel:changes", true),
+            vec![],
+            vec![changes],
+            inner,
+        ),
     ])
     .gap(8.0)
     .padding(8.0)
     .size(Some(width), Some(height))
+}
+
+/// Desktop's small context bar: a 24 × 6 pill filled blue to the share used.
+fn context_bar(share: f32) -> Element {
+    let fill = (24.0 * share.clamp(0.0, 1.0)).max(3.0);
+    Element::row(vec![Element::spacer()
+        .background(look::HANDLE)
+        .radius(3.0)
+        .size(Some(fill), Some(6.0))])
+    .background(look::ACTIVE)
+    .radius(3.0)
+    .size(Some(24.0), Some(6.0))
+    .centered_y()
 }
 
 /// What changed inside each rewritten line, for the word highlights of the diff:

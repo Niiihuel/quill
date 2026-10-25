@@ -237,6 +237,20 @@ impl eframe::App for App {
                 });
                 continue;
             }
+            // Ctrl+N starts a new session, as Desktop's sidebar says.
+            if matches!(
+                &event,
+                limn::UiEvent::Key {
+                    key: limn::Key::N,
+                    ctrl: true,
+                    shift: false
+                }
+            ) {
+                actions.push(limn::UiAction::Clicked {
+                    id: quill_ui::view::NEW_SESSION.into(),
+                });
+                continue;
+            }
             // Ctrl+Shift+I and Ctrl+Shift+M open the model and mode menus, as in Desktop.
             if let limn::UiEvent::Key {
                 key,
@@ -293,6 +307,9 @@ impl eframe::App for App {
                 });
             }
             if let limn::UiAction::Clicked { id } = &action {
+                if let Some(words) = quill_ui::copied_text(&self.store, id) {
+                    ctx.copy_text(words);
+                }
                 match id.as_str() {
                     quill_ui::view::ATTACH_FILES => self.attach(&ctx, false),
                     quill_ui::view::ATTACH_FOLDER => self.attach(&ctx, true),

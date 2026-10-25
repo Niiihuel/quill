@@ -351,6 +351,14 @@ impl AgentAdapter for Claude {
                         output_tokens: msg["usage"]["output_tokens"].as_u64().unwrap_or(0),
                         cost_usd: msg["total_cost_usd"].as_f64(),
                         context_tokens: std::mem::take(&mut self.context),
+                        // Verified on 2.1.310: each model in `modelUsage` gives its window.
+                        context_window: msg["modelUsage"]
+                            .as_object()
+                            .into_iter()
+                            .flat_map(|models| models.values())
+                            .filter_map(|m| m["contextWindow"].as_u64())
+                            .max()
+                            .unwrap_or(0),
                     },
                     error: errors.filter(|e| !e.is_empty()),
                 });
