@@ -609,3 +609,19 @@ fn steps_are_named_in_desktops_words() {
     use limn::CodeDiffLineKind::*;
     assert_eq!(kinds, [Context, Added, Removed, Context]);
 }
+
+#[test]
+fn limits_reset_as_desktop_says_it() {
+    use view::resets_in;
+    let now = 1_792_900_000;
+    assert_eq!(
+        resets_in(now + 4 * 3_600 + 53 * 60, now, 0),
+        "Resets in 4 hr 53 min"
+    );
+    assert_eq!(resets_in(now + 300, now, 0), "Resets in 5 min");
+    // 1793512800 is Sunday 2026-11-01 06:00 UTC: 3:00 AM at UTC-3.
+    assert_eq!(
+        resets_in(1_793_512_800, now, -3 * 3_600),
+        "Resets Sun 3:00 AM"
+    );
+}

@@ -1778,18 +1778,32 @@ fn composer_footer(
     .size(None, Some(28.0))
 }
 
-/// "Resets in 4 hr 53 min" within a day; "Resets in 3 days" beyond.
-/// shortcut: Desktop names the day and hour ("Resets Sun 3:00 AM"); quill has no local time
-/// zone yet, so it counts days.
-fn resets_in(resets_at: u64, now: u64) -> String {
+/// When a window starts again, as Desktop says it: "Resets in 4 hr 53 min"
+/// within a day, else the local day and hour, "Resets Sun 3:00 AM". `offset` is the local
+/// time's distance from UTC in seconds.
+pub fn resets_in(resets_at: u64, now: u64, offset: i64) -> String {
     let left = resets_at.saturating_sub(now);
-    let (days, hours, minutes) = (left / 86_400, left % 86_400 / 3_600, left % 3_600 / 60);
-    match (days, hours) {
-        (0, 0) => format!("Resets in {minutes} min"),
-        (0, h) => format!("Resets in {h} hr {minutes} min"),
-        (1, _) => "Resets in 1 day".into(),
-        (d, _) => format!("Resets in {d} days"),
+    if left < 86_400 {
+        let (hours, minutes) = (left / 3_600, left % 3_600 / 60);
+        return if hours == 0 {
+            format!("Resets in {minutes} min")
+        } else {
+            format!("Resets in {hours} hr {minutes} min")
+        };
     }
+    let local = resets_at as i64 + offset;
+    // 1 January 1970 was a Thursday.
+    const DAYS: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
+    let day = DAYS[local.div_euclid(86_400).rem_euclid(7) as usize];
+    let seconds = local.rem_euclid(86_400);
+    let (hour, minute) = (seconds / 3_600, seconds % 3_600 / 60);
+    let (twelve, half) = match hour {
+        0 => (12, "AM"),
+        1..=11 => (hour, "AM"),
+        12 => (12, "PM"),
+        _ => (hour - 12, "PM"),
+    };
+    format!("Resets {day} {twelve}:{minute:02} {half}")
 }
 
 /// A 4 px bar, gray, filled blue to `share`.
@@ -1879,7 +1893,8 @@ fn usage_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
                 .find_map(|s| s.capabilities.as_ref())
         })
         .and_then(|c| c.plan.clone())
-        .map(|p| effort_label(&p));
+        // The agent says "Claude Max"; Desktop's popover says "Max".
+        .map(|p| effort_label(p.trim_start_matches("Claude ").trim()));
     let mut rows = vec![
         usage_row("Context window", tokens, share, width, true),
         hline(width, look::DIVIDER),
@@ -1903,7 +1918,7 @@ fn usage_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
                 label,
                 format!(
                     "{}  {}%",
-                    resets_in(w.resets_at, now),
+                    resets_in(w.resets_at, now, ui.utc_offset),
                     (w.utilization * 100.0).round() as u32
                 ),
                 w.utilization,

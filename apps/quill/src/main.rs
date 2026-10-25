@@ -412,6 +412,23 @@ fn system_fonts() -> Option<limn::Fonts> {
     Some(fonts)
 }
 
+/// The local time zone's offset from UTC in seconds, as `date +%z` says it (`-0300`).
+fn utc_offset() -> i64 {
+    let out = std::process::Command::new("date").arg("+%z").output().ok();
+    let zone = out
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_default();
+    let zone = zone.trim();
+    let (sign, digits) = match zone.split_at_checked(1) {
+        Some(("-", d)) => (-1, d),
+        Some(("+", d)) => (1, d),
+        _ => return 0,
+    };
+    let hours: i64 = digits.get(0..2).and_then(|h| h.parse().ok()).unwrap_or(0);
+    let minutes: i64 = digits.get(2..4).and_then(|m| m.parse().ok()).unwrap_or(0);
+    sign * (hours * 3_600 + minutes * 60)
+}
+
 /// The person's first name for the greeting: the account's full name if the system has one,
 /// else the login name, capitalized.
 fn first_name() -> Option<String> {
@@ -472,6 +489,7 @@ fn main() -> eframe::Result {
                     // Tests and demos pin a cheap model; the picker changes it per session.
                     model: std::env::var("QUILL_MODEL").ok(),
                     name: first_name(),
+                    utc_offset: utc_offset(),
                     ..Ui::new(cwd)
                 },
                 engine,

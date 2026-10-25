@@ -399,6 +399,8 @@ pub struct Ui {
     pub collapsed: Vec<PathBuf>,
     /// The person's first name for the new session's greeting, when the host knows it.
     pub name: Option<String>,
+    /// The local time's distance from UTC in seconds, for the hours limits reset at.
+    pub utc_offset: i64,
     /// How the person allowed last, which the next permission card offers first.
     pub last_allow: Allow,
     /// Whether the transcript shows its end, which the host sets every frame.
@@ -524,6 +526,7 @@ impl Ui {
             collapsed: vec![],
             last_allow: Allow::Once,
             name: None,
+            utc_offset: 0,
             window: limn::Size::new(1408.0, 844.0),
             at_end: true,
             column_fraction: None,
