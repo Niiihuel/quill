@@ -432,9 +432,17 @@ impl Actor {
                 }
                 Input::Rewind(request) => self.rewind(request).await,
                 Input::Command(command) => {
-                    let resumes = matches!(command, AgentCommand::Decide { .. });
+                    let decided = match &command {
+                        AgentCommand::Decide { id, decision } => Some(Event::Decided {
+                            session: self.id,
+                            permission: id.clone(),
+                            decision: decision.clone(),
+                        }),
+                        _ => None,
+                    };
                     self.write(command).await;
-                    if resumes {
+                    if let Some(event) = decided {
+                        (self.sink)(event);
                         self.status(SessionStatus::Running);
                     }
                 }

@@ -122,6 +122,12 @@ pub enum Event {
         session: SessionId,
         branch: Option<String>,
     },
+    /// The person answered a permission; kept so a session read back shows it answered.
+    Decided {
+        session: SessionId,
+        permission: String,
+        decision: Decision,
+    },
     /// The session's files were put back as they were before `request`.
     Rewound {
         session: SessionId,
@@ -139,6 +145,7 @@ impl Event {
             | Event::Agent { session, .. }
             | Event::Changes { session, .. }
             | Event::Rewound { session, .. }
+            | Event::Decided { session, .. }
             | Event::Environment { session, .. } => *session,
         }
     }
