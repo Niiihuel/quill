@@ -1,0 +1,12 @@
+[package]
+name = "quill"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "quill: a native desktop app for coding-agent CLIs, drawn with limn."
+
+[dependencies]
+limn.workspace = true
+limn-egui.workspace = true
+eframe.workspace = true

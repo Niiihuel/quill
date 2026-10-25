@@ -1,0 +1,13 @@
+[package]
+name = "quill-capture"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Records the stream-json and control protocol of the installed Claude Code CLI as fixtures (docs/plan.md Q1)."
+publish = false
+
+[dependencies]
+serde_json.workspace = true
+# Client-side message ids, as the SDK sends them.
+uuid = { version = "1", features = ["v4"] }
