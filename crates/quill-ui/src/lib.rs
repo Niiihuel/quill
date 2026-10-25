@@ -33,6 +33,8 @@ pub enum Item {
     },
     Permission {
         id: String,
+        /// The tool call it asks about.
+        call: Option<String>,
         tool: String,
         input: Value,
         /// Why the agent asks, when it says.
@@ -62,6 +64,10 @@ pub struct ToolResult {
     /// Lines added and removed, from the files the agent reported.
     pub added: usize,
     pub removed: usize,
+    /// The files it changed, before and after, for the diff its row opens.
+    pub files: Vec<quill_model::FileChange>,
+    /// It never finished, or the person denied it: Desktop reads "Stopped".
+    pub stopped: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -256,6 +262,9 @@ fn agent_event(s: &mut Session, event: AgentEvent) {
                 .iter()
                 .map(|f| line_changes(f.before.as_deref(), f.after.as_deref()))
                 .fold((0, 0), |(a, r), (x, y)| (a + x, r + y));
+            let denied = s.items.iter().any(|item| {
+                matches!(item, Item::Permission { call: Some(c), decided: Some("Denied"), .. } if *c == call)
+            });
             for item in s.items.iter_mut().rev() {
                 if let Item::Tool {
                     call: c, result, ..
@@ -267,6 +276,8 @@ fn agent_event(s: &mut Session, event: AgentEvent) {
                             is_error,
                             added,
                             removed,
+                            files,
+                            stopped: denied,
                         });
                         break;
                     }
@@ -275,14 +286,15 @@ fn agent_event(s: &mut Session, event: AgentEvent) {
         }
         AgentEvent::PermissionRequest {
             id,
+            call,
             tool,
             input,
             title,
             interactive,
             suggestions,
-            ..
         } => s.items.push(Item::Permission {
             id,
+            call,
             tool,
             input,
             title,
@@ -853,6 +865,14 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         ui.selected = Some(session);
         return vec![];
     }
+    if id.starts_with("steps:") {
+        if let Some(at) = ui.expanded.iter().position(|c| c == id) {
+            ui.expanded.remove(at);
+        } else {
+            ui.expanded.push(id.to_owned());
+        }
+        return vec![];
+    }
     if let Some(call) = id.strip_prefix("tool:") {
         if let Some(at) = ui.expanded.iter().position(|c| c == call) {
             ui.expanded.remove(at);
@@ -937,10 +957,12 @@ fn close_open_permissions(items: &mut [Item]) {
                 ..
             } => {
                 *result = Some(ToolResult {
-                    output: "Did not finish".into(),
+                    output: String::new(),
                     is_error: false,
                     added: 0,
                     removed: 0,
+                    files: vec![],
+                    stopped: true,
                 })
             }
             _ => {}

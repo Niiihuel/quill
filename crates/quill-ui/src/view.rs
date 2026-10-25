@@ -3,9 +3,8 @@
 use crate::look::{self, BODY, CHAT, COLUMN, SMALL};
 use crate::{Item, Pane, Session, Store, ToolResult, Ui};
 use limn::{
-    Button, ButtonGroup, ButtonSize, ButtonVariant, Collapsible, Component, ComponentPalette,
-    Composer, ControlSize, Element, FontFamily, FramedCard, Markdown, OutputBlock, Size,
-    TextShimmer,
+    Button, ButtonGroup, ButtonSize, ButtonVariant, Component, ComponentPalette, Composer,
+    ControlSize, Element, FontFamily, FramedCard, Markdown, OutputBlock, Size, TextShimmer,
 };
 use quill_model::{ChangeKind, FileEffect, SessionStatus};
 use serde_json::Value;
@@ -777,11 +776,38 @@ fn empty(ui: &Ui) -> Element {
 }
 
 fn transcript(session: &Session, ui: &Ui, column: f32, palette: ComponentPalette) -> Element {
-    let mut items: Vec<Element> = session
-        .items
-        .iter()
-        .map(|item| self::item(item, ui, column, palette))
-        .collect();
+    // Tool calls in a row fold into one group, as Desktop shows a turn's work;
+    // an answered permission between them is gone, a waiting one ends the group.
+    let mut items: Vec<Element> = vec![];
+    let mut steps: Vec<Step> = vec![];
+    for item in &session.items {
+        match item {
+            Item::Tool {
+                call,
+                name,
+                input,
+                result,
+            } => steps.push(Step {
+                call,
+                name,
+                input,
+                result: result.as_ref(),
+            }),
+            Item::Permission {
+                decided: Some(_), ..
+            } => {}
+            other => {
+                if !steps.is_empty() {
+                    items.push(step_group(&steps, ui, column, palette));
+                    steps.clear();
+                }
+                items.push(self::item(other, ui, column, palette));
+            }
+        }
+    }
+    if !steps.is_empty() {
+        items.push(step_group(&steps, ui, column, palette));
+    }
     if let Some(status) = status_line(&session.status, palette) {
         items.push(status);
     }
@@ -814,9 +840,11 @@ fn status_line(status: &SessionStatus, palette: ComponentPalette) -> Option<Elem
 fn item(item: &Item, ui: &Ui, column: f32, palette: ComponentPalette) -> Element {
     match item {
         Item::User { text: t, .. } => {
-            // Up to 3/4 of the column, 16 px of side padding.
-            let line = text(t.clone()).font_size(CHAT);
-            let bubble = Element::panel(pad(line, 4.0, 0.0).size(Some(column * 0.75), None))
+            // As wide as its words, up to 3/4 of the column, 16 px of side padding.
+            let line = text(t.clone())
+                .font_size(CHAT)
+                .max_width(column * 0.75 - 32.0);
+            let bubble = Element::panel(Element::row(vec![hgap(4.0), line, hgap(4.0)]))
                 .background(look::USER_BUBBLE)
                 .radius(14.0)
                 .padding(12.0);
@@ -830,12 +858,7 @@ fn item(item: &Item, ui: &Ui, column: f32, palette: ComponentPalette) -> Element
                 .render()
                 .element
         }
-        Item::Tool {
-            call,
-            name,
-            input,
-            result,
-        } => tool(call, name, input, result.as_ref(), ui, column, palette),
+        Item::Tool { .. } => Element::spacer().size(None, Some(0.0)),
         Item::Permission {
             id,
             input,
@@ -862,57 +885,385 @@ fn item(item: &Item, ui: &Ui, column: f32, palette: ComponentPalette) -> Element
     }
 }
 
-/// What a tool's header says: verb and object, as Desktop's rows ("Ran", "Edited").
-fn tool_title(name: &str, input: &Value) -> String {
-    let file = || {
-        input["file_path"]
-            .as_str()
-            .map(|p| p.rsplit('/').next().unwrap_or(p).to_owned())
-            .unwrap_or_default()
-    };
-    match name {
-        "Bash" => format!("Ran {}", input["command"].as_str().unwrap_or_default()),
-        "Edit" | "MultiEdit" => format!("Edited {}", file()),
-        "Write" => format!("Wrote {}", file()),
-        "Read" => format!("Read {}", file()),
-        "Grep" | "Glob" => format!("Searched {}", input["pattern"].as_str().unwrap_or_default()),
-        other => other.to_owned(),
+/// One tool call of a turn, as its group lists it.
+pub struct Step<'a> {
+    pub call: &'a str,
+    pub name: &'a str,
+    pub input: &'a Value,
+    pub result: Option<&'a ToolResult>,
+}
+
+/// A verb phrase put in the past, as Desktop names a finished step: "Run saludo.py" becomes
+/// "Ran saludo.py", "Create atajo.txt…" "Created atajo.txt…".
+pub fn past_tense(phrase: &str) -> String {
+    inflect(phrase, |verb| {
+        const IRREGULAR: &[(&str, &str)] = &[
+            ("Run", "Ran"),
+            ("Make", "Made"),
+            ("Write", "Wrote"),
+            ("Find", "Found"),
+            ("Get", "Got"),
+            ("Build", "Built"),
+            ("Read", "Read"),
+            ("Set", "Set"),
+            ("Put", "Put"),
+            ("Begin", "Began"),
+        ];
+        if let Some((_, past)) = IRREGULAR.iter().find(|(v, _)| *v == verb) {
+            return (*past).to_owned();
+        }
+        if verb.ends_with('e') {
+            format!("{verb}d")
+        } else if verb.ends_with('y') && !verb.ends_with("ay") && !verb.ends_with("ey") {
+            format!("{}ied", &verb[..verb.len() - 1])
+        } else {
+            format!("{verb}ed")
+        }
+    })
+}
+
+/// The same phrase while it runs: "Creating atajo.txt…".
+pub fn progressive(phrase: &str) -> String {
+    inflect(phrase, |verb| match verb {
+        "Run" => "Running".to_owned(),
+        "Set" => "Setting".to_owned(),
+        "Get" => "Getting".to_owned(),
+        "Put" => "Putting".to_owned(),
+        v if v.ends_with("ie") => format!("{}ying", &v[..v.len() - 2]),
+        v if v.ends_with('e') && !v.ends_with("ee") => format!("{}ing", &v[..v.len() - 1]),
+        v => format!("{v}ing"),
+    })
+}
+
+/// Change the phrase's first word when it reads as a verb (capitalized, letters only).
+fn inflect(phrase: &str, verb: impl Fn(&str) -> String) -> String {
+    let (first, rest) = phrase.split_once(' ').unwrap_or((phrase, ""));
+    let is_verb = first.chars().next().is_some_and(char::is_uppercase)
+        && first.chars().all(char::is_alphabetic);
+    if !is_verb {
+        return phrase.to_owned();
+    }
+    if rest.is_empty() {
+        verb(first)
+    } else {
+        format!("{} {rest}", verb(first))
     }
 }
 
-fn tool(
-    call: &str,
-    name: &str,
-    input: &Value,
-    result: Option<&ToolResult>,
-    ui: &Ui,
-    column: f32,
-    palette: ComponentPalette,
-) -> Element {
-    let open = ui.expanded.iter().any(|c| c == call);
-    let content = match result {
-        Some(r) if !r.output.is_empty() => {
-            OutputBlock::new(format!("out:{call}"), r.output.clone(), palette).render()
+fn file_of(input: &Value) -> String {
+    input["file_path"]
+        .as_str()
+        .or(input["notebook_path"].as_str())
+        .map(|p| p.rsplit('/').next().unwrap_or(p).to_owned())
+        .unwrap_or_default()
+}
+
+/// A step's verb and what it acted on: ("Edited", "saludo.py"); a command keeps its own
+/// words, past or present.
+fn step_label(step: &Step, done: bool) -> (String, String) {
+    match step.name {
+        "Bash" => {
+            let said = step.input["description"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    format!("Run {}", step.input["command"].as_str().unwrap_or_default())
+                });
+            let phrase = if done { past_tense(&said) } else { said };
+            (phrase, String::new())
         }
-        _ => muted("No output"),
-    };
-    let mut row = Collapsible::new(
-        format!("tool:{call}"),
-        tool_title(name, input),
-        content,
-        palette,
-    )
-    .expanded(open)
-    .loading(result.is_none());
-    if let Some(r) = result {
-        if r.added + r.removed > 0 {
-            row = row.detail(format!("+{} −{}", r.added, r.removed));
-        }
-        if r.is_error {
-            row = row.ink(look::REMOVED);
+        "Read" => ("Read".into(), file_of(step.input)),
+        "Edit" | "MultiEdit" | "NotebookEdit" => ("Edited".into(), file_of(step.input)),
+        "Write" => ("Wrote".into(), file_of(step.input)),
+        "Grep" | "Glob" => (
+            "Searched".into(),
+            step.input["pattern"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+        ),
+        other => (other.to_owned(), String::new()),
+    }
+}
+
+/// The line a group of steps folds into, as Desktop words it: one command says
+/// what it did ("Ran saludo.py"); otherwise each file with what was done to it and how many
+/// commands ran: "Read and edited saludo.py, ran a command".
+pub fn group_summary(steps: &[Step]) -> String {
+    let running = steps.iter().any(|s| s.result.is_none());
+    if let [step] = steps {
+        if step.name == "Bash" {
+            let said = step.input["description"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| "Run a command".into());
+            return if running {
+                progressive(&said)
+            } else if step.result.is_some_and(|r| r.stopped) {
+                said
+            } else {
+                past_tense(&said)
+            };
         }
     }
-    row.render().size(Some(column), None)
+    let mut files: Vec<(String, Vec<String>)> = vec![];
+    let (mut commands, mut searches, mut others) = (0, 0, vec![]);
+    for step in steps {
+        match step.name {
+            "Bash" => commands += 1,
+            "Grep" | "Glob" => searches += 1,
+            "Read" | "Edit" | "MultiEdit" | "NotebookEdit" | "Write" => {
+                let (verb, file) = step_label(step, true);
+                let verb = verb.to_lowercase();
+                match files.iter_mut().find(|(f, _)| *f == file) {
+                    Some((_, verbs)) if !verbs.contains(&verb) => verbs.push(verb),
+                    Some(_) => {}
+                    None => files.push((file, vec![verb])),
+                }
+            }
+            other => others.push(other.to_owned()),
+        }
+    }
+    let mut clauses: Vec<String> = files
+        .into_iter()
+        .map(|(file, verbs)| format!("{} {file}", verbs.join(" and ")))
+        .collect();
+    if searches > 0 {
+        clauses.push("searched the code".into());
+    }
+    match commands {
+        0 => {}
+        1 => clauses.push("ran a command".into()),
+        n => clauses.push(format!("ran {n} commands")),
+    }
+    clauses.extend(others);
+    let mut summary = clauses.join(", ");
+    if let Some(first) = summary.get_mut(0..1) {
+        first.make_ascii_uppercase();
+    }
+    summary
+}
+
+/// The lines of `before` and `after` as a diff: an LCS walk, enough for the files a tool
+/// edits. shortcut: quadratic in lines, capped at 400 a side; a real diff when files grow.
+pub fn line_diff(before: &str, after: &str) -> Vec<limn::CodeDiffLine> {
+    use limn::{CodeDiffLine, CodeDiffLineKind};
+    let a: Vec<&str> = before.lines().take(400).collect();
+    let b: Vec<&str> = after.lines().take(400).collect();
+    let mut lcs = vec![vec![0u16; b.len() + 1]; a.len() + 1];
+    for i in (0..a.len()).rev() {
+        for j in (0..b.len()).rev() {
+            lcs[i][j] = if a[i] == b[j] {
+                lcs[i + 1][j + 1] + 1
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
+        }
+    }
+    let (mut i, mut j, mut lines) = (0, 0, vec![]);
+    let line = |kind, old: Option<usize>, new: Option<usize>, text: &str| CodeDiffLine {
+        kind,
+        old_line: old.map(|n| n + 1),
+        new_line: new.map(|n| n + 1),
+        text: text.to_owned(),
+    };
+    while i < a.len() || j < b.len() {
+        if i < a.len() && j < b.len() && a[i] == b[j] {
+            lines.push(line(CodeDiffLineKind::Context, Some(i), Some(j), a[i]));
+            i += 1;
+            j += 1;
+        } else if j < b.len() && (i == a.len() || lcs[i][j + 1] >= lcs[i + 1][j]) {
+            lines.push(line(CodeDiffLineKind::Added, None, Some(j), b[j]));
+            j += 1;
+        } else {
+            lines.push(line(CodeDiffLineKind::Removed, Some(i), None, a[i]));
+            i += 1;
+        }
+    }
+    lines
+}
+
+/// A run of steps as Desktop shows it: one muted line with the files' added and
+/// removed lines, which unfolds into a card with a row per step; a row unfolds what it did.
+fn step_group(steps: &[Step], ui: &Ui, column: f32, palette: ComponentPalette) -> Element {
+    let key = format!("steps:{}", steps[0].call);
+    let open = ui.expanded.contains(&key);
+    let running = steps.iter().any(|s| s.result.is_none());
+    let stopped = !running
+        && steps
+            .last()
+            .is_some_and(|s| s.result.is_some_and(|r| r.stopped));
+    let (added, removed) = steps
+        .iter()
+        .filter_map(|s| s.result)
+        .fold((0, 0), |(a, r), res| (a + res.added, r + res.removed));
+    let summary = group_summary(steps);
+    let mut head = vec![if running {
+        TextShimmer::new(format!("{key}:shimmer"), summary, palette)
+            .render()
+            .centered_y()
+    } else {
+        muted(summary).font_size(CHAT).centered_y()
+    }];
+    if stopped {
+        head.push(muted("Stopped").font_size(CHAT).centered_y());
+    }
+    if added + removed > 0 {
+        head.push(
+            text(format!("+{added}"))
+                .font_size(CHAT)
+                .foreground(look::ADDED)
+                .centered_y(),
+        );
+        head.push(
+            text(format!("−{removed}"))
+                .font_size(CHAT)
+                .foreground(look::REMOVED)
+                .centered_y(),
+        );
+    }
+    head.push(caret(open));
+    let head = Element::clickable(key, Element::row(head).gap(8.0).size(None, Some(24.0)));
+    if !open {
+        return head;
+    }
+    let mut rows = vec![];
+    for (i, step) in steps.iter().enumerate() {
+        if i > 0 {
+            rows.push(hline(column, look::CARD_BORDER));
+        }
+        rows.push(step_row(step, ui, column, palette));
+    }
+    let card = Element::panel(Element::column(rows))
+        .background(palette.surface)
+        .border(look::CARD_BORDER, 1.0)
+        .radius(8.0)
+        .size(Some(column), None);
+    Element::column(vec![head, card]).gap(8.0)
+}
+
+/// The small triangle after a group or a step: right while folded, down while open.
+fn caret(open: bool) -> Element {
+    text(if open { "▾" } else { "▸" })
+        .font_size(10.0)
+        .foreground(look::MUTED)
+        .centered_y()
+}
+
+/// One step in its group's card: "Read saludo.py", "Edited saludo.py +1 −1",
+/// "Ran saludo.py to verify output", each opening what it did.
+fn step_row(step: &Step, ui: &Ui, column: f32, palette: ComponentPalette) -> Element {
+    let open = ui.expanded.iter().any(|c| c == step.call);
+    let done = step.result.is_some_and(|r| !r.stopped);
+    let (verb, object) = step_label(step, done);
+    let mut line = vec![hgap(10.0), muted(verb).centered_y()];
+    if !object.is_empty() {
+        line.push(text(object).centered_y());
+    }
+    if let Some(r) = step.result {
+        if r.added + r.removed > 0 {
+            line.push(
+                text(format!("+{}", r.added))
+                    .foreground(look::ADDED)
+                    .centered_y(),
+            );
+            line.push(
+                text(format!("−{}", r.removed))
+                    .foreground(look::REMOVED)
+                    .centered_y(),
+            );
+        }
+        if r.stopped {
+            line.push(muted("Stopped").centered_y());
+        }
+    }
+    line.push(caret(open));
+    let row_palette = ComponentPalette {
+        hover: look::ROW_HOVER,
+        ..palette
+    };
+    let row = row_palette.interactive_surface(Element::clickable(
+        format!("tool:{}", step.call),
+        Element::row(line).gap(6.0).size(Some(column), Some(31.0)),
+    ));
+    if !open {
+        return row;
+    }
+    let inner = column - 24.0;
+    let mut body = vec![];
+    let result = step.result;
+    match step.name {
+        "Bash" => {
+            body.push(muted("Bash").font_size(SMALL));
+            let command = step.input["command"].as_str().unwrap_or_default();
+            body.push(
+                Element::panel(
+                    Element::row(vec![
+                        mono("$").foreground(look::MUTED),
+                        mono(command).size(Some(inner - 40.0), None),
+                    ])
+                    .gap(8.0),
+                )
+                .background(palette.surface)
+                .border(look::CARD_BORDER, 1.0)
+                .radius(6.0)
+                .padding(10.0)
+                .size(Some(inner), None),
+            );
+            if let Some(r) = result.filter(|r| !r.output.trim().is_empty()) {
+                body.push(
+                    mono(r.output.trim_end())
+                        .foreground(look::MUTED)
+                        .size(Some(inner), None),
+                );
+            }
+        }
+        _ => {
+            let files = result.map(|r| r.files.as_slice()).unwrap_or_default();
+            for file in files {
+                body.push(muted(file.path.display().to_string()).font_size(SMALL));
+                let lines = line_diff(
+                    file.before.as_deref().unwrap_or_default(),
+                    file.after.as_deref().unwrap_or_default(),
+                );
+                let rows = lines.len().max(1) as f32;
+                let words = word_ranges(&lines);
+                body.push(
+                    Element::panel(
+                        limn::CodeDiff::new(
+                            format!("diff:{}:{}", step.call, file.path.display()),
+                            lines,
+                        )
+                        .word_ranges(words)
+                        .palette(palette)
+                        .font_size(12.0)
+                        .height((rows * 19.0 + 16.0).min(480.0))
+                        .render(),
+                    )
+                    .border(look::CARD_BORDER, 1.0)
+                    .radius(6.0)
+                    .size(Some(inner), None),
+                );
+            }
+            if files.is_empty() {
+                if let Some(r) = result.filter(|r| !r.output.trim().is_empty()) {
+                    body.push(
+                        OutputBlock::new(format!("out:{}", step.call), r.output.clone(), palette)
+                            .render()
+                            .size(Some(inner), None),
+                    );
+                }
+            }
+        }
+    }
+    Element::column(vec![row, pad(Element::column(body).gap(8.0), 12.0, 4.0)])
+}
+
+fn mono(s: impl Into<String>) -> Element {
+    Element::text(s.into())
+        .font_family(FontFamily::Monospace)
+        .font_size(SMALL)
+        .foreground(look::PALETTE.text)
 }
 
 /// The inline approval card, as Desktop 3.6556.2 draws it: a 480 px card with what
@@ -1076,6 +1427,7 @@ fn composer(
     .editor_font_size(15.0)
     .pill_controls(plus_menu(ui), trailing)
     .inline_controls(true)
+    .controls_at_last_line(true)
     .border_color(look::COMPOSER_BORDER)
     .shadow_color(look::COMPOSER_SHADOW)
     .card_radius(14.0)
@@ -1177,6 +1529,9 @@ fn menu(
         look::MENU_PALETTE,
     )
     .sizing(sizing)
+    // The current row has only Desktop's blue check, no fill (limn #127).
+    .check_ink(look::HANDLE)
+    .selected_fill(false)
     .placement(placement)
     .render()
 }

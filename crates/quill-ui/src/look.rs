@@ -102,6 +102,8 @@ pub const COMPOSER_PALETTE: limn::ComponentPalette = limn::ComponentPalette {
 /// takes one style for every tooltip from its tokens.
 pub fn install() {
     let mut tokens = limn::tokens();
+    // Shortcuts are words, not key caps, in menus and tooltips alike.
+    tokens.shortcut_style = limn::ShortcutStyle::Text;
     let ink = Color::rgb(0x0b, 0x0b, 0x0b);
     tokens.tooltip = Some(limn::TooltipStyle {
         background: ink,

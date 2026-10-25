@@ -550,3 +550,62 @@ fn tab_menu_renames_closes_others_and_keys_move_tabs() {
         false
     ));
 }
+
+#[test]
+fn steps_are_named_in_desktops_words() {
+    use view::{group_summary, line_diff, past_tense, progressive, Step};
+    // From Desktop's transcript.
+    assert_eq!(
+        past_tense("Run saludo.py to verify output"),
+        "Ran saludo.py to verify output"
+    );
+    assert_eq!(
+        past_tense("Create atajo.txt in /work and confirm it exists"),
+        "Created atajo.txt in /work and confirm it exists"
+    );
+    assert_eq!(
+        progressive("Create atajo2.txt in /work"),
+        "Creating atajo2.txt in /work"
+    );
+    assert_eq!(past_tense("python3 x.py"), "python3 x.py");
+    let done = ToolResult {
+        output: String::new(),
+        is_error: false,
+        added: 1,
+        removed: 1,
+        files: vec![],
+        stopped: false,
+    };
+    let read = serde_json::json!({ "file_path": "/work/saludo.py" });
+    let bash =
+        serde_json::json!({ "command": "python3 saludo.py", "description": "Run saludo.py" });
+    let steps = [
+        Step {
+            call: "1",
+            name: "Read",
+            input: &read,
+            result: Some(&done),
+        },
+        Step {
+            call: "2",
+            name: "Edit",
+            input: &read,
+            result: Some(&done),
+        },
+        Step {
+            call: "3",
+            name: "Bash",
+            input: &bash,
+            result: Some(&done),
+        },
+    ];
+    assert_eq!(
+        group_summary(&steps),
+        "Read and edited saludo.py, ran a command"
+    );
+    assert_eq!(group_summary(&steps[2..]), "Ran saludo.py");
+    let lines = line_diff("a\nb\nc\n", "a\nB\nc\n");
+    let kinds: Vec<_> = lines.iter().map(|l| l.kind).collect();
+    use limn::CodeDiffLineKind::*;
+    assert_eq!(kinds, [Context, Added, Removed, Context]);
+}
