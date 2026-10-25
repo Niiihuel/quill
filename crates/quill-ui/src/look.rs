@@ -51,6 +51,8 @@ pub const SCRIM: Color = Color::rgba(0, 0, 0, 105);
 /// The permission card's hairline and the ink of the command it shows.
 pub const CARD_BORDER: Color = Color::rgb(0xeb, 0xeb, 0xeb);
 pub const COMMAND_INK: Color = Color::rgb(0x61, 0x61, 0x61);
+/// A boundary under the pointer or being dragged.
+pub const HANDLE: Color = Color::rgb(0x25, 0x7d, 0xe0);
 /// An active toggle or tab.
 pub const ACTIVE: Color = Color::rgb(0xe5, 0xe5, 0xe5);
 

@@ -140,6 +140,7 @@ impl eframe::App for App {
         limn_egui::normalize_keyboard_input(&ctx);
         let area = ui.max_rect();
         let window = Size::new(area.width(), area.height());
+        self.ui.window = window;
         // New output keeps the terminal at its end only if the person left it there.
         let shown = self.ui.terminal.screen.clone();
         let follow = shown.is_none()

@@ -80,10 +80,16 @@ fn layout(store: &Store, ui: &Ui, window: Size) -> Layout {
     }
     // The first pane sets the column: the diff takes 3 of 5 parts, a terminal 1 of 3
     // (the 1× captures of 2026-10-25, see look.rs).
-    let column = match panes.first() {
-        Some(Pane::Diff) => (rest * 0.6).round(),
-        Some(Pane::Terminal) => (rest / 3.0).round(),
+    let fraction = match panes.first() {
+        Some(Pane::Diff) => 0.6,
+        Some(Pane::Terminal) => 1.0 / 3.0,
         None => 0.0,
+    };
+    // Dragging the boundary sets the share, as in Desktop.
+    let column = if panes.is_empty() {
+        0.0
+    } else {
+        column_width(rest, ui.column_fraction.unwrap_or(fraction))
     };
     let panel = if panes.is_empty()
         && ui.panel_open
@@ -102,11 +108,71 @@ fn layout(store: &Store, ui: &Ui, window: Size) -> Layout {
     }
 }
 
-/// The height each pane of the column gets: the space under the top bar, shared evenly.
-fn pane_height(layout: &Layout, window: Size) -> f32 {
+/// The narrowest the conversation and the column of panes get when the boundary is dragged.
+pub const MIN_CHAT: f32 = 360.0;
+pub const MIN_COLUMN: f32 = 280.0;
+pub const MIN_PANE: f32 = 120.0;
+/// The boundaries the person drags: between the conversation and the panes, and between
+/// two stacked panes. Each is 2 px, Desktop's hairline plus the blue it turns under the
+/// pointer.
+pub const COLUMN_HANDLE: &str = "split:column";
+pub const STACK_HANDLE: &str = "split:stack";
+const HANDLE: f32 = 2.0;
+
+/// The column's width for a share of the space right of the sidebar, within the minimums.
+pub fn column_width(rest: f32, fraction: f32) -> f32 {
+    (rest * fraction).round().clamp(
+        MIN_COLUMN.min(rest),
+        (rest - MIN_CHAT).max(MIN_COLUMN.min(rest)),
+    )
+}
+
+/// The heights of the panes in the column, top first: one fills it; two share it, evenly
+/// until the person drags their boundary.
+fn pane_heights(layout: &Layout, ui: &Ui, window: Size) -> Vec<f32> {
     let below = window.height - look::TOP_BAR - 1.0;
-    let n = layout.panes.len().max(1) as f32;
-    ((below - (n - 1.0)) / n).floor()
+    if layout.panes.len() < 2 {
+        return vec![below];
+    }
+    let room = below - HANDLE;
+    let top = (room * ui.stack_fraction.unwrap_or(0.5))
+        .round()
+        .clamp(MIN_PANE, (room - MIN_PANE).max(MIN_PANE));
+    vec![top, room - top]
+}
+
+/// A boundary: Desktop's hairline at rest, its blue under the pointer and while dragged.
+fn divider(id: &str, across: bool, length: f32, palette: ComponentPalette) -> Element {
+    let blue = ComponentPalette {
+        hover: look::HANDLE,
+        selected: look::HANDLE,
+        ..palette
+    };
+    if across {
+        let line = Element::row(vec![vline(length), hgap(HANDLE - 1.0)]);
+        let handle = limn::ResizeHandle::vertical(id, blue)
+            .thickness(HANDLE)
+            .render();
+        Element::overlay(line, handle).size(Some(HANDLE), Some(length))
+    } else {
+        let line = Element::column(vec![
+            hline(length, look::PANE_BORDER),
+            Element::spacer().size(None, Some(HANDLE - 1.0)),
+        ]);
+        let handle = limn::ResizeHandle::horizontal(id, blue)
+            .thickness(HANDLE)
+            .render();
+        Element::overlay(line, handle).size(Some(length), Some(HANDLE))
+    }
+}
+
+/// The panes' width: the column less the boundary beside the conversation.
+fn pane_width(layout: &Layout) -> f32 {
+    if layout.main > 0.0 {
+        layout.column - HANDLE
+    } else {
+        layout.column
+    }
 }
 
 /// The files of the request the diff pane shows.
@@ -124,9 +190,15 @@ fn diff_files<'a>(store: &'a Store, ui: &Ui) -> Option<&'a Vec<FileEffect>> {
 /// The columns and rows the terminal pane holds in `window`, for the host's shell.
 pub fn terminal_grid(store: &Store, ui: &Ui, window: Size) -> (u16, u16) {
     let layout = layout(store, ui, window);
+    let at = layout
+        .panes
+        .iter()
+        .position(|p| *p == Pane::Terminal)
+        .unwrap_or(0);
+    let height = pane_heights(&layout, ui, window)[at.min(layout.panes.len().saturating_sub(1))];
     let inner = Size::new(
-        layout.column - 2.0 * TERMINAL_PADDING[0],
-        pane_height(&layout, window) - look::PANE_HEADER - 1.0 - 2.0 * TERMINAL_PADDING[1],
+        pane_width(&layout) - 2.0 * TERMINAL_PADDING[0],
+        height - look::PANE_HEADER - 1.0 - 2.0 * TERMINAL_PADDING[1],
     );
     let (cols, rows) = limn::TerminalView::grid_size(inner, TERMINAL_FONT);
     (cols as u16, rows as u16)
@@ -186,21 +258,22 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
         );
     }
     if !layout.panes.is_empty() {
-        let height = pane_height(&layout, window);
+        let heights = pane_heights(&layout, ui, window);
+        let width = pane_width(&layout);
         let mut stack = vec![];
-        for (i, pane) in layout.panes.iter().enumerate() {
+        for (i, (pane, height)) in layout.panes.iter().zip(heights).enumerate() {
             if i > 0 {
-                stack.push(hline(layout.column, look::PANE_BORDER));
+                stack.push(divider(STACK_HANDLE, false, width, palette));
             }
             stack.push(match pane {
-                Pane::Diff => diff_pane(store, ui, layout.column, height, palette),
-                Pane::Terminal => terminal_pane(session, ui, layout.column, height, palette),
+                Pane::Diff => diff_pane(store, ui, width, height, palette),
+                Pane::Terminal => terminal_pane(session, ui, width, height, palette),
             });
         }
         if layout.main > 0.0 {
-            row.push(vline(below));
+            row.push(divider(COLUMN_HANDLE, true, below, palette));
         }
-        row.push(Element::column(stack).size(Some(layout.column), Some(below)));
+        row.push(Element::column(stack).size(Some(width), Some(below)));
     }
     if let (Some(session), true) = (session, layout.panel > 0.0) {
         row.push(right_panel(session, layout.panel, below, palette));

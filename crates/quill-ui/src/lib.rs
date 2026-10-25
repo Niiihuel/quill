@@ -364,6 +364,13 @@ pub struct Ui {
     pub collapsed: Vec<PathBuf>,
     /// How the person allowed last, which the next permission card offers first.
     pub last_allow: Allow,
+    /// The window's size, which the host sets every frame; a dragged boundary needs it.
+    pub window: limn::Size,
+    /// The column of panes' share of the space right of the sidebar, once the person dragged
+    /// its boundary; until then the first pane's own share.
+    pub column_fraction: Option<f32>,
+    /// The top pane's share of two stacked panes, once their boundary was dragged.
+    pub stack_fraction: Option<f32>,
     /// Answers picked on question cards, by permission and question index.
     pub answers: std::collections::HashMap<(String, usize), String>,
     /// The permission whose "Always allow" menu is open.
@@ -454,6 +461,9 @@ impl Ui {
             panel_open: true,
             collapsed: vec![],
             last_allow: Allow::Once,
+            window: limn::Size::new(1408.0, 844.0),
+            column_fraction: None,
+            stack_fraction: None,
             answers: Default::default(),
             perm_menu: None,
             terminal: TerminalPane::default(),
@@ -525,7 +535,28 @@ pub fn update(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Intent
             }
         }
         UiAction::Clicked { id } => clicked(store, ui, id),
+        UiAction::DragStarted { id, position } | UiAction::DragMoved { id, position, .. } => {
+            dragged(ui, id, *position);
+            vec![]
+        }
         _ => vec![],
+    }
+}
+
+/// A boundary followed the pointer to `position`: the column's left edge, or the top of the
+/// lower stacked pane.
+fn dragged(ui: &mut Ui, id: &str, position: limn::Point) {
+    let rest = ui.window.width - look::SIDEBAR_WIDTH;
+    if id == view::COLUMN_HANDLE && rest > 0.0 {
+        let width = view::column_width(rest, (ui.window.width - position.x) / rest);
+        ui.column_fraction = Some(width / rest);
+    } else if id == view::STACK_HANDLE {
+        let room = ui.window.height - look::TOP_BAR - 1.0 - 2.0;
+        if room > 0.0 {
+            let top = (position.y - look::TOP_BAR - 1.0)
+                .clamp(view::MIN_PANE, (room - view::MIN_PANE).max(view::MIN_PANE));
+            ui.stack_fraction = Some(top / room);
+        }
     }
 }
 

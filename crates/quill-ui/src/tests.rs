@@ -466,3 +466,31 @@ fn a_finished_turn_closes_the_permissions_it_left_open() {
     );
     assert_eq!(shortcut(&store, &ui, limn::Key::Enter, true, false), None);
 }
+
+#[test]
+fn dragging_the_boundary_resizes_the_panes_within_their_minimums() {
+    let store = Store::default();
+    let mut ui = Ui::new("/tmp".into());
+    ui.open_pane(Pane::Terminal);
+    let drag = |ui: &mut Ui, x: f32| {
+        update(
+            &store,
+            ui,
+            &UiAction::DragMoved {
+                id: view::COLUMN_HANDLE.into(),
+                position: limn::Point::new(x, 400.0),
+                over: None,
+            },
+        );
+    };
+    // From a third (373 px at 1408) to the boundary at x = 900: 508 px.
+    drag(&mut ui, 900.0);
+    let rest = 1408.0 - look::SIDEBAR_WIDTH;
+    assert_eq!((ui.column_fraction.unwrap() * rest).round(), 508.0);
+    // Never so far that the conversation gets under its minimum.
+    drag(&mut ui, 300.0);
+    assert_eq!(
+        (ui.column_fraction.unwrap() * rest).round(),
+        rest - view::MIN_CHAT
+    );
+}
