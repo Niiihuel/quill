@@ -18,6 +18,12 @@ pub const MODEL_MENU: &str = "model-menu";
 pub const DIFF_CLOSE: &str = "diff:close";
 /// Asks the host for the platform folder picker; the host sets `Ui::cwd` with the answer.
 pub const PICK_FOLDER: &str = "pick-folder";
+pub const TERMINAL_TOGGLE: &str = "terminal:toggle";
+/// The terminal pane; while it has the focus the host sends keys to the shell.
+pub const TERMINAL: &str = "terminal";
+const TERMINAL_HEIGHT: f32 = 240.0;
+const TERMINAL_FONT: f32 = 12.0;
+const TERMINAL_PADDING: f32 = 8.0;
 
 fn text(s: impl Into<String>) -> Element {
     Element::text(s.into())
@@ -37,44 +43,81 @@ fn muted(s: impl Into<String>) -> Element {
     text(s).foreground(look::MUTED)
 }
 
-pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
-    let palette = look::PALETTE;
+/// The widths of the diff panel, the right panel and the main column, in that order.
+fn widths(store: &Store, ui: &Ui, window: Size) -> (f32, f32, f32) {
     let session = ui.selected.and_then(|id| store.session(id));
-    // The diff opens beside the conversation, taking 3 of 5 parts as Desktop's does.
-    let files = ui.diff.as_ref().and_then(|(id, request)| {
-        let s = session.filter(|s| s.id == *id)?;
-        s.items.iter().find_map(|i| match i {
-            Item::Changes {
-                request: r, files, ..
-            } if r == request => Some(files),
-            _ => None,
-        })
-    });
     let rest = (window.width - look::SIDEBAR_WIDTH).max(0.0);
-    let diff_width = if files.is_some() {
+    let diff_width = if diff_files(store, ui).is_some() {
         (rest * 0.6).min(760.0)
     } else {
         0.0
     };
     // The right panel stays only while it fits beside a full column.
-    let panel_width = if files.is_none() && session.is_some() && rest >= 1100.0 {
+    let panel_width = if diff_width == 0.0 && session.is_some() && rest >= 1100.0 {
         look::PANEL_WIDTH
     } else {
         0.0
     };
-    let main_width = rest - diff_width - panel_width;
+    (diff_width, panel_width, rest - diff_width - panel_width)
+}
+
+/// The files of the request the diff panel shows.
+fn diff_files<'a>(store: &'a Store, ui: &Ui) -> Option<&'a Vec<FileEffect>> {
+    let (id, request) = ui.diff.as_ref()?;
+    let session = store.session(ui.selected?).filter(|s| s.id == *id)?;
+    session.items.iter().find_map(|i| match i {
+        Item::Changes {
+            request: r, files, ..
+        } if r == request => Some(files),
+        _ => None,
+    })
+}
+
+/// The columns and rows the terminal pane holds in `window`, for the host's shell.
+pub fn terminal_grid(store: &Store, ui: &Ui, window: Size) -> (u16, u16) {
+    let (_, _, main_width) = widths(store, ui, window);
+    let inner = Size::new(
+        main_width - 2.0 * TERMINAL_PADDING,
+        TERMINAL_HEIGHT - 2.0 * TERMINAL_PADDING,
+    );
+    let (cols, rows) = limn::TerminalView::grid_size(inner, TERMINAL_FONT);
+    (cols as u16, rows as u16)
+}
+
+pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
+    let palette = look::PALETTE;
+    let session = ui.selected.and_then(|id| store.session(id));
+    // The diff opens beside the conversation, taking 3 of 5 parts as Desktop's does.
+    let files = diff_files(store, ui);
+    let (diff_width, panel_width, main_width) = widths(store, ui, window);
     let column = COLUMN.min(main_width - 32.0).max(240.0);
     let body = match session {
         Some(session) => transcript(session, ui, column, palette),
         None => empty(ui),
     };
-    let main = Element::column(vec![
-        top_bar(session, palette),
+    let mut main = vec![
+        top_bar(session, ui, palette),
         body.flex(1.0),
         composer(session, ui, column, palette).centered_x(),
         Element::spacer().size(None, Some(12.0)),
-    ])
-    .size(Some(main_width), Some(window.height));
+    ];
+    // The session's shell sits under the conversation (features/terminal.md).
+    if let (true, Some(screen)) = (ui.terminal_open, &ui.terminal) {
+        main.push(
+            Element::spacer()
+                .background(look::DIVIDER)
+                .size(Some(main_width), Some(1.0)),
+        );
+        main.push(
+            limn::TerminalView::new(TERMINAL, screen.clone(), palette)
+                .font_size(TERMINAL_FONT)
+                .background(look::THEME.background)
+                .render()
+                .padding(TERMINAL_PADDING)
+                .size(Some(main_width), Some(TERMINAL_HEIGHT - 1.0)),
+        );
+    }
+    let main = Element::column(main).size(Some(main_width), Some(window.height));
     let mut row = vec![
         sidebar(store, ui, window.height, palette),
         Element::spacer()
@@ -98,7 +141,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
         .size(Some(window.width), Some(window.height))
 }
 
-fn top_bar(session: Option<&Session>, palette: ComponentPalette) -> Element {
+fn top_bar(session: Option<&Session>, ui: &Ui, palette: ComponentPalette) -> Element {
     let title = session.map_or("New session".to_string(), |s| {
         if s.title.is_empty() {
             "New session".into()
@@ -116,7 +159,21 @@ fn top_bar(session: Option<&Session>, palette: ComponentPalette) -> Element {
                 .render(),
         );
     }
-    Element::row(row).padding(12.0).size(None, Some(44.0))
+    let label = if ui.terminal_open {
+        "Hide terminal"
+    } else {
+        "Show terminal"
+    };
+    row.push(
+        Button::new(TERMINAL_TOGGLE, label, palette)
+            .variant(ButtonVariant::Ghost)
+            .button_size(ButtonSize::Small)
+            .render(),
+    );
+    Element::row(row)
+        .gap(4.0)
+        .padding(12.0)
+        .size(None, Some(44.0))
 }
 
 fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> Element {

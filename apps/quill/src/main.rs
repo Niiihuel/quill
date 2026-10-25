@@ -6,6 +6,8 @@ use limn::{Element, Size, UiTree};
 use quill_engine::Engine;
 use quill_model::{Event, Intent};
 use quill_ui::{Store, Ui};
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 struct App {
@@ -16,11 +18,66 @@ struct App {
     /// Events the engine reported since the last frame.
     inbox: Arc<Mutex<Vec<Event>>>,
     /// The folder the person chose in the platform's dialog, picked up on the next frame.
-    picked: Arc<Mutex<Option<std::path::PathBuf>>>,
+    picked: Arc<Mutex<Option<PathBuf>>>,
+    /// One shell per folder, kept while the window lives (features/terminal.md).
+    terminals: HashMap<PathBuf, quill_pty::Terminal>,
     fonts_attached: bool,
 }
 
 impl App {
+    /// Start, size and read the shell of the folder on screen while the pane is open.
+    fn sync_terminal(&mut self, ctx: &egui::Context, window: Size) {
+        self.ui.terminal = None;
+        if !self.ui.terminal_open {
+            return;
+        }
+        let folder = quill_ui::folder(&self.store, &self.ui);
+        let (cols, rows) = quill_ui::view::terminal_grid(&self.store, &self.ui, window);
+        if !self.terminals.contains_key(&folder) {
+            let ctx = ctx.clone();
+            match quill_pty::Terminal::spawn(&folder, cols, rows, move || ctx.request_repaint()) {
+                Ok(terminal) => drop(self.terminals.insert(folder.clone(), terminal)),
+                Err(error) => {
+                    eprintln!("quill: no terminal in {}: {error}", folder.display());
+                    self.ui.terminal_open = false;
+                    return;
+                }
+            }
+        }
+        let terminal = self.terminals.get_mut(&folder).expect("started above");
+        // `exit` in the shell closes the pane; the next one starts fresh.
+        if !terminal.alive() {
+            self.terminals.remove(&folder);
+            self.ui.terminal_open = false;
+            return;
+        }
+        terminal.resize(cols, rows);
+        self.ui.terminal = Some(Arc::new(terminal.screen()));
+    }
+
+    /// Keys typed while the terminal has the focus go to its shell, not to the window.
+    fn typed_into_terminal(&mut self, event: &limn::UiEvent) -> bool {
+        if self.tree.focused_id() != Some(quill_ui::view::TERMINAL) {
+            return false;
+        }
+        let bytes = match event {
+            limn::UiEvent::Text(text) => text.as_bytes().to_vec(),
+            limn::UiEvent::Key { key, shift, ctrl } => {
+                match quill_pty::key_bytes(*key, *ctrl, *shift) {
+                    Some(bytes) => bytes,
+                    // Plain letters arrive again as Text.
+                    None => return true,
+                }
+            }
+            _ => return false,
+        };
+        let folder = quill_ui::folder(&self.store, &self.ui);
+        if let Some(terminal) = self.terminals.get_mut(&folder) {
+            terminal.write(&bytes);
+        }
+        true
+    }
+
     fn dispatch(&mut self, intents: Vec<Intent>) {
         for intent in intents {
             quill_ui::decided(&mut self.store, &intent);
@@ -48,13 +105,17 @@ impl eframe::App for App {
         limn_egui::normalize_keyboard_input(&ctx);
         let area = ui.max_rect();
         let window = Size::new(area.width(), area.height());
+        self.sync_terminal(&ctx, window);
 
         self.tree
             .set_root(quill_ui::view(&self.store, &self.ui, window));
         self.tree.layout(window);
         let mut actions = vec![];
+        let mut focus_terminal = false;
         for event in limn_egui::events(&ctx, area.min) {
-            actions.extend(self.tree.handle_event(event));
+            if !self.typed_into_terminal(&event) {
+                actions.extend(self.tree.handle_event(event));
+            }
         }
         actions.extend(limn_egui::apply_access_requests(&ctx, &mut self.tree));
         for action in actions {
@@ -78,12 +139,21 @@ impl eframe::App for App {
             {
                 self.tree.set_input_value(quill_ui::view::COMPOSER, "");
             }
+            let opened = !self.ui.terminal_open;
             let intents = quill_ui::update(&self.store, &mut self.ui, &action);
             self.dispatch(intents);
+            if opened && self.ui.terminal_open {
+                focus_terminal = true;
+            }
         }
+        self.sync_terminal(&ctx, window);
         self.tree
             .set_root(quill_ui::view(&self.store, &self.ui, window));
-        let frame = self.tree.layout(window);
+        let mut frame = self.tree.layout(window);
+        // A pane just opened takes the keys; focus needs the laid-out tree.
+        if focus_terminal && self.tree.focus(quill_ui::view::TERMINAL) {
+            frame = self.tree.layout(window);
+        }
         limn_egui::paint_at(ui, &frame, area.min);
         limn_egui::set_cursor(&ctx, self.tree.cursor());
         if let Some(after) = self.tree.animation_repaint_after() {
@@ -131,6 +201,7 @@ fn main() -> eframe::Result {
                 engine,
                 inbox,
                 picked: Arc::default(),
+                terminals: HashMap::new(),
                 fonts_attached: false,
             }))
         }),

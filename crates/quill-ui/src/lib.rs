@@ -311,6 +311,13 @@ fn line_changes(before: Option<&str>, after: Option<&str>) -> (usize, usize) {
     (added, left.len())
 }
 
+/// The folder the terminal and new sessions work in: the selected session's, else the chosen one.
+pub fn folder(store: &Store, ui: &Ui) -> PathBuf {
+    ui.selected
+        .and_then(|id| store.session(id))
+        .map_or_else(|| ui.cwd.clone(), |s| s.cwd.clone())
+}
+
 /// What the person is doing, apart from what the engine knows.
 pub struct Ui {
     pub selected: Option<SessionId>,
@@ -330,6 +337,9 @@ pub struct Ui {
     pub answers: std::collections::HashMap<(String, usize), String>,
     /// The permission whose "Always allow" menu is open.
     pub perm_menu: Option<String>,
+    /// Whether the terminal pane shows, and the screen the host's shell last drew.
+    pub terminal_open: bool,
+    pub terminal: Option<std::sync::Arc<limn::TerminalScreen>>,
 }
 
 impl Ui {
@@ -347,6 +357,8 @@ impl Ui {
             diff: None,
             answers: Default::default(),
             perm_menu: None,
+            terminal_open: false,
+            terminal: None,
         }
     }
 
@@ -406,6 +418,10 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
     }
     if let Some(rest) = id.strip_prefix("ask:") {
         return answer(store, ui, rest);
+    }
+    if id == view::TERMINAL_TOGGLE {
+        ui.terminal_open = !ui.terminal_open;
+        return vec![];
     }
     if id == view::DIFF_CLOSE {
         ui.diff = None;

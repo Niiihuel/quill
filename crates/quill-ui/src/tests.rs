@@ -238,3 +238,18 @@ fn a_rewritten_line_marks_only_what_changed() {
     assert_eq!(words[1], vec![10..28]);
     assert!(words[2].is_empty());
 }
+
+#[test]
+fn the_terminal_toggles_and_fits_the_main_column() {
+    let store = Store::default();
+    let mut ui = Ui::new("/tmp".into());
+    let click = limn::UiAction::Clicked {
+        id: view::TERMINAL_TOGGLE.into(),
+    };
+    update(&store, &mut ui, &click);
+    assert!(ui.terminal_open);
+    let (cols, rows) = view::terminal_grid(&store, &ui, limn::Size::new(1212.0, 800.0));
+    assert!(cols > 100 && rows > 10, "{cols}x{rows}");
+    update(&store, &mut ui, &click);
+    assert!(!ui.terminal_open);
+}
