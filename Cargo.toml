@@ -15,6 +15,8 @@ limn = { path = "../lienzo/crates/limn", default-features = false }
 limn-egui = { path = "../lienzo/crates/limn-egui", default-features = false }
 eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "default_fonts", "x11", "wayland"] }
 serde_json = "1"
+# Events are kept as JSON in quill-store and replayed at start.
+serde = { version = "1", features = ["derive"] }
 
 [profile.dev]
 debug = "line-tables-only"

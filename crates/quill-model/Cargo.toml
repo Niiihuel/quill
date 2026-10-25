@@ -9,3 +9,4 @@ publish = false
 
 [dependencies]
 quill-agent = { path = "../quill-agent" }
+serde.workspace = true

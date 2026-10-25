@@ -11,7 +11,7 @@ use std::path::PathBuf;
 pub type AgentId = &'static str;
 
 /// How the engine starts the agent's process.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LaunchPlan {
     pub program: String,
     pub args: Vec<String>,
@@ -21,7 +21,7 @@ pub struct LaunchPlan {
 }
 
 /// What a new or resumed session asks of the agent.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SessionSpec {
     pub cwd: PathBuf,
     pub model: Option<String>,
@@ -34,7 +34,7 @@ pub struct SessionSpec {
 }
 
 /// One model the agent offers, with the efforts it accepts.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ModelInfo {
     pub id: String,
     pub name: String,
@@ -42,7 +42,7 @@ pub struct ModelInfo {
 }
 
 /// What this agent can do; the UI offers only what is here.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AgentCapabilities {
     pub models: Vec<ModelInfo>,
     /// Permission modes, in the agent's own words (`default`, `acceptEdits`, `plan`…).
@@ -59,7 +59,7 @@ pub struct AgentCapabilities {
 }
 
 /// One file a tool changed, as the agent reported it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FileChange {
     pub path: PathBuf,
     /// Content before the change; `None` when the tool created the file.
@@ -68,7 +68,7 @@ pub struct FileChange {
 }
 
 /// A shell command a tool ran.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CommandRun {
     pub command: String,
     pub stdout: String,
@@ -77,7 +77,7 @@ pub struct CommandRun {
 }
 
 /// One permission the agent offers to remember, kept as the agent wrote it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Suggestion {
     /// Allow rules for later calls.
     Rules(Value),
@@ -88,7 +88,7 @@ pub enum Suggestion {
 }
 
 /// The agent's own token use for a turn.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Usage {
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -96,7 +96,7 @@ pub struct Usage {
 }
 
 /// Something the agent said, in quill's terms.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum AgentEvent {
     /// The agent answered `Start`: who it is and what it can do.
     Ready {
@@ -172,7 +172,7 @@ pub enum AgentEvent {
 }
 
 /// The answer to a [`AgentEvent::PermissionRequest`].
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Decision {
     Allow,
     /// Allow and remember the chosen suggestions.
@@ -185,7 +185,7 @@ pub enum Decision {
 }
 
 /// Something quill asks of the agent.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum AgentCommand {
     Start,
     Prompt {
@@ -208,7 +208,7 @@ pub enum AgentCommand {
 }
 
 /// What one line from the agent became.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Decoded {
     pub events: Vec<AgentEvent>,
     /// Lines to write back at once, without the engine deciding (e.g. hook acknowledgements).

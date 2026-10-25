@@ -19,16 +19,37 @@ fn engine() -> (Engine, Receiver<Event>) {
         "claude".to_string(),
         env!("CARGO_BIN_EXE_fake-agent").to_string(),
     )]);
-    let engine = Engine::start_with(move |event| drop(tx.send(event)), programs);
+    let config = quill_engine::Config {
+        programs,
+        database: None,
+    };
+    let engine = Engine::start_with(move |event| drop(tx.send(event)), config);
     (engine, rx)
 }
 
+/// A working directory whose `.fake-agent` names the capture the fake agent replays.
+fn workdir(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "quill-engine-{}-{name}-{}",
+        std::process::id(),
+        uuid_like()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(".fake-agent"), fixture(name)).unwrap();
+    dir
+}
+
+fn uuid_like() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+}
+
 fn new_session(engine: &Engine, name: &str) {
-    // Read by the fake agent when it starts, which happens on the first message.
-    std::env::set_var("FAKE_AGENT_FIXTURE", fixture(name));
     engine.send(Intent::NewSession(NewSession {
         agent: "claude".into(),
-        cwd: std::env::temp_dir(),
+        cwd: workdir(name),
         model: None,
         effort: None,
         mode: None,
@@ -50,7 +71,6 @@ fn until(rx: &Receiver<Event>, mut done: impl FnMut(&Event) -> bool) -> Vec<Even
     }
 }
 
-// One test: the fixture reaches the fake agent through the environment, shared by the process.
 #[test]
 fn sessions_stream_turns_and_wait_for_decisions() {
     let (engine, rx) = engine();
@@ -155,4 +175,97 @@ fn sessions_stream_turns_and_wait_for_decisions() {
             ..
         }
     )));
+}
+
+#[test]
+fn a_kept_session_comes_back_and_continues() {
+    let database = std::env::temp_dir().join(format!("quill-test-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&database);
+    let start = || {
+        let (tx, rx) = channel();
+        let programs = HashMap::from([(
+            "claude".to_string(),
+            env!("CARGO_BIN_EXE_fake-agent").to_string(),
+        )]);
+        let config = quill_engine::Config {
+            programs,
+            database: Some(database.clone()),
+        };
+        (
+            Engine::start_with(move |event| drop(tx.send(event)), config),
+            rx,
+        )
+    };
+    let cwd = workdir("simple");
+
+    let (engine, rx) = start();
+    engine.send(Intent::NewSession(NewSession {
+        agent: "claude".into(),
+        cwd: cwd.clone(),
+        model: None,
+        effort: None,
+        mode: None,
+    }));
+    engine.send(Intent::Send {
+        session: 1,
+        text: "Reply with exactly the word: ok".into(),
+    });
+    until(&rx, |e| {
+        matches!(
+            e,
+            Event::Agent {
+                event: AgentEvent::TurnFinished { .. },
+                ..
+            }
+        )
+    });
+    drop(engine);
+
+    let (engine, rx) = start();
+    let replayed = until(&rx, |e| {
+        matches!(
+            e,
+            Event::Status {
+                session: 1,
+                status: SessionStatus::Exited
+            }
+        )
+    });
+    assert!(matches!(
+        replayed.first(),
+        Some(Event::SessionCreated { session: 1, .. })
+    ));
+    assert!(replayed
+        .iter()
+        .any(|e| matches!(e, Event::Queued { text, .. } if text.contains("ok"))));
+    assert!(replayed.iter().any(|e| matches!(
+        e,
+        Event::Agent {
+            event: AgentEvent::Text { .. },
+            ..
+        }
+    )));
+    assert!(!replayed.iter().any(|e| matches!(
+        e,
+        Event::Agent {
+            event: AgentEvent::TextDelta { .. },
+            ..
+        }
+    )));
+    // The kept session takes a new message and runs again (resuming its conversation).
+    engine.send(Intent::Send {
+        session: 1,
+        text: "again".into(),
+    });
+    until(&rx, |e| {
+        matches!(
+            e,
+            Event::Agent {
+                session: 1,
+                event: AgentEvent::TurnFinished { .. },
+                ..
+            }
+        )
+    });
+    let _ = std::fs::remove_file(&database);
 }

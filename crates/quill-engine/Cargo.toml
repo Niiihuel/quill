@@ -11,6 +11,7 @@ publish = false
 quill-model = { path = "../quill-model" }
 quill-agent = { path = "../quill-agent" }
 quill-agent-claude = { path = "../quill-agent-claude" }
+quill-store = { path = "../quill-store" }
 serde_json.workspace = true
 # Processes, pipes and one actor per session.
 tokio = { version = "1", features = ["rt-multi-thread", "process", "io-util", "sync", "macros", "time"] }

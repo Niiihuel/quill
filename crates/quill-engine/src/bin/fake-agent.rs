@@ -1,11 +1,14 @@
-//! A stand-in for an agent CLI in tests: replays a capture (`FAKE_AGENT_FIXTURE`).
+//! A stand-in for an agent CLI in tests: replays the capture named in `.fake-agent` in its
+//! working directory (each test session gets its own directory, so tests run side by side).
 //! Prints each line the real CLI sent, and where quill sent a line in the capture it
 //! waits for one on stdin, so the engine's writes pace the replay as they did live.
 
 use std::io::{BufRead, Write};
 
 fn main() {
-    let path = std::env::var("FAKE_AGENT_FIXTURE").expect("FAKE_AGENT_FIXTURE");
+    let path =
+        std::fs::read_to_string(".fake-agent").expect(".fake-agent in the working directory");
+    let path = path.trim();
     let text = std::fs::read_to_string(path).expect("fixture");
     let stdin = std::io::stdin();
     let mut input = stdin.lock().lines();

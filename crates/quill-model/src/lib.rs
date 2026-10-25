@@ -11,7 +11,7 @@ pub type SessionId = u64;
 pub type RequestId = String;
 
 /// What a new session starts with.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NewSession {
     pub agent: String,
     pub cwd: PathBuf,
@@ -21,7 +21,7 @@ pub struct NewSession {
 }
 
 /// What the UI asks of the engine.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Intent {
     NewSession(NewSession),
     Send {
@@ -47,7 +47,7 @@ pub enum Intent {
 }
 
 /// Where a session's agent process is.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum SessionStatus {
     Starting,
     Idle,
@@ -60,7 +60,7 @@ pub enum SessionStatus {
 }
 
 /// What the engine tells the UI.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Event {
     SessionCreated {
         session: SessionId,
@@ -83,4 +83,15 @@ pub enum Event {
         request: Option<RequestId>,
         event: AgentEvent,
     },
+}
+
+impl Event {
+    pub fn session(&self) -> SessionId {
+        match self {
+            Event::SessionCreated { session, .. }
+            | Event::Status { session, .. }
+            | Event::Queued { session, .. }
+            | Event::Agent { session, .. } => *session,
+        }
+    }
 }

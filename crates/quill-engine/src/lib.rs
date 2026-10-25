@@ -5,8 +5,9 @@
 use quill_agent::{AgentAdapter, AgentCommand, AgentEvent, SessionSpec};
 use quill_model::{Event, Intent, NewSession, RequestId, SessionId, SessionStatus};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -27,16 +28,37 @@ pub struct Engine {
     _runtime: tokio::runtime::Runtime,
 }
 
+/// How an engine runs.
+#[derive(Clone, Debug, Default)]
+pub struct Config {
+    /// Replaces an agent's executable (tests run a fake agent this way).
+    pub programs: HashMap<String, String>,
+    /// Where sessions are kept; `None` keeps them in memory only.
+    pub database: Option<PathBuf>,
+}
+
+impl Config {
+    /// Sessions kept in `$XDG_DATA_HOME/quill/quill.db` (`~/.local/share/quill` without it).
+    pub fn default_database() -> Self {
+        let data = std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share"))
+            })
+            .unwrap_or_else(|| ".".into());
+        Self {
+            database: Some(data.join("quill/quill.db")),
+            ..Self::default()
+        }
+    }
+}
+
 impl Engine {
     pub fn start(sink: impl Fn(Event) + Send + Sync + 'static) -> Self {
-        Self::start_with(sink, HashMap::new())
+        Self::start_with(sink, Config::default_database())
     }
 
-    /// `programs` replaces an agent's executable (tests run a fake agent this way).
-    pub fn start_with(
-        sink: impl Fn(Event) + Send + Sync + 'static,
-        programs: HashMap<String, String>,
-    ) -> Self {
+    pub fn start_with(sink: impl Fn(Event) + Send + Sync + 'static, config: Config) -> Self {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("quill-engine")
@@ -44,7 +66,7 @@ impl Engine {
             .build()
             .expect("tokio runtime");
         let (intents, rx) = unbounded_channel();
-        runtime.spawn(route(rx, Arc::new(sink), programs));
+        runtime.spawn(route(rx, Arc::new(sink), config));
         Self {
             intents,
             _runtime: runtime,
@@ -56,10 +78,70 @@ impl Engine {
     }
 }
 
-/// Hands each intent to its session's actor, creating sessions as asked.
-async fn route(mut rx: UnboundedReceiver<Intent>, sink: Sink, programs: HashMap<String, String>) {
+/// Opens the record, falling back to memory so a broken file never stops quill.
+fn open_store(config: &Config, sink: &Sink) -> quill_store::Store {
+    let opened = match &config.database {
+        Some(path) => quill_store::Store::open(path),
+        None => quill_store::Store::in_memory(),
+    };
+    opened.unwrap_or_else(|error| {
+        sink(Event::Status {
+            session: 0,
+            status: SessionStatus::Failed(format!("sessions are not saved: {error}")),
+        });
+        quill_store::Store::in_memory().expect("in-memory store")
+    })
+}
+
+/// Hands each intent to its session's actor, creating sessions as asked. Sessions kept
+/// from earlier runs come back first, ready to continue their conversation.
+async fn route(mut rx: UnboundedReceiver<Intent>, ui: Sink, config: Config) {
+    let store = Arc::new(Mutex::new(open_store(&config, &ui)));
+    // Every event is written before the UI sees it (spec.md D5).
+    let sink: Sink = {
+        let (store, ui) = (store.clone(), ui.clone());
+        Arc::new(move |event: Event| {
+            if let Err(error) = store.lock().unwrap().append(event.session(), &event) {
+                ui(Event::Status {
+                    session: event.session(),
+                    status: SessionStatus::Failed(format!("not saved: {error}")),
+                });
+            }
+            ui(event);
+        })
+    };
     let mut sessions: HashMap<SessionId, UnboundedSender<Input>> = HashMap::new();
     let mut next: SessionId = 0;
+    let kept = store.lock().unwrap().load().unwrap_or_default();
+    for (session, events) in kept {
+        next = next.max(session);
+        let Some(restored) = Restored::from(&events) else {
+            continue;
+        };
+        for event in events {
+            ui(event);
+        }
+        let Some(adapter) = adapter(&restored.new.agent) else {
+            continue;
+        };
+        let (tx, rx) = unbounded_channel();
+        let program = config.programs.get(&restored.new.agent).cloned();
+        let mut actor = Actor::new(
+            session,
+            restored.new,
+            adapter,
+            program,
+            tx.clone(),
+            sink.clone(),
+        );
+        actor.spec.resume = restored.resume;
+        tokio::spawn(actor.run(rx));
+        sessions.insert(session, tx);
+        ui(Event::Status {
+            session,
+            status: SessionStatus::Exited,
+        });
+    }
     while let Some(intent) = rx.recv().await {
         let (session, input) = match intent {
             Intent::NewSession(new) => {
@@ -77,7 +159,7 @@ async fn route(mut rx: UnboundedReceiver<Intent>, sink: Sink, programs: HashMap<
                     agent: new.agent.clone(),
                     cwd: new.cwd.clone(),
                 });
-                let program = programs.get(&new.agent).cloned();
+                let program = config.programs.get(&new.agent).cloned();
                 tokio::spawn(
                     Actor::new(next, new, adapter, program, tx.clone(), sink.clone()).run(rx),
                 );
@@ -107,6 +189,38 @@ async fn route(mut rx: UnboundedReceiver<Intent>, sink: Sink, programs: HashMap<
         if let Some(tx) = sessions.get(&session) {
             let _ = tx.send(input);
         }
+    }
+}
+
+/// What a kept session needs to continue: how it started and the agent's own id for it.
+struct Restored {
+    new: NewSession,
+    resume: Option<String>,
+}
+
+impl Restored {
+    fn from(events: &[Event]) -> Option<Self> {
+        let Some(Event::SessionCreated { agent, cwd, .. }) = events.first() else {
+            return None;
+        };
+        let mut new = NewSession {
+            agent: agent.clone(),
+            cwd: cwd.clone(),
+            model: None,
+            effort: None,
+            mode: None,
+        };
+        let mut resume = None;
+        for event in events {
+            if let Event::Agent { event, .. } = event {
+                match event {
+                    AgentEvent::Session { id } => resume = Some(id.clone()),
+                    AgentEvent::ModeChanged { mode } => new.mode = Some(mode.clone()),
+                    _ => {}
+                }
+            }
+        }
+        Some(Self { new, resume })
     }
 }
 
