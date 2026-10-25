@@ -3,7 +3,7 @@
 //! Layout and colors follow Claude Desktop's Code surface (docs/ui.md, features/code-*.md).
 
 mod look;
-mod view;
+pub mod view;
 
 pub use view::view;
 
@@ -310,6 +310,8 @@ pub struct Ui {
     pub waiting: Option<String>,
     /// The request whose changes the diff panel shows.
     pub diff: Option<(SessionId, RequestId)>,
+    /// Answers picked on question cards, by permission and question index.
+    pub answers: std::collections::HashMap<(String, usize), String>,
 }
 
 impl Ui {
@@ -325,6 +327,7 @@ impl Ui {
             expanded: vec![],
             waiting: None,
             diff: None,
+            answers: Default::default(),
         }
     }
 
@@ -381,6 +384,9 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
     if id == view::NEW_SESSION {
         ui.selected = None;
         return vec![];
+    }
+    if let Some(rest) = id.strip_prefix("ask:") {
+        return answer(store, ui, rest);
     }
     if id == view::DIFF_CLOSE {
         ui.diff = None;
@@ -521,3 +527,56 @@ pub fn decided(store: &mut Store, intent: &Intent) {
 
 #[cfg(test)]
 mod tests;
+
+/// A pick or a submit on a question card: `{permission}:{question}:{option}` or `{permission}:submit`.
+fn answer(store: &Store, ui: &mut Ui, rest: &str) -> Vec<Intent> {
+    let Some(session) = ui.selected.and_then(|s| store.session(s)) else {
+        return vec![];
+    };
+    let find = |permission: &str| {
+        session.items.iter().find_map(|i| match i {
+            Item::Permission { id, input, .. } if id == permission => Some(input.clone()),
+            _ => None,
+        })
+    };
+    if let Some(permission) = rest.strip_suffix(":submit") {
+        let Some(input) = find(permission) else {
+            return vec![];
+        };
+        let answers: serde_json::Map<String, Value> = input["questions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .filter_map(|(q, question)| {
+                let picked = ui.answers.get(&(permission.to_owned(), q))?;
+                Some((
+                    question["question"].as_str()?.to_owned(),
+                    Value::String(picked.clone()),
+                ))
+            })
+            .collect();
+        return vec![Intent::Decide {
+            session: session.id,
+            permission: permission.to_owned(),
+            decision: Decision::Answer(Value::Object(answers)),
+        }];
+    }
+    let mut parts = rest.rsplitn(3, ':');
+    let (Some(option), Some(question), Some(permission)) =
+        (parts.next(), parts.next(), parts.next())
+    else {
+        return vec![];
+    };
+    let (Ok(q), Ok(o)) = (question.parse::<usize>(), option.parse::<usize>()) else {
+        return vec![];
+    };
+    if let Some(label) = find(permission).and_then(|input| {
+        input["questions"][q]["options"][o]["label"]
+            .as_str()
+            .map(str::to_owned)
+    }) {
+        ui.answers.insert((permission.to_owned(), q), label);
+    }
+    vec![]
+}

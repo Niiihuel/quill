@@ -15,6 +15,8 @@ struct App {
     engine: Engine,
     /// Events the engine reported since the last frame.
     inbox: Arc<Mutex<Vec<Event>>>,
+    /// The folder the person chose in the platform's dialog, picked up on the next frame.
+    picked: Arc<Mutex<Option<std::path::PathBuf>>>,
     fonts_attached: bool,
 }
 
@@ -40,6 +42,9 @@ impl eframe::App for App {
             self.store.apply(event);
             self.dispatch(intents);
         }
+        if let Some(folder) = self.picked.lock().unwrap().take() {
+            self.ui.cwd = folder;
+        }
         limn_egui::normalize_keyboard_input(&ctx);
         let area = ui.max_rect();
         let window = Size::new(area.width(), area.height());
@@ -55,6 +60,18 @@ impl eframe::App for App {
         for action in actions {
             if let limn::UiAction::CopyRequested { text } = &action {
                 ctx.copy_text(text.clone());
+            }
+            if matches!(&action, limn::UiAction::Clicked { id } if id == quill_ui::view::PICK_FOLDER)
+            {
+                // The dialog blocks until the person answers, so it runs beside the window.
+                let (picked, start, ctx) = (self.picked.clone(), self.ui.cwd.clone(), ctx.clone());
+                std::thread::spawn(move || {
+                    if let Some(folder) = rfd::FileDialog::new().set_directory(start).pick_folder()
+                    {
+                        *picked.lock().unwrap() = Some(folder);
+                        ctx.request_repaint();
+                    }
+                });
             }
             let intents = quill_ui::update(&self.store, &mut self.ui, &action);
             self.dispatch(intents);
@@ -108,6 +125,7 @@ fn main() -> eframe::Result {
                 },
                 engine,
                 inbox,
+                picked: Arc::default(),
                 fonts_attached: false,
             }))
         }),

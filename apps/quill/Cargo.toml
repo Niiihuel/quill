@@ -13,3 +13,5 @@ eframe.workspace = true
 quill-ui = { path = "../../crates/quill-ui" }
 quill-model = { path = "../../crates/quill-model" }
 quill-engine = { path = "../../crates/quill-engine" }
+# The platform's own folder dialog, through the desktop portal (no GTK linked in).
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }

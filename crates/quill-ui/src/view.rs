@@ -16,6 +16,8 @@ pub const STOP: &str = "stop";
 pub const MODE_MENU: &str = "mode-menu";
 pub const MODEL_MENU: &str = "model-menu";
 pub const DIFF_CLOSE: &str = "diff:close";
+/// Asks the host for the platform folder picker; the host sets `Ui::cwd` with the answer.
+pub const PICK_FOLDER: &str = "pick-folder";
 
 fn text(s: impl Into<String>) -> Element {
     Element::text(s.into())
@@ -230,6 +232,13 @@ fn item(item: &Item, ui: &Ui, column: f32, palette: ComponentPalette) -> Element
         } => tool(call, name, input, result.as_ref(), ui, column, palette),
         Item::Permission {
             id,
+            input,
+            interactive: true,
+            decided: None,
+            ..
+        } if input["questions"].is_array() => question_card(id, input, ui, column, palette),
+        Item::Permission {
+            id,
             tool,
             input,
             interactive,
@@ -385,7 +394,12 @@ fn composer(session: Option<&Session>, ui: &Ui, column: f32, palette: ComponentP
         .unwrap_or_default();
     let model_label = ui.model.clone().unwrap_or_else(|| "Default model".into());
     let footer = Element::row(vec![
-        muted(format!("▣ {folder}")),
+        Button::new(PICK_FOLDER, format!("▣ {folder}"), palette)
+            .variant(ButtonVariant::Ghost)
+            .button_size(ButtonSize::Small)
+            .enabled(session.is_none())
+            .tooltip("The folder a new session works in")
+            .render(),
         Select::new(
             MODE_MENU,
             mode_label(mode),
@@ -595,4 +609,65 @@ pub fn parse_patch(patch: &str) -> Vec<limn::CodeDiffLine> {
         });
     }
     lines
+}
+
+/// A question the agent asks (AskUserQuestion): one block per question with its options,
+/// and Submit once each has an answer, as Desktop's question card.
+fn question_card(
+    id: &str,
+    input: &Value,
+    ui: &Ui,
+    column: f32,
+    palette: ComponentPalette,
+) -> Element {
+    let questions = input["questions"].as_array().cloned().unwrap_or_default();
+    let mut card = FramedCard::new(palette).width(column);
+    for (q, question) in questions.iter().enumerate() {
+        let chosen = ui.answers.get(&(id.to_owned(), q));
+        let options = question["options"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .map(|(o, option)| {
+                let label = option["label"].as_str().unwrap_or_default();
+                let picked = chosen.is_some_and(|c| c == label);
+                let mut button = Button::new(format!("ask:{id}:{q}:{o}"), label, palette)
+                    .variant(if picked {
+                        ButtonVariant::Default
+                    } else {
+                        ButtonVariant::Outline
+                    })
+                    .button_size(ButtonSize::Small);
+                if let Some(description) = option["description"].as_str() {
+                    button = button.tooltip(description);
+                }
+                button.render()
+            })
+            .collect();
+        card = card.section(
+            Element::column(vec![
+                muted(question["header"].as_str().unwrap_or_default().to_owned()),
+                text(question["question"].as_str().unwrap_or_default().to_owned()),
+                Element::row(options).gap(6.0).wrap(),
+            ])
+            .gap(6.0),
+        );
+    }
+    let ready = (0..questions.len()).all(|q| ui.answers.contains_key(&(id.to_owned(), q)));
+    card.foot(
+        ButtonGroup::new(vec![
+            Button::new(format!("perm:{id}:deny"), "Skip", palette)
+                .variant(ButtonVariant::Ghost)
+                .button_size(ButtonSize::Small)
+                .render(),
+            Button::new(format!("ask:{id}:submit"), "Submit", palette)
+                .button_size(ButtonSize::Small)
+                .enabled(ready)
+                .render(),
+        ])
+        .align_end()
+        .render(),
+    )
+    .render()
 }

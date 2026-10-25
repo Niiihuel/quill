@@ -186,3 +186,44 @@ fn the_window_lays_out_with_a_permission_and_a_finished_turn() {
         );
     }
 }
+
+#[test]
+fn a_question_is_answered_with_the_picked_option() {
+    let (mut store, mut ui) = store_with_session();
+    agent(
+        &mut store,
+        AgentEvent::PermissionRequest {
+            id: "p9".into(),
+            call: None,
+            tool: "AskUserQuestion".into(),
+            input: serde_json::json!({ "questions": [{ "question": "Red or blue?", "header": "Color",
+                "options": [{ "label": "Red" }, { "label": "Blue" }] }] }),
+            title: None,
+            interactive: true,
+            suggestions: vec![],
+        },
+    );
+    assert!(update(
+        &store,
+        &mut ui,
+        &UiAction::Clicked {
+            id: "ask:p9:0:1".into()
+        }
+    )
+    .is_empty());
+    let intents = update(
+        &store,
+        &mut ui,
+        &UiAction::Clicked {
+            id: "ask:p9:submit".into(),
+        },
+    );
+    let [Intent::Decide {
+        decision: Decision::Answer(answers),
+        ..
+    }] = intents.as_slice()
+    else {
+        panic!("{intents:?}")
+    };
+    assert_eq!(answers["Red or blue?"], "Blue");
+}
