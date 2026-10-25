@@ -164,6 +164,15 @@ async fn route(mut rx: UnboundedReceiver<Intent>, ui: Sink, config: Config) {
                     agent: new.agent.clone(),
                     cwd: new.cwd.clone(),
                 });
+                let cwd = new.cwd.clone();
+                let branch = tokio::task::spawn_blocking(move || quill_git::branch(&cwd))
+                    .await
+                    .ok()
+                    .flatten();
+                sink(Event::Environment {
+                    session: next,
+                    branch,
+                });
                 let program = config.programs.get(&new.agent).cloned();
                 let mut actor = Actor::new(next, new, adapter, program, tx.clone(), sink.clone());
                 actor.shadow_root = config.snapshots.clone();

@@ -134,6 +134,17 @@ fn counts(patch: &str) -> (u32, u32) {
     })
 }
 
+/// The branch checked out in `dir`'s own repository, if it is one.
+pub fn branch(dir: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    let name = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (output.status.success() && !name.is_empty()).then_some(name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -93,6 +93,9 @@ pub struct Usage {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cost_usd: Option<f64>,
+    /// How much of the model's context the conversation fills after the turn.
+    #[serde(default)]
+    pub context_tokens: u64,
 }
 
 /// Something the agent said, in quill's terms.

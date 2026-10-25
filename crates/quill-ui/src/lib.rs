@@ -73,6 +73,10 @@ pub struct Session {
     pub mode: String,
     /// The first message, as the sidebar's title until the agent names the session.
     pub title: String,
+    pub branch: Option<String>,
+    /// Tokens the conversation fills after its last turn, and what the session has cost.
+    pub context_tokens: u64,
+    pub cost: f64,
 }
 
 /// What the engine said, as the transcript and sidebar show it.
@@ -105,6 +109,9 @@ impl Store {
                 capabilities: None,
                 mode: "default".into(),
                 title: String::new(),
+                branch: None,
+                context_tokens: 0,
+                cost: 0.0,
             }),
             Event::Status { session, status } => {
                 if let Some(s) = self.session_mut(session) {
@@ -150,6 +157,11 @@ impl Store {
                 }
             }
             Event::Changes { .. } => {}
+            Event::Environment { session, branch } => {
+                if let Some(s) = self.session_mut(session) {
+                    s.branch = branch;
+                }
+            }
             Event::Rewound {
                 session, request, ..
             } => {
@@ -270,6 +282,10 @@ fn agent_event(s: &mut Session, event: AgentEvent) {
             if let Some(Item::Assistant { streaming, .. }) = s.items.last_mut() {
                 *streaming = false;
             }
+            if usage.context_tokens > 0 {
+                s.context_tokens = usage.context_tokens;
+            }
+            s.cost += usage.cost_usd.unwrap_or(0.0);
             s.items.push(Item::TurnEnd {
                 ok,
                 interrupted,

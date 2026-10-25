@@ -56,7 +56,13 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     } else {
         0.0
     };
-    let main_width = rest - diff_width;
+    // The right panel stays only while it fits beside a full column.
+    let panel_width = if files.is_none() && session.is_some() && rest >= 1100.0 {
+        look::PANEL_WIDTH
+    } else {
+        0.0
+    };
+    let main_width = rest - diff_width - panel_width;
     let column = COLUMN.min(main_width - 32.0).max(240.0);
     let body = match session {
         Some(session) => transcript(session, ui, column, palette),
@@ -83,6 +89,9 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
                 .size(Some(1.0), Some(window.height)),
         );
         row.push(diff_panel(files, diff_width - 1.0, window.height, palette));
+    }
+    if let (Some(session), true) = (session, panel_width > 0.0) {
+        row.push(right_panel(session, panel_width, window.height, palette));
     }
     Element::row(row)
         .background(look::THEME.background)
@@ -670,4 +679,78 @@ fn question_card(
         .render(),
     )
     .render()
+}
+
+/// One titled card of the right panel.
+fn panel_card(title: &str, rows: Vec<Element>, width: f32, palette: ComponentPalette) -> Element {
+    let mut content = vec![muted(title.to_owned())];
+    content.extend(rows);
+    Element::panel(Element::column(content).gap(6.0))
+        .background(palette.surface)
+        .border(look::DIVIDER, 1.0)
+        .radius(8.0)
+        .padding(10.0)
+        .size(Some(width), None)
+}
+
+/// Where the session works, how full its context is and what it changed.
+fn right_panel(session: &Session, width: f32, height: f32, palette: ComponentPalette) -> Element {
+    let inner = width - 16.0;
+    let mut environment = vec![
+        text("This computer"),
+        text(format!("▣ {}", folder_name(&session.cwd))),
+    ];
+    if let Some(branch) = &session.branch {
+        environment.push(text(format!("⑂ {branch}")));
+    }
+    let context = if session.context_tokens == 0 {
+        muted("No turns yet")
+    } else {
+        text(format!(
+            "{:.1}k tokens",
+            session.context_tokens as f64 / 1000.0
+        ))
+    };
+    let mut context_rows = vec![context];
+    if session.cost > 0.0 {
+        context_rows.push(muted(format!("${:.4} this session", session.cost)));
+    }
+    let (added, removed, files) =
+        session
+            .items
+            .iter()
+            .fold((0, 0, 0), |(a, r, n), item| match item {
+                Item::Changes {
+                    files,
+                    rewound: false,
+                    ..
+                } => (
+                    a + files.iter().map(|f| f.added).sum::<u32>(),
+                    r + files.iter().map(|f| f.removed).sum::<u32>(),
+                    n + files.len(),
+                ),
+                _ => (a, r, n),
+            });
+    let changes = if files == 0 {
+        muted("Nothing changed yet")
+    } else {
+        Element::row(vec![
+            text(if files == 1 {
+                "1 file".to_string()
+            } else {
+                format!("{files} files")
+            }),
+            text(format!("+{added}")).foreground(look::ADDED),
+            text(format!("−{removed}")).foreground(look::REMOVED),
+        ])
+        .gap(6.0)
+    };
+    Element::column(vec![
+        panel_card("Environment", environment, inner, palette),
+        panel_card("Context", context_rows, inner, palette),
+        panel_card("Changes", vec![changes], inner, palette),
+    ])
+    .gap(8.0)
+    .padding(8.0)
+    .size(Some(width), Some(height))
 }

@@ -73,6 +73,11 @@ impl eframe::App for App {
                     }
                 });
             }
+            // The editor keeps its own text; a sent message empties it.
+            if matches!(&action, limn::UiAction::Submitted { id, value } if id == quill_ui::view::COMPOSER && !value.trim().is_empty())
+            {
+                self.tree.set_input_value(quill_ui::view::COMPOSER, "");
+            }
             let intents = quill_ui::update(&self.store, &mut self.ui, &action);
             self.dispatch(intents);
         }

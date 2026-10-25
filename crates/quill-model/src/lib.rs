@@ -117,6 +117,11 @@ pub enum Event {
         /// The folder before the request, as the engine's snapshot id: what a rewind restores.
         snapshot: String,
     },
+    /// Where the session works, as the right panel shows it.
+    Environment {
+        session: SessionId,
+        branch: Option<String>,
+    },
     /// The session's files were put back as they were before `request`.
     Rewound {
         session: SessionId,
@@ -133,7 +138,8 @@ impl Event {
             | Event::Queued { session, .. }
             | Event::Agent { session, .. }
             | Event::Changes { session, .. }
-            | Event::Rewound { session, .. } => *session,
+            | Event::Rewound { session, .. }
+            | Event::Environment { session, .. } => *session,
         }
     }
 }

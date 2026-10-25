@@ -27,6 +27,8 @@ pub struct Claude {
     pending: HashMap<String, (Value, Value)>,
     /// Each tool call's name and input, to describe its result.
     calls: HashMap<String, (String, Value)>,
+    /// The context the last answer was given, in tokens: what the conversation fills now.
+    context: u64,
 }
 
 impl Claude {
@@ -282,6 +284,17 @@ impl AgentAdapter for Claude {
                 }
             }
             ("assistant", _) => {
+                let usage = &msg["message"]["usage"];
+                if parent.is_none() && usage.is_object() {
+                    self.context = [
+                        "input_tokens",
+                        "cache_read_input_tokens",
+                        "cache_creation_input_tokens",
+                    ]
+                    .iter()
+                    .filter_map(|k| usage[*k].as_u64())
+                    .sum();
+                }
                 for block in msg["message"]["content"].as_array().into_iter().flatten() {
                     match block["type"].as_str() {
                         Some("text") => decoded.events.push(AgentEvent::Text {
@@ -329,6 +342,7 @@ impl AgentAdapter for Claude {
                         input_tokens: msg["usage"]["input_tokens"].as_u64().unwrap_or(0),
                         output_tokens: msg["usage"]["output_tokens"].as_u64().unwrap_or(0),
                         cost_usd: msg["total_cost_usd"].as_f64(),
+                        context_tokens: std::mem::take(&mut self.context),
                     },
                     error: errors.filter(|e| !e.is_empty()),
                 });

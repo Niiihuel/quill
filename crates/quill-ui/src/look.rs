@@ -23,6 +23,8 @@ pub const REMOVED: Color = Color::rgb(0xcd, 0x20, 0x54);
 pub const SIDEBAR_WIDTH: f32 = 212.0;
 /// The transcript and composer column: 540 wide at 1408.
 pub const COLUMN: f32 = 540.0;
+/// The right panel: Environment, Context, Changes, 210 wide at 1408.
+pub const PANEL_WIDTH: f32 = 210.0;
 pub const BODY: f32 = 13.0;
 
 /// Desktop's surfaces are white under a hairline, not tinted levels; menus and
