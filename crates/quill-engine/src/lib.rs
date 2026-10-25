@@ -114,6 +114,8 @@ async fn route(mut rx: UnboundedReceiver<Intent>, ui: Sink, config: Config) {
         })
     };
     let mut sessions: HashMap<SessionId, UnboundedSender<Input>> = HashMap::new();
+    // Each session's folder, for what is uncommitted in it.
+    let mut folders: HashMap<SessionId, std::path::PathBuf> = HashMap::new();
     let mut next: SessionId = 0;
     let kept = store.lock().unwrap().load().unwrap_or_default();
     for (session, events) in kept {
@@ -121,6 +123,7 @@ async fn route(mut rx: UnboundedReceiver<Intent>, ui: Sink, config: Config) {
         let Some(restored) = Restored::from(&events) else {
             continue;
         };
+        folders.insert(session, restored.new.cwd.clone());
         for event in events {
             ui(event);
         }
@@ -164,6 +167,7 @@ async fn route(mut rx: UnboundedReceiver<Intent>, ui: Sink, config: Config) {
                     agent: new.agent.clone(),
                     cwd: new.cwd.clone(),
                 });
+                folders.insert(next, new.cwd.clone());
                 let cwd = new.cwd.clone();
                 let branch = tokio::task::spawn_blocking(move || quill_git::branch(&cwd))
                     .await
@@ -203,6 +207,21 @@ async fn route(mut rx: UnboundedReceiver<Intent>, ui: Sink, config: Config) {
                 (session, Input::Command(AgentCommand::SetEffort(effort)))
             }
             Intent::Rewind { session, request } => (session, Input::Rewind(request)),
+            Intent::WorkingTree { session } => {
+                if let Some(cwd) = folders.get(&session).cloned() {
+                    let sink = sink.clone();
+                    tokio::spawn(async move {
+                        let files =
+                            tokio::task::spawn_blocking(move || quill_git::working_changes(&cwd))
+                                .await
+                                .ok()
+                                .and_then(Result::ok)
+                                .unwrap_or_default();
+                        sink(Event::WorkingTree { session, files });
+                    });
+                }
+                continue;
+            }
         };
         if let Some(tx) = sessions.get(&session) {
             let _ = tx.send(input);

@@ -185,8 +185,15 @@ fn pane_width(layout: &Layout) -> f32 {
 
 /// The files of the request the diff pane shows.
 fn diff_files<'a>(store: &'a Store, ui: &Ui) -> Option<&'a Vec<FileEffect>> {
-    let (id, request) = ui.diff.as_ref()?;
-    let session = store.session(ui.selected?).filter(|s| s.id == *id)?;
+    let session = store.session(ui.selected?)?;
+    // Without a request, the pane shows what is uncommitted, as Desktop's does.
+    let Some((id, request)) = ui.diff.as_ref() else {
+        return session
+            .working
+            .as_ref()
+            .filter(|_| ui.pane_open(Pane::Diff));
+    };
+    let session = Some(session).filter(|s| s.id == *id)?;
     session.items.iter().find_map(|i| match i {
         Item::Changes {
             request: r, files, ..
@@ -1992,18 +1999,30 @@ fn diff_pane(
     palette: ComponentPalette,
 ) -> Element {
     let files = diff_files(store, ui).map_or(&[][..], Vec::as_slice);
-    let header = pane_header(
-        text("Changes").centered_y(),
-        pane_tools(Pane::Diff, ui, palette),
-        width,
-    );
+    // "master → working tree" for what is uncommitted, as Desktop's; a request's
+    // own changes when the person opened them from its card.
+    let title = if ui.diff.is_some() {
+        text("Changes in this request").centered_y()
+    } else {
+        let branch = ui
+            .selected
+            .and_then(|id| store.session(id))
+            .and_then(|s| s.branch.clone())
+            .unwrap_or_else(|| "HEAD".into());
+        Element::row(vec![
+            text(branch).centered_y(),
+            muted("→").centered_y(),
+            text("working tree").centered_y(),
+        ])
+        .gap(8.0)
+    };
+    let header = pane_header(title, pane_tools(Pane::Diff, ui, palette), width);
     let mut blocks = vec![];
+    if files.is_empty() {
+        blocks.push(pad(muted("No uncommitted changes"), 8.0, 8.0));
+    }
     for (index, file) in files.iter().enumerate() {
-        blocks.push(
-            limn::DiffFileHeader::new(format!("diff:file:{index}"), file.path.clone(), palette)
-                .stat(file.added as usize, file.removed as usize)
-                .render(),
-        );
+        blocks.push(diff_file_band(file, width));
         let lines = parse_patch(&file.patch);
         let rows = lines.len().max(1) as f32;
         let words = word_ranges(&lines);
@@ -2018,14 +2037,45 @@ fn diff_pane(
     }
     let body = Element::scroll(
         "diff:scroll",
-        Element::column(blocks)
-            .gap(4.0)
-            .padding(8.0)
-            .size(Some(width), None),
+        Element::column(blocks).size(Some(width), None),
     );
     Element::column(vec![header, body.flex(1.0)])
         .background(look::THEME.background)
         .size(Some(width), Some(height))
+}
+
+/// A file's band over its diff, as Desktop's: #F2F2F2, the name in #616161 after
+/// a caret and the code mark, then its added and removed lines.
+fn diff_file_band(file: &FileEffect, width: f32) -> Element {
+    let name = file
+        .path
+        .rsplit('/')
+        .next()
+        .unwrap_or(&file.path)
+        .to_owned();
+    Element::row(vec![
+        hgap(16.0),
+        text("▾")
+            .font_size(10.0)
+            .foreground(look::MUTED)
+            .centered_y(),
+        text("‹›")
+            .font_size(SMALL)
+            .foreground(look::MUTED)
+            .centered_y(),
+        text(name).foreground(look::COMMAND_INK).centered_y(),
+        Element::spacer().flex(1.0),
+        text(format!("+{}", file.added))
+            .foreground(look::ADDED)
+            .centered_y(),
+        text(format!("−{}", file.removed))
+            .foreground(look::REMOVED)
+            .centered_y(),
+        hgap(16.0),
+    ])
+    .gap(6.0)
+    .background(look::CANCEL)
+    .size(Some(width), Some(32.0))
 }
 
 /// Lines of a unified diff, numbered from its hunk headers.
@@ -2223,8 +2273,13 @@ fn right_panel(
     if session.cost > 0.0 {
         context_rows.push(muted(format!("${:.4} this session", session.cost)));
     }
-    let (added, removed, files) =
-        session
+    let (added, removed, files) = match &session.working {
+        Some(working) => (
+            working.iter().map(|f| f.added).sum::<u32>(),
+            working.iter().map(|f| f.removed).sum::<u32>(),
+            working.len(),
+        ),
+        None => session
             .items
             .iter()
             .fold((0, 0, 0), |(a, r, n), item| match item {
@@ -2238,7 +2293,8 @@ fn right_panel(
                     n + files.len(),
                 ),
                 _ => (a, r, n),
-            });
+            }),
+    };
     let changes = if files == 0 {
         muted("Nothing changed yet")
     } else {

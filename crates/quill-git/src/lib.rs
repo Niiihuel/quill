@@ -72,42 +72,11 @@ impl Shadow {
     /// What changed from tree `from` to tree `to`, file by file, with each file's patch.
     pub fn changes(&self, from: &str, to: &str) -> io::Result<Vec<FileEffect>> {
         let listing = self.git(&["diff-tree", "-r", "-M", "--name-status", from, to])?;
-        let mut files = vec![];
-        for line in listing.lines() {
-            let parts: Vec<&str> = line.split('\t').collect();
-            let (kind, paths) = match parts.as_slice() {
-                [status, path] if status.starts_with('A') => (ChangeKind::Added, vec![*path]),
-                [status, path] if status.starts_with('D') => (ChangeKind::Deleted, vec![*path]),
-                [status, from_path, path] if status.starts_with('R') => (
-                    ChangeKind::Renamed {
-                        from: from_path.to_string(),
-                    },
-                    vec![*from_path, *path],
-                ),
-                [_, path] => (ChangeKind::Modified, vec![*path]),
-                _ => continue,
-            };
+        effects(&listing, |paths| {
             let mut args = vec!["diff", "-M", "--no-color", from, to, "--"];
-            args.extend(paths.iter().copied());
-            let mut patch = self.git(&args)?;
-            let (added, removed) = counts(&patch);
-            if patch.len() > PATCH_LIMIT {
-                let cut = patch
-                    .char_indices()
-                    .nth(PATCH_LIMIT)
-                    .map_or(patch.len(), |(i, _)| i);
-                patch.truncate(cut);
-                patch.push_str("\n… (cut)\n");
-            }
-            files.push(FileEffect {
-                path: paths.last().unwrap().to_string(),
-                kind,
-                added,
-                removed,
-                patch,
-            });
-        }
-        Ok(files)
+            args.extend(paths);
+            self.git(&args)
+        })
     }
 
     /// Put the folder's files back as they were in tree `tree`: changed files return, files
@@ -117,6 +86,70 @@ impl Shadow {
         self.git(&["read-tree", "-u", "--reset", tree])?;
         Ok(())
     }
+}
+
+/// Files of a `--name-status` listing with their patches, which `patch` writes for the
+/// listed paths.
+fn effects(
+    listing: &str,
+    patch: impl Fn(&[&str]) -> io::Result<String>,
+) -> io::Result<Vec<FileEffect>> {
+    let mut files = vec![];
+    for line in listing.lines() {
+        let parts: Vec<&str> = line.split('\t').collect();
+        let (kind, paths) = match parts.as_slice() {
+            [status, path] if status.starts_with('A') => (ChangeKind::Added, vec![*path]),
+            [status, path] if status.starts_with('D') => (ChangeKind::Deleted, vec![*path]),
+            [status, from_path, path] if status.starts_with('R') => (
+                ChangeKind::Renamed {
+                    from: from_path.to_string(),
+                },
+                vec![*from_path, *path],
+            ),
+            [_, path] => (ChangeKind::Modified, vec![*path]),
+            _ => continue,
+        };
+        let mut patch = patch(&paths)?;
+        let (added, removed) = counts(&patch);
+        if patch.len() > PATCH_LIMIT {
+            let cut = patch
+                .char_indices()
+                .nth(PATCH_LIMIT)
+                .map_or(patch.len(), |(i, _)| i);
+            patch.truncate(cut);
+            patch.push_str("\n… (cut)\n");
+        }
+        files.push(FileEffect {
+            path: paths.last().unwrap().to_string(),
+            kind,
+            added,
+            removed,
+            patch,
+        });
+    }
+    Ok(files)
+}
+
+/// What is uncommitted in `dir`'s own repository, as Desktop's diff shows "master → working
+/// tree": tracked files against HEAD, each with its patch. Desktop leaves files
+/// git does not track out, and so does this.
+pub fn working_changes(dir: &Path) -> io::Result<Vec<FileEffect>> {
+    let git = |args: &[&str]| -> io::Result<String> {
+        let output = Command::new("git").args(args).current_dir(dir).output()?;
+        // `diff --no-index` answers 1 when the files differ.
+        if !output.status.success() && output.status.code() != Some(1) {
+            return Err(io::Error::other(
+                String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    };
+    let tracked = git(&["diff", "HEAD", "-M", "--name-status"])?;
+    effects(&tracked, |paths| {
+        let mut args = vec!["diff", "HEAD", "-M", "--no-color", "--"];
+        args.extend(paths);
+        git(&args)
+    })
 }
 
 /// Lines added and removed in a unified diff.
@@ -218,5 +251,39 @@ mod tests {
         let after = shadow.snapshot().unwrap();
         assert!(shadow.changes(&before, &after).unwrap().is_empty());
         assert!(work.join(".git/HEAD").exists());
+    }
+
+    #[test]
+    fn the_working_tree_is_what_is_uncommitted_in_tracked_files() {
+        let (_, work) = folder("working");
+        let git = |args: &[&str]| {
+            assert!(Command::new("git")
+                .args(args)
+                .current_dir(&work)
+                .output()
+                .unwrap()
+                .status
+                .success());
+        };
+        git(&["init", "-q"]);
+        fs::write(work.join("a.py"), "print(1)\n").unwrap();
+        git(&["add", "."]);
+        git(&[
+            "-c",
+            "user.name=q",
+            "-c",
+            "user.email=q@q",
+            "commit",
+            "-qm",
+            "a",
+        ]);
+        fs::write(work.join("a.py"), "print(2)\n").unwrap();
+        fs::write(work.join("new.txt"), "hi\n").unwrap();
+        let files = working_changes(&work).unwrap();
+        let summary: Vec<_> = files
+            .iter()
+            .map(|f| (f.path.as_str(), f.kind.clone(), f.added, f.removed))
+            .collect();
+        assert_eq!(summary, [("a.py", ChangeKind::Modified, 1, 1)]);
     }
 }

@@ -87,6 +87,8 @@ pub struct Session {
     /// The model's context size, once a turn reported it.
     pub context_window: u64,
     pub cost: f64,
+    /// What is uncommitted in its folder, as the engine last said.
+    pub working: Option<Vec<quill_model::FileEffect>>,
 }
 
 /// What the engine said, as the transcript and sidebar show it.
@@ -122,6 +124,7 @@ impl Store {
                 branch: None,
                 context_tokens: 0,
                 context_window: 0,
+                working: None,
                 cost: 0.0,
             }),
             Event::Status { session, status } => {
@@ -172,6 +175,11 @@ impl Store {
                 }
             }
             Event::Changes { .. } => {}
+            Event::WorkingTree { session, files } => {
+                if let Some(s) = self.session_mut(session) {
+                    s.working = Some(files);
+                }
+            }
             Event::Environment { session, branch } => {
                 if let Some(s) = self.session_mut(session) {
                     s.branch = branch;
@@ -545,6 +553,17 @@ impl Ui {
                 }];
             }
         }
+        // A finished turn may have changed files: what is uncommitted is asked for again.
+        if let Event::Agent {
+            session,
+            event: AgentEvent::TurnFinished { .. },
+            ..
+        } = event
+        {
+            if self.selected == Some(*session) {
+                return vec![Intent::WorkingTree { session: *session }];
+            }
+        }
         vec![]
     }
 }
@@ -615,15 +634,6 @@ fn dragged(ui: &mut Ui, id: &str, position: limn::Point) {
             ui.stack_fraction = Some(top / room);
         }
     }
-}
-
-/// The selected session's last request that changed files, which the diff toggle opens.
-fn last_changes(store: &Store, ui: &Ui) -> Option<(SessionId, RequestId)> {
-    let session = store.session(ui.selected?)?;
-    session.items.iter().rev().find_map(|item| match item {
-        Item::Changes { request, .. } => Some((session.id, request.clone())),
-        _ => None,
-    })
 }
 
 fn terminal_clicked(pane: &mut TerminalPane, id: &str) {
@@ -739,11 +749,13 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         return vec![];
     }
     if id == view::DIFF_TOGGLE {
+        // Desktop's diff is what is uncommitted, "master → working tree".
         if ui.pane_open(Pane::Diff) {
             ui.close_pane(Pane::Diff);
-        } else if let Some((session, request)) = last_changes(store, ui) {
-            ui.diff = Some((session, request));
+        } else if let Some(session) = ui.selected {
+            ui.diff = None;
             ui.open_pane(Pane::Diff);
+            return vec![Intent::WorkingTree { session }];
         }
         return vec![];
     }
@@ -874,7 +886,7 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
     }
     if let Some(session) = id.strip_prefix("session:").and_then(|s| s.parse().ok()) {
         ui.selected = Some(session);
-        return vec![];
+        return vec![Intent::WorkingTree { session }];
     }
     if id.starts_with("steps:") || id.starts_with("panel:") {
         if let Some(at) = ui.expanded.iter().position(|c| c == id) {

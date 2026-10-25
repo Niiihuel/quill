@@ -40,7 +40,7 @@ impl Store {
     /// Whether `event` is worth keeping: what the transcript shows once it has settled.
     pub fn keeps(event: &Event) -> bool {
         match event {
-            Event::Status { .. } => false,
+            Event::Status { .. } | Event::WorkingTree { .. } => false,
             Event::Agent { event, .. } => !matches!(
                 event,
                 AgentEvent::TextDelta { .. }

@@ -72,6 +72,10 @@ pub enum Intent {
         session: SessionId,
         effort: String,
     },
+    /// What is uncommitted in the session's folder, answered by `Event::WorkingTree`.
+    WorkingTree {
+        session: SessionId,
+    },
     /// Put the session's files back as they were before `request` ran.
     Rewind {
         session: SessionId,
@@ -129,6 +133,11 @@ pub enum Event {
         session: SessionId,
         branch: Option<String>,
     },
+    /// What is uncommitted in the session's folder now, against its branch's last commit.
+    WorkingTree {
+        session: SessionId,
+        files: Vec<FileEffect>,
+    },
     /// The person answered a permission; kept so a session read back shows it answered.
     Decided {
         session: SessionId,
@@ -153,6 +162,7 @@ impl Event {
             | Event::Changes { session, .. }
             | Event::Rewound { session, .. }
             | Event::Decided { session, .. }
+            | Event::WorkingTree { session, .. }
             | Event::Environment { session, .. } => *session,
         }
     }
