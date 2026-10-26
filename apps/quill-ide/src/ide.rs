@@ -60,6 +60,13 @@ const REVEAL: &str = "editor:reveal";
 const NOTICE: f32 = 40.0;
 /// The line under the editor: mode, file, caret, language and branch.
 const FOOTER: f32 = 26.0;
+pub const PROBLEM_NEXT: &str = "problems:next";
+const PROBLEMS_TOGGLE: &str = "problems:toggle";
+const PANE_TERMINAL: &str = "pane:terminal";
+const PANE_PROBLEMS: &str = "pane:problems";
+const PANE_CLOSE: &str = "pane:close";
+const LSP_RESTART: &str = "lsp:restart";
+const ASK_AGENT: &str = "ide:ask";
 
 /// What the person asked of the shells, for the host, which runs them.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -74,6 +81,8 @@ pub enum TerminalRequest {
 #[derive(Default)]
 pub struct TerminalPane {
     pub open: bool,
+    /// Showing the problems rather than the shells.
+    pub problems: bool,
     pub requests: Vec<TerminalRequest>,
     pub tabs: Vec<String>,
     pub active: usize,
@@ -270,6 +279,27 @@ pub fn carry(items: &[Diagnostic], old: &str, new: &str) -> Vec<Diagnostic> {
         .collect()
 }
 
+/// One error or warning of the problems list: where it is, the column in UTF-16 units as
+/// servers count, and what the server said.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Problem {
+    pub path: PathBuf,
+    pub row: usize,
+    pub column: u32,
+    pub severity: u32,
+    pub message: String,
+}
+
+/// A language's server as the footer shows it: its program, whether it answers yet, and why
+/// it does not run, when it does not, with what may help.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Server {
+    pub name: String,
+    pub ready: bool,
+    pub failure: Option<String>,
+    pub hint: Option<String>,
+}
+
 /// A place a server names: a file and its row.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Location {
@@ -422,6 +452,12 @@ pub struct Ide {
     pub references: Option<(Vec<Location>, usize)>,
     pub renaming_symbol: Option<String>,
     pub lsp_note: Option<String>,
+    /// Each language's server, for the footer, and those to start again.
+    pub lsp_servers: HashMap<limn_language::Language, Server>,
+    pub lsp_restart: Vec<limn_language::Language>,
+    /// What waits to go to quill, and how the last went.
+    pub link_out: Vec<quill_link::Message>,
+    pub link_note: Option<String>,
     /// The "···" menu over the editor is open; the diagrams of a preview shown as source; an
     /// address a link asks the host to open in the desktop's browser.
     pub more_open: bool,
@@ -515,6 +551,10 @@ impl Ide {
             references: None,
             renaming_symbol: None,
             lsp_note: None,
+            lsp_servers: HashMap::new(),
+            lsp_restart: vec![],
+            link_out: vec![],
+            link_note: None,
             more_open: false,
             diagram_sources: vec![],
             open_url: None,
@@ -1172,6 +1212,15 @@ impl Ide {
         let mut save = false;
         match id {
             MORE => self.more_open = !self.more_open,
+            PROBLEM_NEXT => self.next_problem(),
+            ASK_AGENT => self.ask_agent(),
+            LSP_RESTART => {
+                if let Some(buffer) = self.active_buffer() {
+                    let path = buffer.path.to_string_lossy();
+                    self.lsp_restart
+                        .push(limn_language::Language::from_path(&path));
+                }
+            }
             "editor:more:dismiss" => self.more_open = false,
             WRAP => {
                 self.prefs.wrap = !self.prefs.wrap;
@@ -1368,13 +1417,30 @@ impl Ide {
     /// them.
     fn terminal_clicked(&mut self, id: &str) -> Option<Vec<Job>> {
         let terminal = &mut self.terminal;
-        if id == TERMINAL_TOGGLE {
-            terminal.open = !terminal.open;
-            self.focus = if terminal.open {
+        // The pane's toggles show their section, or shut the pane when it is the one shown.
+        if id == TERMINAL_TOGGLE || id == PROBLEMS_TOGGLE {
+            let problems = id == PROBLEMS_TOGGLE;
+            let shown = terminal.open && terminal.problems == problems;
+            terminal.open = !shown;
+            terminal.problems = problems;
+            self.focus = if terminal.open && !problems {
                 Some(TERMINAL.into())
             } else {
                 self.editor_id()
             };
+        } else if id == PANE_TERMINAL || id == PANE_PROBLEMS {
+            terminal.problems = id == PANE_PROBLEMS;
+            self.focus = if terminal.problems {
+                self.editor_id()
+            } else {
+                Some(TERMINAL.into())
+            };
+        } else if id == PANE_CLOSE {
+            terminal.open = false;
+            self.focus = self.editor_id();
+        } else if let Some(at) = id.strip_prefix("problem:") {
+            let problem = self.problems().into_iter().nth(at.parse().ok()?)?;
+            return Some(self.goto_at(problem.path, problem.row, problem.column));
         } else if id == TERMINAL_NEW {
             terminal.requests.push(TerminalRequest::New);
             self.focus = Some(TERMINAL.into());
@@ -1702,6 +1768,7 @@ impl Ide {
             (Key::P, false) => Some(QUICK_OPEN.into()),
             (Key::F, true) => Some(GREP_OPEN.into()),
             (Key::G, false) => Some(QUICK_LINE.into()),
+            (Key::L, false) => Some(ASK_AGENT.into()),
             (Key::J, true) => Some(TERMINAL_TOGGLE.into()),
             (Key::I, true) => Some(LSP_FORMAT.into()),
             // Not V: egui reads Ctrl+Shift+V as a paste.
@@ -1715,6 +1782,119 @@ impl Ide {
     /// The editor on screen's id, for what the host reads of it.
     pub fn editor_id(&self) -> Option<String> {
         self.active_buffer().map(Buffer::editor_id)
+    }
+
+    /// Every file's errors and warnings: files in path order, each one's in the order of its
+    /// lines, an open file's as they stand on its revision on screen.
+    pub fn problems(&self) -> Vec<Problem> {
+        let mut paths: Vec<&PathBuf> = self.diagnostics.keys().collect();
+        paths.sort();
+        let mut list = vec![];
+        for path in paths {
+            let found = &self.diagnostics[path];
+            let snapshot = self
+                .buffers
+                .iter()
+                .find(|b| &b.path == path)
+                .and_then(|b| b.editor.as_ref()?.snapshot().ok());
+            let current = snapshot
+                .as_ref()
+                .and_then(|s| Some((s.chunks().collect::<String>(), found.at(s.revision())?)));
+            let (text, items) = match &current {
+                Some((text, items)) => (text.as_str(), *items),
+                None => (&*found.text, found.items.as_slice()),
+            };
+            // Offsets count characters, as the editor's do: one walk places them all.
+            let mut wanted: Vec<&Diagnostic> = items.iter().filter(|d| d.severity <= 2).collect();
+            wanted.sort_by_key(|d| d.range.start);
+            let (mut row, mut column, mut index, mut chars) = (0, 0, 0, text.chars());
+            for d in wanted {
+                while index < d.range.start {
+                    match chars.next() {
+                        Some('\n') => (row, column) = (row + 1, 0),
+                        Some(c) => column += c.len_utf16() as u32,
+                        None => break,
+                    }
+                    index += 1;
+                }
+                list.push(Problem {
+                    path: path.clone(),
+                    row,
+                    column,
+                    severity: d.severity,
+                    message: d.message.clone(),
+                });
+            }
+        }
+        list
+    }
+
+    /// The selection, or the file when nothing is selected, sent to quill for the person to
+    /// ask an agent about.
+    fn ask_agent(&mut self) {
+        let Some(buffer) = self.active_buffer() else {
+            return;
+        };
+        let Some(snapshot) = buffer.editor.as_ref().and_then(|e| e.snapshot().ok()) else {
+            return;
+        };
+        let range = snapshot.selection().range();
+        let (lines, text) = if range.is_empty() {
+            (None, String::new())
+        } else {
+            let first = snapshot.position_of(range.start).unwrap_or_default().row;
+            let end = snapshot.position_of(range.end).unwrap_or_default();
+            // A selection ending where a line starts leaves that line out.
+            let last = if end.column == 0 && end.row > first {
+                end.row - 1
+            } else {
+                end.row
+            };
+            let text = snapshot
+                .slice(range)
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            (Some((first as u32 + 1, last as u32 + 1)), text)
+        };
+        self.link_out.push(quill_link::Message::Ask {
+            root: self.root.clone(),
+            path: buffer.path.clone(),
+            lines,
+            text,
+        });
+    }
+
+    /// The caret to the next error or warning after it, or to the first.
+    fn next_problem(&mut self) {
+        let Some(buffer) = self.active_buffer() else {
+            return;
+        };
+        let Some(editor) = &buffer.editor else {
+            return;
+        };
+        let Ok(snapshot) = editor.snapshot() else {
+            return;
+        };
+        let found = self
+            .diagnostics
+            .get(&buffer.path)
+            .and_then(|d| d.at(snapshot.revision()));
+        let mut starts: Vec<usize> = found
+            .unwrap_or_default()
+            .iter()
+            .filter(|d| d.severity <= 2)
+            .map(|d| d.range.start)
+            .collect();
+        starts.sort_unstable();
+        let head = snapshot.selection().head;
+        let Some(&to) = starts.iter().find(|&&at| at > head).or(starts.first()) else {
+            return;
+        };
+        if let Ok(mut text) = editor.shared_buffer().lock() {
+            let _ = text.set_selection(Selection::caret(to));
+        }
+        self.focus = Some(buffer.editor_id());
+        self.reveal = true;
     }
 
     fn active_buffer(&self) -> Option<&Buffer> {
@@ -2402,6 +2582,8 @@ fn crumb_bar(ide: &Ide, buffer: &Buffer, width: f32) -> Element {
         item(LSP_RENAME, "Rename symbol", "F2"),
         item(LSP_FORMAT, "Format document", "Ctrl+Shift+I"),
         limn::DropdownMenuEntry::Separator,
+        item(ASK_AGENT, "Ask agent", "Ctrl+L"),
+        limn::DropdownMenuEntry::Separator,
         item(QUICK_LINE, "Go to line", "Ctrl+G"),
         limn::DropdownMenuEntry::from(
             limn::DropdownMenuItem::new(WRAP, "Wrap long lines").selected(ide.prefs.wrap),
@@ -2532,14 +2714,41 @@ fn terminal_pane(ide: &Ide, width: f32, height: f32) -> Element {
         pills.push(new);
         Element::row(pills).gap(4.0)
     };
-    let close = icon_tool(
-        TERMINAL_TOGGLE,
-        icons::of(icons::CLOSE),
-        "Close",
-        28.0,
-        palette,
-    );
+    let close = icon_tool(PANE_CLOSE, icons::of(icons::CLOSE), "Close", 28.0, palette);
+    // Its sections, as openADE's bottom panel: the shells, or the problems with their count.
+    let problems = ide.problems();
+    let label = match problems.len() {
+        0 => "Problems".to_owned(),
+        n => format!("Problems {n}"),
+    };
+    let sections = limn::SegmentedControl::new(
+        vec![
+            limn::Tab::new(PANE_TERMINAL, "Terminal", 80.0).active(!terminal.problems),
+            limn::Tab::new(PANE_PROBLEMS, label, 100.0).active(terminal.problems),
+        ],
+        ComponentPalette {
+            raised: look::settings_track(),
+            selected: look::settings_current(),
+            ..palette
+        },
+    )
+    .render()
+    .centered_y();
+    let lead = if terminal.problems {
+        sections
+    } else {
+        Element::row(vec![sections, hgap(4.0), lead]).gap(8.0)
+    };
     let header = pane_header(lead, vec![close], width);
+    let below = (height - 1.0 - look::PANE_HEADER).max(0.0);
+    if terminal.problems {
+        return Element::column(vec![
+            hline(width, look::pane_border()),
+            header,
+            problems_list(ide, &problems, width, below),
+        ])
+        .size(Some(width), Some(height));
+    }
     let body = match &terminal.screen {
         // Its cursor in the palette's text: quill's is the blue of its ANSI palette.
         Some(screen) => limn::TerminalView::new(
@@ -2565,6 +2774,86 @@ fn terminal_pane(ide: &Ide, width: f32, height: f32) -> Element {
         body.flex(1.0),
     ])
     .size(Some(width), Some(height))
+}
+
+/// The problems under their files: each file by its icon, its name, its folder and how many
+/// it has; each problem by its mark, what the server said and where, a press away.
+fn problems_list(ide: &Ide, problems: &[Problem], width: f32, height: f32) -> Element {
+    if problems.is_empty() {
+        let says = if ide
+            .lsp_servers
+            .values()
+            .any(|s| s.ready && s.failure.is_none())
+        {
+            "No problems"
+        } else {
+            "Errors and warnings show here once a language server runs for your files."
+        };
+        let says = muted(says.to_owned()).font_size(SMALL).centered();
+        return Element::column(vec![says]).size(Some(width), Some(height));
+    }
+    let mut rows = vec![];
+    let mut at = 0;
+    for group in problems.chunk_by(|a, b| a.path == b.path) {
+        let path = &group[0].path;
+        let (icon, ink) = ide.pack.icon(path, false, false);
+        let folder = path
+            .strip_prefix(&ide.root)
+            .ok()
+            .and_then(Path::parent)
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        rows.push(
+            Element::row(vec![
+                hgap(8.0),
+                Element::icon(icon)
+                    .foreground(ink)
+                    .size(Some(14.0), Some(14.0))
+                    .centered_y(),
+                text(name(path)).centered_y(),
+                muted(folder).font_size(SMALL).centered_y(),
+                muted(group.len().to_string()).font_size(SMALL).centered_y(),
+            ])
+            .gap(6.0)
+            .size(None, Some(file_tree::ROW)),
+        );
+        for problem in group {
+            let (mark, ink) = match problem.severity {
+                1 => (icons::ERROR, look::failed()),
+                _ => (icons::WARNING, look::awaiting()),
+            };
+            let message = problem
+                .message
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_owned();
+            let place = format!("Ln {}, Col {}", problem.row + 1, problem.column + 1);
+            let content = vec![
+                hgap(28.0),
+                Element::icon(icons::of(mark))
+                    .foreground(ink)
+                    .size(Some(13.0), Some(13.0))
+                    .centered_y(),
+                Element::truncated_text(message)
+                    .font_family(limn::FontFamily::Sans)
+                    .max_width((width - 220.0).max(80.0))
+                    .centered_y(),
+                Element::spacer().flex(1.0),
+                muted(place).font_size(SMALL).centered_y(),
+                hgap(8.0),
+            ];
+            rows.push(side_row(
+                format!("problem:{at}"),
+                content,
+                false,
+                file_tree::ROW,
+            ));
+            at += 1;
+        }
+    }
+    Element::scroll("problems:scroll", Element::column(rows).padding(6.0))
+        .size(Some(width), Some(height))
 }
 
 /// The server's diagnostics of `path` as the editor underlines them, if they came for
@@ -2643,6 +2932,8 @@ fn context_actions(vim: bool) -> Vec<limn::ContextMenuEntry> {
         Item(ContextMenuItem::new(LSP_RENAME, "Rename symbol").shortcut("F2")),
         Item(ContextMenuItem::new(LSP_FORMAT, "Format document").shortcut("Ctrl+Shift+I")),
         limn::ContextMenuEntry::Separator,
+        Item(ContextMenuItem::new(ASK_AGENT, "Ask agent").shortcut("Ctrl+L")),
+        limn::ContextMenuEntry::Separator,
         Item(ContextMenuItem::new(FIND_OPEN, "Find").shortcut(if vim { "/" } else { "Ctrl+F" })),
         limn::ContextMenuEntry::Separator,
         Item(ContextMenuItem::new(COPY_PATH, "Copy path")),
@@ -2689,80 +2980,137 @@ fn footer(ide: &Ide, width: f32) -> Element {
             limn::VimMode::Normal => look::muted(),
             _ => look::pro(),
         };
-        lead.push(
-            text(mode.label())
-                .font_family(limn::FontFamily::Monospace)
-                .font_size(11.0)
-                .foreground(ink)
-                .centered_y(),
-        );
+        // Said as the rest of the footer, "Normal", in the mode's ink.
+        let label = mode.label().to_lowercase();
+        let mut chars = label.chars();
+        let label: String = chars
+            .next()
+            .map(|c| c.to_uppercase().chain(chars).collect())
+            .unwrap_or_default();
+        lead.push(text(label).font_size(SMALL).foreground(ink).centered_y());
     }
     let mut tail = vec![];
-    match buffer {
-        Some(buffer) => {
-            if buffer.dirty() {
-                lead.push(small("Unsaved".into()));
-            }
-            let snapshot = buffer.editor.as_ref().and_then(|e| e.snapshot().ok());
-            if let Some(snapshot) = snapshot {
-                let head = snapshot.selection().head;
-                let at = snapshot.position_of(head).unwrap_or_default();
-                let selected = snapshot.selection().range().len();
-                let mut caret = format!("Ln {}, Col {}", at.row + 1, at.column + 1);
-                if selected > 0 {
-                    caret.push_str(&format!(" ({selected} selected)"));
-                }
-                tail.push(small(caret));
-                let ext = buffer
-                    .path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("");
-                tail.push(small(language_name(ext).into()));
-                let ending = match snapshot.preferred_line_ending() {
-                    limn_editor::LineEnding::CrLf => "CRLF",
-                    _ => "LF",
-                };
-                tail.push(small(ending.into()));
-            }
-        }
-        None => lead.push(small(name(&ide.root))),
+    for note in [&ide.link_note, &ide.lsp_note].into_iter().flatten() {
+        tail.push(small(note.clone()));
     }
-    if let Some((path, revision)) = buffer.and_then(|b| {
-        let snapshot = b.editor.as_ref()?.snapshot().ok()?;
-        Some((b.path.clone(), snapshot.revision()))
-    }) {
-        let found = ide.diagnostics.get(&path).and_then(|d| d.at(revision));
-        let count =
-            |severity| found.map_or(0, |d| d.iter().filter(|d| d.severity == severity).count());
-        let (errors, warnings) = (count(1), count(2));
-        if errors > 0 {
-            tail.insert(
-                0,
-                small(format!(
-                    "{errors} error{}",
-                    if errors == 1 { "" } else { "s" }
-                ))
-                .foreground(look::failed()),
+    let Some(buffer) = buffer else {
+        lead.push(small(name(&ide.root)));
+        return footer_row(ide, lead, tail, width);
+    };
+    if buffer.dirty() {
+        lead.push(small("Unsaved".into()));
+    }
+    let Some(snapshot) = buffer.editor.as_ref().and_then(|e| e.snapshot().ok()) else {
+        return footer_row(ide, lead, tail, width);
+    };
+    // Errors and warnings, each by its mark; a press goes to the next.
+    let found = ide
+        .diagnostics
+        .get(&buffer.path)
+        .and_then(|d| d.at(snapshot.revision()));
+    let count = |severity| found.map_or(0, |d| d.iter().filter(|d| d.severity == severity).count());
+    let mut problems = vec![];
+    for (icon, ink, n) in [
+        (icons::ERROR, look::failed(), count(1)),
+        (icons::WARNING, look::awaiting(), count(2)),
+    ] {
+        if n > 0 {
+            problems.push(
+                Element::icon(icons::of(icon))
+                    .foreground(ink)
+                    .size(Some(13.0), Some(13.0))
+                    .centered_y(),
             );
-        }
-        if warnings > 0 {
-            let words = format!("{warnings} warning{}", if warnings == 1 { "" } else { "s" });
-            tail.insert(
-                usize::from(errors > 0),
-                small(words).foreground(look::awaiting()),
-            );
+            problems.push(small(n.to_string()));
         }
     }
-    if let Some(note) = &ide.lsp_note {
-        tail.insert(0, small(note.clone()));
+    if !problems.is_empty() {
+        tail.push(chip(
+            PROBLEMS_TOGGLE,
+            problems,
+            "Problems",
+            None,
+            Some("F8 goes to the next one."),
+        ));
     }
+    // The file's language server: a dot of its state, and what it is in the tooltip.
+    let language = limn_language::Language::from_path(&buffer.path.to_string_lossy());
+    if let Some(server) = ide.lsp_servers.get(&language) {
+        let (ink, says) = match (&server.failure, server.ready) {
+            (Some(why), _) => (look::failed(), why.clone()),
+            (None, true) => (look::running(), format!("{} is running", server.name)),
+            (None, false) => (look::awaiting(), format!("{} is starting", server.name)),
+        };
+        let dot = limn::StatusDot::new(ink).size(6.0).render().centered_y();
+        if server.failure.is_some() {
+            // Down, it says so, and a press starts it again: after installing it, too.
+            let label = if server.ready {
+                format!("{} stopped", server.name)
+            } else {
+                server.name.clone()
+            };
+            let again = Element::icon(icons::of(icons::RELOAD))
+                .foreground(look::muted())
+                .size(Some(13.0), Some(13.0))
+                .centered_y();
+            let more = match &server.hint {
+                Some(hint) => format!("{hint}. Click to start it again."),
+                None => "Click to start it again.".to_owned(),
+            };
+            tail.push(chip(
+                LSP_RESTART,
+                vec![dot, small(label), again],
+                &says,
+                None,
+                Some(&more),
+            ));
+        } else {
+            let item = Element::row(vec![hgap(6.0), dot, small(server.name.clone()), hgap(6.0)])
+                .gap(6.0)
+                .size(None, Some(22.0));
+            let tip = limn::Tooltip::new(item, "footer:server", says, look::palette());
+            tail.push(tip.render().centered_y());
+        }
+    }
+    let at = snapshot
+        .position_of(snapshot.selection().head)
+        .unwrap_or_default();
+    let selected = snapshot.selection().range().len();
+    let mut caret = format!("Ln {}, Col {}", at.row + 1, at.column + 1);
+    if selected > 0 {
+        caret.push_str(&format!(" ({selected} selected)"));
+    }
+    tail.push(chip(
+        QUICK_LINE,
+        vec![small(caret)],
+        "Go to line",
+        Some("Ctrl+G"),
+        None,
+    ));
+    let ext = buffer
+        .path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    tail.push(small(language_name(ext).into()));
+    let ending = match snapshot.preferred_line_ending() {
+        limn_editor::LineEnding::CrLf => "CRLF",
+        _ => "LF",
+    };
+    tail.push(small(ending.into()));
+    footer_row(ide, lead, tail, width)
+}
+
+/// The footer's line: what is said of the file on the left, the rest and the branch on the
+/// right, under a hairline.
+fn footer_row(ide: &Ide, lead: Vec<Element>, mut tail: Vec<Element>, width: f32) -> Element {
     if let Some(branch) = &ide.branch {
         let icon = Element::icon(icons::of(icons::GIT_BRANCH))
             .foreground(look::muted())
             .size(Some(13.0), Some(13.0))
             .centered_y();
-        tail.push(Element::row(vec![icon, small(branch.clone())]).gap(4.0));
+        let name = muted(branch.clone()).font_size(SMALL).centered_y();
+        tail.push(Element::row(vec![icon, name]).gap(4.0));
     }
     tail.push(hgap(8.0));
     let mut row = lead;
@@ -2770,8 +3118,37 @@ fn footer(ide: &Ide, width: f32) -> Element {
     row.extend(tail);
     Element::column(vec![
         hline(width, look::pane_border()),
-        Element::row(row).gap(12.0).size(None, Some(FOOTER - 1.0)),
+        Element::row(row).gap(8.0).size(None, Some(FOOTER - 1.0)),
     ])
+}
+
+/// A footer item that does something, as quill's composer chips: filled under
+/// the pointer, with what it does, its keys and more in its tooltip.
+fn chip(
+    id: &str,
+    content: Vec<Element>,
+    tip: &str,
+    keys: Option<&str>,
+    more: Option<&str>,
+) -> Element {
+    let mut items = vec![hgap(6.0)];
+    items.extend(content);
+    items.push(hgap(6.0));
+    let row = Element::row(items).gap(4.0).size(None, Some(22.0));
+    let chip = ComponentPalette {
+        hover: look::chip_hover(),
+        ..look::palette()
+    }
+    .interactive_surface(Element::clickable(id, row))
+    .radius(6.0);
+    let mut tip = limn::Tooltip::new(chip, id, tip, look::palette());
+    if let Some(keys) = keys {
+        tip = tip.shortcut(keys);
+    }
+    if let Some(more) = more {
+        tip = tip.description(more);
+    }
+    tip.render().centered_y()
 }
 
 /// The name of the language limn colors `extension` in.
@@ -3500,6 +3877,140 @@ mod tests {
             .unwrap()
             .to_vec();
         assert_eq!(shown, vec![mark(6..7), mark(17..18), mark(10..12)]);
+    }
+
+    #[test]
+    fn the_footers_problems_take_the_caret_to_the_next_one_and_round() {
+        let mark = |range: std::ops::Range<usize>, severity| Diagnostic {
+            range,
+            severity,
+            message: "x".into(),
+        };
+        let mut ide = with_files();
+        read(&mut ide, "/r/a.rs", "let a = 1;\nlet b = 2;\nlet c = 3;\n");
+        let caret = |ide: &Ide| {
+            let snapshot = ide.buffers[0].editor.as_ref().unwrap().snapshot().unwrap();
+            snapshot.selection().head
+        };
+        let revision = ide.buffers[0]
+            .editor
+            .as_ref()
+            .unwrap()
+            .snapshot()
+            .unwrap()
+            .revision();
+        // A hint is not a problem; the two others are visited in order, then the first again.
+        let items = vec![mark(26..27, 2), mark(15..16, 4), mark(4..5, 1)];
+        ide.diagnostics.insert(
+            "/r/a.rs".into(),
+            Diagnostics {
+                revision,
+                text: "".into(),
+                items,
+                carried: None,
+            },
+        );
+        for expected in [4, 26, 4] {
+            click(&mut ide, PROBLEM_NEXT);
+            assert_eq!(caret(&ide), expected);
+        }
+    }
+
+    #[test]
+    fn the_problems_pane_lists_each_files_problems_and_a_press_goes_to_one() {
+        let mark = |range: std::ops::Range<usize>, severity| Diagnostic {
+            message: format!("m{}", range.start),
+            range,
+            severity,
+        };
+        let mut ide = with_files();
+        read(&mut ide, "/r/a.rs", "let a = 1;\nlet b😀 = 2;\n");
+        let revision = ide.buffers[0]
+            .editor
+            .as_ref()
+            .unwrap()
+            .snapshot()
+            .unwrap()
+            .revision();
+        // Offsets count characters; `😀` is two UTF-16 units, as servers count columns.
+        let items = vec![mark(19..20, 2), mark(4..5, 1)];
+        ide.diagnostics.insert(
+            "/r/a.rs".into(),
+            Diagnostics {
+                revision,
+                text: "".into(),
+                items,
+                carried: None,
+            },
+        );
+        // A file not open keeps the text its problems came for.
+        ide.diagnostics.insert(
+            "/r/b.rs".into(),
+            Diagnostics {
+                revision: 1,
+                text: "x\n  y".into(),
+                items: vec![mark(4..5, 1), mark(0..1, 3)],
+                carried: None,
+            },
+        );
+        let places: Vec<(PathBuf, usize, u32)> = ide
+            .problems()
+            .into_iter()
+            .map(|p| (p.path, p.row, p.column))
+            .collect();
+        let at = |path: &str, row, column| (PathBuf::from(path), row, column);
+        assert_eq!(
+            places,
+            [
+                at("/r/a.rs", 0, 4),
+                at("/r/a.rs", 1, 9),
+                at("/r/b.rs", 1, 2)
+            ]
+        );
+        click(&mut ide, PROBLEMS_TOGGLE);
+        assert!(ide.terminal.open && ide.terminal.problems);
+        click(&mut ide, "problem:1");
+        let snapshot = ide.buffers[0].editor.as_ref().unwrap().snapshot().unwrap();
+        assert_eq!(snapshot.selection().head, 19);
+        // Ctrl+` shows the shells in the same pane, and shuts it when they are shown.
+        click(&mut ide, TERMINAL_TOGGLE);
+        assert!(ide.terminal.open && !ide.terminal.problems);
+        click(&mut ide, TERMINAL_TOGGLE);
+        assert!(!ide.terminal.open);
+    }
+
+    #[test]
+    fn ask_agent_sends_the_lines_picked_or_the_file() {
+        let mut ide = with_files();
+        read(&mut ide, "/r/a.rs", "one\ntwo\nthree\n");
+        click(&mut ide, ASK_AGENT);
+        let file = quill_link::Message::Ask {
+            root: "/r".into(),
+            path: "/r/a.rs".into(),
+            lines: None,
+            text: String::new(),
+        };
+        assert_eq!(ide.link_out, [file]);
+        ide.link_out.clear();
+        // "two\nthree\n" ends where line 4 starts, which is left out.
+        let editor = ide.buffers[0].editor.clone().unwrap();
+        editor
+            .shared_buffer()
+            .lock()
+            .unwrap()
+            .set_selection(Selection {
+                anchor: 4,
+                head: 14,
+            })
+            .unwrap();
+        click(&mut ide, ASK_AGENT);
+        let lines = quill_link::Message::Ask {
+            root: "/r".into(),
+            path: "/r/a.rs".into(),
+            lines: Some((2, 3)),
+            text: "two\nthree\n".into(),
+        };
+        assert_eq!(ide.link_out, [lines]);
     }
 
     #[test]

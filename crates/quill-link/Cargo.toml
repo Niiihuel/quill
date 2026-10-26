@@ -1,0 +1,13 @@
+[package]
+name = "quill-link"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The line between quill and quill-ide: Unix sockets carrying one JSON message a line."
+publish = false
+
+[dependencies]
+# The messages, one JSON object a line.
+serde = { workspace = true }
+serde_json = { workspace = true }

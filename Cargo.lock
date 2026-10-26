@@ -3377,6 +3377,7 @@ dependencies = [
 name = "quill"
 version = "0.0.1"
 dependencies = [
+ "base64 0.22.1",
  "bytemuck",
  "eframe",
  "gbm",
@@ -3384,12 +3385,14 @@ dependencies = [
  "limn-egui",
  "quill-components",
  "quill-engine",
+ "quill-link",
  "quill-model",
  "quill-pty",
  "quill-ui",
  "raw-window-handle",
  "rfd",
  "serde_json",
+ "sha2",
  "wayland-backend",
  "wayland-client",
  "wayland-protocols",
@@ -3491,11 +3494,20 @@ dependencies = [
  "limn-language",
  "quill-components",
  "quill-files",
+ "quill-link",
  "quill-pty",
  "rfd",
  "serde",
  "serde_json",
  "similar",
+]
+
+[[package]]
+name = "quill-link"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

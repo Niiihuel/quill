@@ -25,6 +25,13 @@ pub const STOP: &str = "stop";
 pub const MODE_MENU: &str = "mode-menu";
 pub const MODEL_MENU: &str = "model-menu";
 pub const DIFF_TOGGLE: &str = "diff:toggle";
+/// "open-file:<line>:<path>": a file the agent changed, to show in the editor at that line;
+/// a path from the session's folder or absolute.
+pub const OPEN_FILE: &str = "open-file:";
+/// The top bar's "Open in" menu, of the folder on screen.
+pub const OPEN_IN_MENU: &str = "open-in-menu";
+/// quill's own editor, offered whatever else is installed.
+pub const QUILL_IDE: &str = "quill-ide";
 pub const DIFF_CLOSE: &str = "pane:diff:close";
 pub const PANEL_TOGGLE: &str = "panel:toggle";
 /// Asks the host for the platform folder picker; the host sets `Ui::cwd` with the answer.
@@ -949,14 +956,44 @@ fn sidebar_toggle(ui: &Ui) -> Element {
     )
 }
 
-/// "Open in ›": of Desktop's places, the one quill has, the desktop's
-/// file manager showing the session's folder.
-fn open_in(session: quill_model::SessionId) -> limn::DropdownMenuEntry {
+/// "Open in" as Desktop lists it (2.9939.4, inferred from its code): quill-ide, then the
+/// editors installed, by name, each with its own icon; then the desktop's default app and its
+/// file manager. Each row is "open-in:<editor | default | files>:<target>", `target` a session
+/// or "here", the folder on screen.
+fn open_in_entries(target: &str, ui: &Ui) -> Vec<limn::DropdownMenuEntry> {
+    let mut entries = vec![
+        limn::DropdownMenuEntry::Heading("Open in".into()),
+        limn::DropdownMenuItem::new(format!("open-in:{QUILL_IDE}:{target}"), "quill-ide")
+            .icon(icons::of(icons::CODE))
+            .into(),
+    ];
+    let mut editors: Vec<&crate::Editor> = ui.editors.iter().collect();
+    editors.sort_by(|a, b| a.name.cmp(&b.name));
+    for editor in editors {
+        let item = limn::DropdownMenuItem::new(
+            format!("open-in:{}:{target}", editor.key),
+            editor.name.clone(),
+        );
+        entries.push(
+            match &editor.picture {
+                Some(picture) => item.picture(picture.clone()),
+                None => item.icon(icons::of(icons::CODE)),
+            }
+            .into(),
+        );
+    }
+    entries.extend([
+        limn::DropdownMenuEntry::Separator,
+        limn::DropdownMenuItem::new(format!("open-in:default:{target}"), "Default app").into(),
+        limn::DropdownMenuItem::new(format!("open-in:files:{target}"), "File manager").into(),
+    ]);
+    entries
+}
+
+/// "Open in ›" in a session's menu.
+fn open_in(session: quill_model::SessionId, ui: &Ui) -> limn::DropdownMenuEntry {
     limn::DropdownMenuItem::new(format!("open-in:{session}"), "Open in")
-        .submenu(vec![
-            limn::DropdownMenuEntry::Heading("Open in".into()),
-            limn::DropdownMenuItem::new(format!("open-in:files:{session}"), "File manager").into(),
-        ])
+        .submenu(open_in_entries(&session.to_string(), ui))
         .into()
 }
 
@@ -985,7 +1022,7 @@ fn lettered(id: String, label: &str, key: &str) -> limn::DropdownMenuItem {
 }
 
 /// The width of the top bar's toggles at its end, with their margin.
-const TOP_TOOLS: f32 = 148.0;
+const TOP_TOOLS: f32 = 178.0;
 
 /// The session's title, Stop while it works, and the toggles of the panel and the panes
 ///. The title's chevron opens its menu, and Rename turns it into a field
@@ -1020,7 +1057,7 @@ fn top_bar(session: Option<&Session>, ui: &Ui, main: f32, beside: f32) -> Elemen
                 look::tool_hover(),
                 None,
             );
-            let mut entries = vec![open_in(s.id), limn::DropdownMenuEntry::Separator];
+            let mut entries = vec![open_in(s.id, ui), limn::DropdownMenuEntry::Separator];
             entries.extend([
                 lettered(format!("rename:{}", s.id), "Rename", "R").into(),
                 lettered(format!("fork:{}", s.id), "Fork", "F").into(),
@@ -1055,6 +1092,30 @@ fn top_bar(session: Option<&Session>, ui: &Ui, main: f32, beside: f32) -> Elemen
         (None, _) => heading.push(muted("New session").centered_y()),
     }
     row.push(Element::spacer().flex(1.0));
+    // Desktop's "Open in" by the panes' toggles: the folder on screen in an editor.
+    if session.is_some() {
+        let open = ui.open_menu == Some(OPEN_IN_MENU);
+        let anchor = tool_surface(
+            OPEN_IN_MENU,
+            icons::of(icons::FOLDER_OPEN),
+            "Open in",
+            26.0,
+            open.then(look::active),
+            look::tool_hover(),
+            None,
+        );
+        row.push(
+            menu(
+                anchor,
+                open_in_entries("here", ui),
+                open,
+                OPEN_IN_MENU,
+                200.0,
+                limn::PopoverPlacement::BottomEnd,
+            )
+            .centered_y(),
+        );
+    }
     // Stop lives in the composer, as in Desktop.
     if session.is_some() {
         let shown = ui.panel_open && ui.panes.is_empty();
@@ -1523,7 +1584,7 @@ fn session_row(session: &Session, depth: usize, ui: &Ui, palette: ComponentPalet
         None,
     );
     let mut entries = vec![
-        open_in(session.id),
+        open_in(session.id, ui),
         limn::DropdownMenuEntry::Separator,
         lettered(
             format!("pin:{}", session.id),
@@ -3443,7 +3504,23 @@ fn step_body(step: &Step, inner: f32, palette: ComponentPalette) -> Element {
         _ => {
             let files = result.map(|r| r.files.as_slice()).unwrap_or_default();
             for file in files {
-                body.push(muted(file.path.display().to_string()).font_size(SMALL));
+                let before = file.before.as_deref().unwrap_or_default();
+                let after = file.after.as_deref().unwrap_or_default();
+                // The first line that differs, where the editor opens.
+                let line = before
+                    .lines()
+                    .zip(after.lines())
+                    .position(|(a, b)| a != b)
+                    .unwrap_or(before.lines().count().min(after.lines().count()))
+                    + 1;
+                let path = file.path.display().to_string();
+                body.push(
+                    Element::row(vec![
+                        muted(path.clone()).font_size(SMALL).centered_y(),
+                        open_file(&path, line as u32, palette),
+                    ])
+                    .gap(4.0),
+                );
                 body.push(diff_box(
                     &format!("diff:{}:{}", step.call, file.path.display()),
                     file.before.as_deref().unwrap_or_default(),
@@ -5113,7 +5190,7 @@ fn diff_pane(
         blocks.push(pad(muted("No uncommitted changes"), 8.0, 8.0));
     }
     for (index, file) in files.iter().enumerate() {
-        blocks.push(diff_file_band(file, width));
+        blocks.push(diff_file_band(file, width, palette));
         let lines = parse_patch(&file.patch);
         let rows = lines.len().max(1) as f32;
         let words = word_ranges(&lines);
@@ -5135,9 +5212,36 @@ fn diff_pane(
         .size(Some(width), Some(height))
 }
 
+/// The button for a file the agent changed, at `line`, in the editor last chosen in Open in.
+fn open_file(path: &str, line: u32, palette: ComponentPalette) -> Element {
+    icon_tool(
+        &format!("{OPEN_FILE}{line}:{path}"),
+        icons::of(icons::ARROW_OUT),
+        "Open in editor",
+        24.0,
+        palette,
+    )
+}
+
+/// The first line a patch's new side has, from its first hunk's header, "@@ -a,b +c,d @@".
+fn first_changed_line(patch: &str) -> u32 {
+    patch
+        .lines()
+        .find_map(|line| {
+            let new = line
+                .strip_prefix("@@ ")?
+                .split(' ')
+                .nth(1)?
+                .strip_prefix('+')?;
+            new.split(',').next()?.parse().ok()
+        })
+        .unwrap_or(1)
+        .max(1)
+}
+
 /// A file's band over its diff, as Desktop's: #F2F2F2, the name in #616161 after
 /// a caret and the code mark, then its added and removed lines.
-fn diff_file_band(file: &FileEffect, width: f32) -> Element {
+fn diff_file_band(file: &FileEffect, width: f32, palette: ComponentPalette) -> Element {
     let name = file
         .path
         .rsplit('/')
@@ -5159,7 +5263,8 @@ fn diff_file_band(file: &FileEffect, width: f32) -> Element {
         text(format!("−{}", file.removed))
             .foreground(look::removed())
             .centered_y(),
-        hgap(16.0),
+        open_file(&file.path, first_changed_line(&file.patch), palette),
+        hgap(10.0),
     ])
     .gap(6.0)
     .background(look::cancel())

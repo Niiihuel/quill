@@ -2,7 +2,7 @@
 //! a file of it opens, given each open buffer's text at each revision, asked what the person
 //! asks, and its answers put where the IDE shows them.
 
-use crate::ide::{Ask, AskKind, Diagnostic, Ide, Job, Location};
+use crate::ide::{Ask, AskKind, Diagnostic, Ide, Job, Location, Server};
 use limn_editor::{BufferSnapshot, EditKind, Selection};
 use limn_language::lsp::{self, Event, LanguageServer, Request, RequestId, ServerConfig};
 use limn_language::{offset_to_utf16, utf16_to_offset, Language};
@@ -11,16 +11,15 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc};
 
-/// A language's server found and started, with its program's name, or what to say when
-/// none would start.
-type Started = (Language, Result<(LanguageServer, String), Option<String>>);
+/// A language's server found and started, with its program's name, or, when one is on the
+/// PATH but none would start, its name and what may help.
+type Started = (Language, Found);
+type Found = Result<(LanguageServer, String), Option<(String, Option<String>)>>;
 
 /// The servers of the window, the documents each holds, and what was asked of them.
 #[derive(Default)]
 pub struct Lsp {
     servers: HashMap<Language, LanguageServer>,
-    /// Each server's program's name, for what is said of it.
-    names: HashMap<Language, String>,
     /// Languages a server was looked for, found or not, so none is looked for each frame.
     tried: HashSet<Language>,
     /// Servers being looked for off the UI thread.
@@ -33,18 +32,40 @@ impl Lsp {
     /// One frame's work: servers started, documents opened, changed and closed, the IDE's
     /// asks sent and the servers' news taken. Returns the jobs the answers need.
     pub fn sync(&mut self, ide: &mut Ide, wake: &Arc<dyn Fn() + Send + Sync>) -> Vec<Job> {
+        // Started again on request: the old one is dropped, which ends it, and looked for anew.
+        for language in std::mem::take(&mut ide.lsp_restart) {
+            self.servers.remove(&language);
+            self.tried.remove(&language);
+            self.open.retain(|_, l| *l != language);
+            ide.lsp_servers.remove(&language);
+        }
         self.starting.retain(|receiver| match receiver.try_recv() {
             Ok((language, Ok((server, program)))) => {
                 self.servers.insert(language, server);
-                self.names.insert(language, program);
+                ide.lsp_servers.insert(
+                    language,
+                    Server {
+                        name: program,
+                        ready: false,
+                        failure: None,
+                        hint: None,
+                    },
+                );
                 false
             }
-            Ok((_, Err(note))) => {
-                if note.is_some() {
-                    ide.lsp_note = note;
-                }
+            Ok((language, Err(Some((program, hint))))) => {
+                ide.lsp_servers.insert(
+                    language,
+                    Server {
+                        failure: Some(format!("{program} won't start")),
+                        name: program,
+                        ready: false,
+                        hint,
+                    },
+                );
                 false
             }
+            Ok((_, Err(None))) => false,
             Err(mpsc::TryRecvError::Empty) => true,
             Err(mpsc::TryRecvError::Disconnected) => false,
         });
@@ -95,13 +116,16 @@ impl Lsp {
             .flat_map(|(language, server)| drain(server).into_iter().map(|e| (*language, e)))
             .collect();
         for (language, event) in events {
-            if let Event::Stopped { reason } = &event {
-                let program = self
-                    .names
-                    .get(&language)
-                    .map_or("The language server", |n| n.as_str());
-                ide.lsp_note = Some(format!("{program} stopped: {reason}"));
-                continue;
+            if let Some(server) = ide.lsp_servers.get_mut(&language) {
+                match &event {
+                    Event::Stopped { reason } => {
+                        server.failure = Some(format!("{} stopped", server.name));
+                        server.hint = Some(reason.clone());
+                        continue;
+                    }
+                    Event::Initialized { .. } => server.ready = true,
+                    _ => {}
+                }
             }
             jobs.extend(self.heard(ide, event));
         }
@@ -166,9 +190,6 @@ impl Lsp {
 
     fn heard(&mut self, ide: &mut Ide, event: Event) -> Vec<Job> {
         match event {
-            Event::Initialized { server_info, .. } => {
-                ide.lsp_note = server_info["name"].as_str().map(str::to_owned);
-            }
             Event::Diagnostics { document, items } => {
                 let Ok(path) = lsp::uri_path(&document.uri) else {
                     return vec![];
@@ -217,6 +238,8 @@ impl Lsp {
                 return answered(ide, &path, document.revision, kind, &value);
             }
             Event::Stopped { reason } => ide.lsp_note = Some(reason),
+            // Taken in `sync`, for the footer.
+            Event::Initialized { .. } => {}
         }
         vec![]
     }
@@ -228,11 +251,7 @@ fn drain(server: &LanguageServer) -> Vec<Event> {
 
 /// The first server for `language` that starts, or what to say when one is on the PATH but
 /// none starts.
-fn find(
-    language: Language,
-    root: &Path,
-    wake: &Arc<dyn Fn() + Send + Sync>,
-) -> Result<(LanguageServer, String), Option<String>> {
+fn find(language: Language, root: &Path, wake: &Arc<dyn Fn() + Send + Sync>) -> Found {
     let candidates = lsp::server_candidates(language);
     let last = candidates.len().saturating_sub(1);
     let mut failed = None;
@@ -261,10 +280,10 @@ fn find(
             }
         }
     }
-    Err(failed.map(|program| match language {
-        Language::Rust => format!("{program} won't start: rustup component add rust-analyzer"),
-        _ => format!("{program} won't start"),
-    }))
+    // rustup's proxy is on the PATH without its component more often than not.
+    let hint = (language == Language::Rust)
+        .then(|| "Install it with: rustup component add rust-analyzer".to_owned());
+    Err(failed.map(|program| (program, hint)))
 }
 
 fn name(language: Language) -> &'static str {

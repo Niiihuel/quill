@@ -2132,3 +2132,40 @@ fn the_files_pane_lists_the_folder_opens_a_file_and_follows_a_rename() {
     let again = click(&store, &mut ui, view::FILES_TOGGLE);
     assert!(again.contains(&list("/work")) && again.contains(&list("/work/src")));
 }
+
+#[test]
+fn code_from_an_editor_goes_to_its_folders_session_as_a_mention() {
+    let mut store = Store::default();
+    for (session, cwd) in [(1, "/work"), (2, "/other"), (3, "/work")] {
+        store.apply(Event::SessionCreated {
+            session,
+            agent: "claude".into(),
+            cwd: cwd.into(),
+        });
+    }
+    let mut ui = Ui::new("/work".into());
+    // The latest of the folder, unless the one on screen works there.
+    assert_eq!(session_for(&store, &ui, Path::new("/work")), Some(3));
+    ui.selected = Some(1);
+    assert_eq!(session_for(&store, &ui, Path::new("/work")), Some(1));
+    assert_eq!(session_for(&store, &ui, Path::new("/elsewhere")), None);
+    let root = Path::new("/work");
+    assert_eq!(
+        mention(root, Path::new("/work/src/a.rs"), None, ""),
+        "@src/a.rs "
+    );
+    assert_eq!(
+        mention(
+            root,
+            Path::new("/work/src/a.rs"),
+            Some((3, 4)),
+            "let a = 1;\nlet b = 2;\n"
+        ),
+        "@src/a.rs (lines 3–4):\n```rs\nlet a = 1;\nlet b = 2;\n```\n"
+    );
+    // Code holding a fence gets a longer one.
+    assert!(
+        mention(root, Path::new("/work/a.md"), Some((1, 1)), "```x```")
+            .starts_with("@a.md (line 1):\n````md\n")
+    );
+}

@@ -41,9 +41,44 @@ struct App {
     shells: quill_pty::Tabs,
     /// The language servers.
     lsp: lsp::Lsp,
+    /// What quill sent since the last frame, and the folder's socket while this window
+    /// listens on it.
+    linked: Arc<Mutex<Vec<quill_link::Message>>>,
+    _link: Option<quill_link::Listener>,
 }
 
 impl App {
+    /// Code to ask about goes to quill; with none running, it starts and is sent once quill
+    /// listens.
+    fn send_to_quill(&mut self) {
+        for message in std::mem::take(&mut self.ide.link_out) {
+            let socket = quill_link::quill_socket();
+            if quill_link::send(&socket, &message).is_ok() {
+                self.ide.link_note = Some("Sent to quill".into());
+                continue;
+            }
+            // Beside the IDE when they were built together, else the one on PATH.
+            let program = std::env::current_exe()
+                .ok()
+                .and_then(|exe| Some(exe.parent()?.join("quill")))
+                .filter(|p| p.is_file())
+                .unwrap_or_else(|| "quill".into());
+            if let Err(error) = std::process::Command::new(&program).spawn() {
+                self.ide.link_note = Some(format!("quill did not start: {error}"));
+                continue;
+            }
+            self.ide.link_note = Some("Starting quill…".into());
+            std::thread::spawn(move || {
+                for _ in 0..100 {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    if quill_link::send(&socket, &message).is_ok() {
+                        return;
+                    }
+                }
+            });
+        }
+    }
+
     /// Start, size and read the shells while their pane shows, and do what was asked of
     /// them, as quill does for a session's folder.
     fn sync_terminal(&mut self, ctx: &egui::Context, window: Size) {
@@ -72,15 +107,17 @@ impl App {
             }
         }
         self.shells.reap();
-        if self.shells.is_empty() && !had {
+        // A shell is started when the shells are shown, not the problems.
+        if self.shells.is_empty() && !had && !pane.problems {
             if let Err(error) = self.shells.open(&root, cols, rows, wake()) {
                 eprintln!("quill-ide: no terminal in {}: {error}", root.display());
             }
         }
         // The last one closed, or `exit` in it, hides the pane; opening it again starts one.
+        // The problems need none.
         let Some(shell) = self.shells.active_mut() else {
             pane.tabs.clear();
-            pane.open = false;
+            pane.open = pane.problems;
             return;
         };
         shell.resize(cols, rows);
@@ -142,6 +179,25 @@ impl eframe::App for App {
         }
         let jobs = self.ide.marks_due();
         self.run(jobs);
+        // A file quill shows here: opened at its place, the window brought up.
+        for message in std::mem::take(&mut *self.linked.lock().unwrap()) {
+            if let quill_link::Message::Open {
+                path, line, column, ..
+            } = message
+            {
+                let jobs = match line {
+                    _ if path.is_dir() => vec![],
+                    Some(line) => self.ide.goto_at(
+                        path,
+                        line.saturating_sub(1) as usize,
+                        column.unwrap_or(1).saturating_sub(1),
+                    ),
+                    None => self.ide.open(path),
+                };
+                self.run(jobs);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
+        }
         let wake: Arc<dyn Fn() + Send + Sync> = {
             let ctx = ctx.clone();
             Arc::new(move || ctx.request_repaint())
@@ -232,6 +288,12 @@ impl eframe::App for App {
         if toggled {
             actions.push(limn::UiAction::Clicked {
                 id: ide::TERMINAL_TOGGLE.into(),
+            });
+        }
+        // F8 goes to the next problem, as VS Code's; limn has no key for it.
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F8)) {
+            actions.push(limn::UiAction::Clicked {
+                id: ide::PROBLEM_NEXT.into(),
             });
         }
         // Editing keys with Alt, and Ctrl+/, which limn's keys do not carry: taken from egui
@@ -495,6 +557,7 @@ impl eframe::App for App {
                 }
             }
             let jobs = self.ide.update(&action);
+            self.send_to_quill();
             self.run(jobs);
         }
         self.ide.tick();
@@ -576,17 +639,66 @@ impl eframe::App for App {
 
 const POLL: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// A file as given on the command line, `path[:line[:column]]`, as editors take it; a path
+/// that exists as written is taken whole.
+fn place(arg: &str) -> (PathBuf, Option<u32>, Option<u32>) {
+    if std::path::Path::new(arg).exists() {
+        return (arg.into(), None, None);
+    }
+    let (mut rest, mut numbers) = (arg, vec![]);
+    while numbers.len() < 2 {
+        match rest
+            .rsplit_once(':')
+            .map(|(head, n)| (head, n.parse::<u32>()))
+        {
+            Some((head, Ok(n))) => {
+                numbers.insert(0, n);
+                rest = head;
+            }
+            _ => break,
+        }
+    }
+    (
+        rest.into(),
+        numbers.first().copied(),
+        numbers.get(1).copied(),
+    )
+}
+
 fn main() -> eframe::Result {
-    let given = std::env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| ".".into());
+    // `quill-ide [folder | file[:line[:column]]] [file[:line[:column]]]`.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let (given, mut line, mut column) = args.first().map_or_else(
+        || {
+            (
+                std::env::current_dir().unwrap_or_else(|_| ".".into()),
+                None,
+                None,
+            )
+        },
+        |arg| place(arg),
+    );
     let given = std::fs::canonicalize(&given).unwrap_or(given);
-    let (root, file) = match given.parent() {
+    let (root, mut file) = match given.parent() {
         Some(parent) if given.is_file() => (parent.to_path_buf(), Some(given.clone())),
         _ => (given, None),
     };
+    if let Some(arg) = args.get(1) {
+        let (path, l, c) = place(arg);
+        let path = root.join(path);
+        file = Some(std::fs::canonicalize(&path).unwrap_or(path));
+        (line, column) = (l, c);
+    }
+    // The folder's window, if one is open, shows the file instead of a second window.
+    let open = quill_link::Message::Open {
+        root: root.clone(),
+        path: file.clone().unwrap_or_else(|| root.clone()),
+        line,
+        column,
+    };
+    if quill_link::send(&quill_link::ide_socket(&root), &open).is_ok() {
+        return Ok(());
+    }
     let title = format!(
         "quill-ide · {}",
         root.file_name().unwrap_or_default().to_string_lossy()
@@ -622,7 +734,24 @@ fn main() -> eframe::Result {
             look::set_dark(dark);
             let kept = session::load(&root);
             let (mut ide, mut jobs) = ide::Ide::new(root, prefs::load(), kept.clone());
-            jobs.extend(file.map_or(vec![], |f| ide.open(f)));
+            jobs.extend(match (file, line) {
+                (Some(f), Some(line)) => ide.goto_at(
+                    f,
+                    line.saturating_sub(1) as usize,
+                    column.unwrap_or(1).saturating_sub(1),
+                ),
+                (Some(f), None) => ide.open(f),
+                (None, _) => vec![],
+            });
+            let linked: Arc<Mutex<Vec<quill_link::Message>>> = Arc::default();
+            let link = {
+                let (linked, ctx) = (linked.clone(), creation.egui_ctx.clone());
+                quill_link::listen(&quill_link::ide_socket(&ide.root), move |message| {
+                    linked.lock().unwrap().push(message);
+                    ctx.request_repaint();
+                })
+                .ok()
+            };
             let app = App {
                 tree: UiTree::new(Element::spacer()),
                 ide,
@@ -636,9 +765,27 @@ fn main() -> eframe::Result {
                 focus_waits: 0,
                 shells: quill_pty::Tabs::default(),
                 lsp: lsp::Lsp::default(),
+                linked,
+                _link: link,
             };
             app.run(jobs);
             Ok(Box::new(app))
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_file_on_the_command_line_takes_its_line_and_column() {
+        assert_eq!(
+            place("src/a.rs:12:4"),
+            ("src/a.rs".into(), Some(12), Some(4))
+        );
+        assert_eq!(place("src/a.rs:12"), ("src/a.rs".into(), Some(12), None));
+        assert_eq!(place("src/a.rs"), ("src/a.rs".into(), None, None));
+        assert_eq!(place("a:b.rs:3"), ("a:b.rs".into(), Some(3), None));
+    }
 }

@@ -24,6 +24,7 @@ When they are all merged, point `Cargo.toml` back at `../lienzo` and drop the br
 | [#134](https://github.com/Niiihuel/limn/pull/134) | `feat/code-editor-change-marks` | quill-ide's git marks in the editor's gutter | open |
 | [#135](https://github.com/Niiihuel/limn/pull/135) | `fix/code-editor-line-width` | the editor's horizontal scroll without flicker | open |
 | [#137](https://github.com/Niiihuel/limn/pull/137) | `feat/code-editor-scrollbar` | quill-ide's editor scrollbar in quill's rail with its arrows | open |
+| [#138](https://github.com/Niiihuel/limn/pull/138) | `feat/menu-picture` | the installed editors' own icons in quill's "Open in" menu | open |
 | — | `feat/surface-image` | the browser's native frames handed to egui as they are (`SurfaceFrame::from_image`) | local, not pushed |
 | — | `feat/surface-texture` | the browser's GPU frames drawn from a texture quill registered with egui-wgpu (`present_surface_texture`) | local, not pushed |
 | — | `feat/surface-paint` | the page presented beneath the window: quill paints the browser's surface itself, a transparent hole (`present_surface_paint`) | local, not pushed |

@@ -15,7 +15,7 @@ use quill_model::{
     ProposalAnswer, RequestId, SessionId, SessionStatus, Suggestion,
 };
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// One entry of a session's transcript.
 #[derive(Clone, Debug, PartialEq)]
@@ -680,6 +680,69 @@ pub fn folder(store: &Store, ui: &Ui) -> PathBuf {
         .map_or_else(|| ui.cwd.clone(), |s| s.cwd.clone())
 }
 
+/// The session code from an editor goes to: the one on screen if it works in `root`, else the
+/// latest of that folder's own (not a helper's, not an aside), else none, for a new one.
+pub fn session_for(store: &Store, ui: &Ui, root: &Path) -> Option<SessionId> {
+    let root_real = root.canonicalize().ok();
+    let same = |cwd: &Path| {
+        cwd == root
+            || root_real
+                .as_ref()
+                .is_some_and(|real| cwd.canonicalize().is_ok_and(|c| &c == real))
+    };
+    if let Some(shown) = ui.selected.and_then(|id| store.session(id)) {
+        if same(&shown.cwd) {
+            return Some(shown.id);
+        }
+    }
+    store
+        .sessions
+        .iter()
+        .filter(|s| !s.archived && s.parent.is_none() && !s.aside && same(&s.cwd))
+        .max_by_key(|s| s.touched)
+        .map(|s| s.id)
+}
+
+/// What code from an editor adds to the message: the file as an @-mention from its folder,
+/// and the lines picked, fenced in their language.
+pub fn mention(root: &Path, path: &Path, lines: Option<(u32, u32)>, text: &str) -> String {
+    let file = path
+        .strip_prefix(root)
+        .unwrap_or(path)
+        .display()
+        .to_string();
+    match lines.filter(|_| !text.trim().is_empty()) {
+        None => format!("@{file} "),
+        Some((first, last)) => {
+            let at = if first == last {
+                format!("line {first}")
+            } else {
+                format!("lines {first}–{last}")
+            };
+            let fence = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            // A fence longer than any run of backticks inside keeps the code whole.
+            let ticks = "`".repeat(longest_run(text, '`').max(2) + 1);
+            format!(
+                "@{file} ({at}):\n{ticks}{fence}\n{}\n{ticks}\n",
+                text.trim_end()
+            )
+        }
+    }
+}
+
+fn longest_run(text: &str, c: char) -> usize {
+    text.split(|x| x != c).map(str::len).max().unwrap_or(0)
+}
+
+/// An editor found on the computer, as "Open in" offers it: its key (its URL scheme), its
+/// name, and its own icon when the desktop has one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Editor {
+    pub key: String,
+    pub name: String,
+    pub picture: Option<limn::RasterImage>,
+}
+
 /// What the person is doing, apart from what the engine knows.
 pub struct Ui {
     pub selected: Option<SessionId>,
@@ -692,6 +755,8 @@ pub struct Ui {
     /// The effort new sessions start with and the selected one runs at.
     pub effort: Option<String>,
     pub open_menu: Option<&'static str>,
+    /// The editors found on the computer, for Open in.
+    pub editors: Vec<Editor>,
     pub expanded: Vec<String>,
     /// A message written before its session existed, sent once it does.
     pub waiting: Option<String>,
@@ -887,6 +952,20 @@ fn session_clicked(store: &Store, ui: &mut Ui, id: &str) -> Option<Vec<Intent>> 
         ui.open_menu = (ui.open_menu != Some(view::TITLE_MENU)).then_some(view::TITLE_MENU);
     } else if id == format!("{}:dismiss", view::TITLE_MENU) {
         ui.open_menu = None;
+    } else if id == view::OPEN_IN_MENU {
+        ui.open_menu = (ui.open_menu != Some(view::OPEN_IN_MENU)).then_some(view::OPEN_IN_MENU);
+    } else if id == format!("{}:dismiss", view::OPEN_IN_MENU) {
+        ui.open_menu = None;
+    } else if let Some((place, _)) = id.strip_prefix("open-in:").and_then(|r| r.split_once(':')) {
+        // The host opens it; an editor chosen is the one the files' buttons use next, as
+        // Desktop keeps the last one.
+        ui.open_menu = None;
+        if !matches!(place, "default" | "files") && place != ui.settings.editor {
+            return Some(vec![Intent::SaveSettings(quill_model::Settings {
+                editor: place.to_owned(),
+                ..ui.settings.clone()
+            })]);
+        }
     } else if id == view::PR_MENU {
         ui.open_menu = (ui.open_menu != Some(view::PR_MENU)).then_some(view::PR_MENU);
     } else if id == format!("{}:dismiss", view::PR_MENU) {
@@ -1269,6 +1348,7 @@ impl Ui {
             model: None,
             effort: None,
             open_menu: None,
+            editors: vec![],
             expanded: vec![],
             waiting: None,
             diff: None,
