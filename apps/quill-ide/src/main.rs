@@ -4,7 +4,6 @@
 
 mod complete;
 mod disk;
-mod files;
 mod find;
 mod grep;
 mod ide;

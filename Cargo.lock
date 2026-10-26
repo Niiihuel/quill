@@ -3460,6 +3460,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "quill-files"
+version = "0.0.1"
+dependencies = [
+ "ignore",
+ "libc",
+ "trash",
+]
+
+[[package]]
 name = "quill-git"
 version = "0.0.1"
 dependencies = [
@@ -3472,18 +3481,17 @@ version = "0.0.1"
 dependencies = [
  "eframe",
  "ignore",
- "libc",
  "limn",
  "limn-editor",
  "limn-egui",
  "limn-language",
  "quill-components",
+ "quill-files",
  "quill-pty",
  "rfd",
  "serde",
  "serde_json",
  "similar",
- "trash",
 ]
 
 [[package]]

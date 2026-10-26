@@ -1,10 +1,48 @@
-//! What the file tree may do to the disk, after openADE's: every target is a plain path under
-//! the folder, links are never followed, nothing is overwritten, and deleting only moves to
-//! the desktop's trash. Messages are for the person, without absolute paths.
+//! A folder's files as quill's trees list and change them, on the disk: run beside the
+//! window, never on it. What the tree may do, after openADE's: every target is a plain path
+//! under the folder, links are never followed, nothing is overwritten, and deleting only
+//! moves to the desktop's trash. Messages are for the person, without absolute paths.
 
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::time::SystemTime;
+
+/// When a file or folder last changed on the disk; `None` when it is not there.
+pub type Stamp = Option<SystemTime>;
+
+/// A folder's entry, as the tree shows it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Entry {
+    pub path: PathBuf,
+    pub dir: bool,
+}
+
+/// When `path` last changed.
+pub fn stamp(path: &Path) -> Stamp {
+    fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// The entries of `dir` as git sees it (its `.gitignore` kept, a repository or not, and
+/// `.git` itself left out): folders first, then by name.
+pub fn list(dir: &Path) -> Vec<Entry> {
+    let mut entries: Vec<Entry> = ignore::WalkBuilder::new(dir)
+        .max_depth(Some(1))
+        .hidden(false)
+        // A folder that is not a repository still keeps its .gitignore.
+        .require_git(false)
+        .filter_entry(|e| e.file_name() != ".git")
+        .build()
+        .filter_map(Result::ok)
+        .filter(|e| e.depth() == 1)
+        .map(|e| Entry {
+            dir: e.file_type().is_some_and(|t| t.is_dir()),
+            path: e.into_path(),
+        })
+        .collect();
+    entries.sort_by(|a, b| b.dir.cmp(&a.dir).then_with(|| a.path.cmp(&b.path)));
+    entries
+}
 
 /// One operation; every path is from the folder.
 #[derive(Clone, Debug, PartialEq, Eq)]

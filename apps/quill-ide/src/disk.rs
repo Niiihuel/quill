@@ -1,6 +1,7 @@
 //! The `Job`s, on the disk: run on a thread of their own, never the window's.
 
-use crate::ide::{Entry, Job, Loaded, Stamp};
+use crate::ide::{Job, Loaded, Stamp};
+use quill_files::{list, stamp};
 use limn_editor::BufferSnapshot;
 use std::io::{self, Write};
 use std::path::Path;
@@ -50,7 +51,7 @@ pub fn run(job: Job) -> Loaded {
         Job::FindFonts => Loaded::Fonts(monospaced()),
         Job::FindFiles(root) => Loaded::Files(files(&root)),
         Job::File(root, op) => {
-            let done = crate::files::run(&root, &op, crate::files::system_trash);
+            let done = quill_files::run(&root, &op, quill_files::system_trash);
             Loaded::File(op, done)
         }
         Job::ApplyEdits(path, edits) => {
@@ -209,10 +210,6 @@ fn save_prefs(prefs: &crate::prefs::Prefs) -> io::Result<()> {
     std::fs::rename(&temporary, &path)
 }
 
-fn stamp(path: &Path) -> Stamp {
-    std::fs::metadata(path).and_then(|m| m.modified()).ok()
-}
-
 /// Write `snapshot` over `path` whole or not at all: to a file beside it, then renamed over
 /// it with its permissions. A link is followed to the file it names, and stays a link.
 fn write(path: &Path, snapshot: &BufferSnapshot) -> io::Result<Stamp> {
@@ -243,25 +240,6 @@ fn write(path: &Path, snapshot: &BufferSnapshot) -> io::Result<Stamp> {
 
 /// `dir`'s entries as git sees them: dotfiles shown, .gitignore'd ones and .git left out,
 /// folders first, then by name.
-fn list(dir: &Path) -> Vec<Entry> {
-    let mut entries: Vec<Entry> = ignore::WalkBuilder::new(dir)
-        .max_depth(Some(1))
-        .hidden(false)
-        // A folder that is not a repository still keeps its .gitignore.
-        .require_git(false)
-        .filter_entry(|e| e.file_name() != ".git")
-        .build()
-        .filter_map(Result::ok)
-        .filter(|e| e.depth() == 1)
-        .map(|e| Entry {
-            dir: e.file_type().is_some_and(|t| t.is_dir()),
-            path: e.into_path(),
-        })
-        .collect();
-    entries.sort_by(|a, b| b.dir.cmp(&a.dir).then_with(|| a.path.cmp(&b.path)));
-    entries
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

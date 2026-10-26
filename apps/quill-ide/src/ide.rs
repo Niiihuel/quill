@@ -2,7 +2,7 @@
 //! The disk is the host's: `update` returns `Job`s, and what they find comes back to `loaded`.
 
 use crate::complete::{self, Offer};
-use crate::files::Op;
+pub use quill_files::{Entry, Op, Stamp};
 use crate::find::{Find, FIND, FIND_OPEN, FIND_QUERY};
 use crate::grep::{Hit, GREP_CLOSE, GREP_FIELD, GREP_OPEN};
 use crate::marks::Change;
@@ -23,7 +23,6 @@ use quill_components::sidebar::Sidebar;
 use quill_components::{icons, pieces::*};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 pub const TREE_TOGGLE: &str = "tree:toggle";
 pub const TREE_FOCUS: &str = "tree:focus";
@@ -130,8 +129,6 @@ pub enum TreeKey {
     Paste,
 }
 
-/// When a file or folder last changed on the disk; `None` when it is not there.
-pub type Stamp = Option<SystemTime>;
 
 /// What the host does on the disk, beside the window.
 #[derive(Debug, PartialEq)]
@@ -321,11 +318,6 @@ pub struct Location {
     pub column: u32,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct Entry {
-    pub path: PathBuf,
-    pub dir: bool,
-}
 
 pub struct Buffer {
     pub path: PathBuf,
@@ -1185,7 +1177,7 @@ impl Ide {
                 }
             }
         };
-        if let Err(error) = crate::files::valid_name(match &op {
+        if let Err(error) = quill_files::valid_name(match &op {
             Op::CreateFile { name, .. } | Op::CreateDir { name, .. } | Op::Rename { name, .. } => {
                 name
             }
@@ -1223,7 +1215,7 @@ impl Ide {
                         jobs.push(list(&old));
                         for buffer in &mut self.buffers {
                             if let Some(Some(moved)) =
-                                crate::files::moved(&buffer.path, &old, Some(moved_to))
+                                quill_files::moved(&buffer.path, &old, Some(moved_to))
                             {
                                 buffer.path = moved;
                             }
@@ -1248,13 +1240,13 @@ impl Ide {
                 let old = self.root.join(path);
                 let new = made.unwrap_or_else(|| old.clone());
                 for buffer in &mut self.buffers {
-                    if let Some(Some(moved)) = crate::files::moved(&buffer.path, &old, Some(&new)) {
+                    if let Some(Some(moved)) = quill_files::moved(&buffer.path, &old, Some(&new)) {
                         buffer.path = moved;
                     }
                 }
                 self.expanded = std::mem::take(&mut self.expanded)
                     .into_iter()
-                    .map(|dir| match crate::files::moved(&dir, &old, Some(&new)) {
+                    .map(|dir| match quill_files::moved(&dir, &old, Some(&new)) {
                         Some(Some(moved)) => moved,
                         _ => dir,
                     })
@@ -3343,7 +3335,7 @@ mod tests {
     }
 
     fn stamp(secs: u64) -> Stamp {
-        Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs))
+        Some(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs))
     }
 
     #[test]
