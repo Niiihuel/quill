@@ -32,6 +32,13 @@ impl Lsp {
     /// One frame's work: servers started, documents opened, changed and closed, the IDE's
     /// asks sent and the servers' news taken. Returns the jobs the answers need.
     pub fn sync(&mut self, ide: &mut Ide, wake: &Arc<dyn Fn() + Send + Sync>) -> Vec<Job> {
+        // Started again on request: the old one is dropped, which ends it, and looked for anew.
+        for language in std::mem::take(&mut ide.lsp_restart) {
+            self.servers.remove(&language);
+            self.tried.remove(&language);
+            self.open.retain(|_, l| *l != language);
+            ide.lsp_servers.remove(&language);
+        }
         self.starting.retain(|receiver| match receiver.try_recv() {
             Ok((language, Ok((server, program)))) => {
                 self.servers.insert(language, server);
@@ -112,7 +119,8 @@ impl Lsp {
             if let Some(server) = ide.lsp_servers.get_mut(&language) {
                 match &event {
                     Event::Stopped { reason } => {
-                        server.failure = Some(format!("{} stopped: {reason}", server.name));
+                        server.failure = Some(format!("{} stopped", server.name));
+                        server.hint = Some(reason.clone());
                         continue;
                     }
                     Event::Initialized { .. } => server.ready = true,

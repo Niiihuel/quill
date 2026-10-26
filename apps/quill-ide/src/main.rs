@@ -74,15 +74,17 @@ impl App {
             }
         }
         self.shells.reap();
-        if self.shells.is_empty() && !had {
+        // A shell is started when the shells are shown, not the problems.
+        if self.shells.is_empty() && !had && !pane.problems {
             if let Err(error) = self.shells.open(&root, cols, rows, wake()) {
                 eprintln!("quill-ide: no terminal in {}: {error}", root.display());
             }
         }
         // The last one closed, or `exit` in it, hides the pane; opening it again starts one.
+        // The problems need none.
         let Some(shell) = self.shells.active_mut() else {
             pane.tabs.clear();
-            pane.open = false;
+            pane.open = pane.problems;
             return;
         };
         shell.resize(cols, rows);
@@ -234,6 +236,12 @@ impl eframe::App for App {
         if toggled {
             actions.push(limn::UiAction::Clicked {
                 id: ide::TERMINAL_TOGGLE.into(),
+            });
+        }
+        // F8 goes to the next problem, as VS Code's; limn has no key for it.
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F8)) {
+            actions.push(limn::UiAction::Clicked {
+                id: ide::PROBLEM_NEXT.into(),
             });
         }
         // Editing keys with Alt, and Ctrl+/, which limn's keys do not carry: taken from egui
