@@ -1079,16 +1079,6 @@ fn main() -> eframe::Result {
     {
         std::env::set_var("WINIT_X11_SCALE_FACTOR", "1");
     }
-    // At a scale of its own, XWayland's cursor is in the screen's pixels too: the session's
-    // size, meant for Wayland's logical pixels, would come out small and stretched.
-    let number = |name: &str| std::env::var(name).ok()?.parse::<f32>().ok();
-    if let (true, Some(scale), Some(size)) = (
-        native && set("WAYLAND_DISPLAY"),
-        number("WINIT_X11_SCALE_FACTOR"),
-        number("XCURSOR_SIZE"),
-    ) {
-        std::env::set_var("XCURSOR_SIZE", (size * scale).round().to_string());
-    }
     let started: Arc<Mutex<Option<quill_engine::Native>>> = Arc::default();
     let keep = started.clone();
     let options = eframe::NativeOptions {
