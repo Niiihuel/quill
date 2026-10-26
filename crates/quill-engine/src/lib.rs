@@ -157,6 +157,11 @@ struct Router {
     reports: HashMap<SessionId, Vec<quill_model::Report>>,
     /// Sessions in the middle of a turn.
     busy: std::collections::HashSet<SessionId>,
+    /// The reply being read aloud: what stops it, and the task that ends once it stopped.
+    reading: Option<(
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<()>,
+    )>,
 }
 
 impl Router {
@@ -199,6 +204,7 @@ impl Router {
             proposals: HashMap::new(),
             reports: HashMap::new(),
             busy: Default::default(),
+            reading: None,
         }
     }
 
@@ -241,6 +247,17 @@ impl Router {
                 self.sink.clone(),
             );
             actor.spec.resume = restored.resume;
+            // A fork that has said nothing yet still continues where it was forked from.
+            if let (None, Some((from, at))) = (&actor.spec.resume, restored.forked) {
+                let mut ids = self.agent_ids.lock().unwrap();
+                actor.spec.resume = ids.get(&from).cloned();
+                actor.spec.fork = actor.spec.resume.is_some();
+                actor.spec.resume_at = at.filter(|_| actor.spec.fork);
+                // Until it has its own, a fork of it continues the same conversation.
+                if let Some(id) = &actor.spec.resume {
+                    ids.insert(session, id.clone());
+                }
+            }
             actor.before = restored.before;
             actor.shadow_root = self.config.snapshots.clone();
             actor.route = Some(self.internal.clone());
@@ -260,7 +277,7 @@ impl Router {
         &mut self,
         new: NewSession,
         about: impl FnOnce(SessionId) -> Vec<Event>,
-        fork_of: Option<SessionId>,
+        fork_of: Option<(SessionId, Option<String>)>,
     ) -> Option<SessionId> {
         self.next += 1;
         let id = self.next;
@@ -295,10 +312,16 @@ impl Router {
         let mut actor = Actor::new(id, new, adapter, program, tx.clone(), self.sink.clone());
         actor.shadow_root = self.config.snapshots.clone();
         actor.route = Some(self.internal.clone());
-        if let Some(from) = fork_of {
+        if let Some((from, at)) = fork_of {
             // Without an id of its own yet, the parent has no conversation to continue.
-            actor.spec.resume = self.agent_ids.lock().unwrap().get(&from).cloned();
+            let mut ids = self.agent_ids.lock().unwrap();
+            actor.spec.resume = ids.get(&from).cloned();
             actor.spec.fork = actor.spec.resume.is_some();
+            actor.spec.resume_at = at.filter(|_| actor.spec.fork);
+            // Until it has its own, a fork of it continues the same conversation.
+            if let Some(agent) = &actor.spec.resume {
+                ids.insert(id, agent.clone());
+            }
         }
         tokio::spawn(actor.run(rx));
         self.sessions.insert(id, tx);
@@ -336,7 +359,7 @@ impl Router {
                         },
                     ]
                 },
-                proposal.fork.then_some(parent),
+                proposal.fork.then_some((parent, None)),
             )
             .await?;
         self.parents.insert(child, parent);
@@ -397,14 +420,42 @@ impl Router {
                 (self.sink)(Event::Unread { session, unread });
                 return;
             }
-            Intent::Fork { session: from } => {
+            Intent::Fork { session: from, at } => {
                 if let Some(new) = self.started.get(&from).cloned() {
-                    self.spawn(
-                        new,
-                        |id| vec![Event::Forked { session: id, from }],
-                        Some(from),
-                    )
-                    .await;
+                    let about = at.clone();
+                    let fork = self
+                        .spawn(
+                            new,
+                            |id| {
+                                vec![Event::Forked {
+                                    session: id,
+                                    from,
+                                    at: about,
+                                }]
+                            },
+                            Some((from, at)),
+                        )
+                        .await;
+                    // Its agent starts with the first message; until then it waits on the person.
+                    if let Some(session) = fork {
+                        (self.sink)(Event::Status {
+                            session,
+                            status: SessionStatus::Idle,
+                        });
+                    }
+                }
+                return;
+            }
+            Intent::ReadAloud { session, text } => {
+                // One voice at a time: a new reading, or none, ends the one under way first.
+                if let Some((stop, done)) = self.reading.take() {
+                    let _ = stop.send(());
+                    let _ = done.await;
+                }
+                if let Some(text) = text {
+                    let (stop, stopped) = tokio::sync::oneshot::channel();
+                    let done = tokio::spawn(read_aloud(session, text, stopped, self.sink.clone()));
+                    self.reading = Some((stop, done));
                 }
                 return;
             }
@@ -436,7 +487,7 @@ impl Router {
                                 Event::Renamed { session: id, title },
                             ]
                         },
-                        Some(session),
+                        Some((session, None)),
                     )
                     .await;
                 if let Some(side) = side {
@@ -678,6 +729,8 @@ struct Restored {
     title: Option<String>,
     /// What it proposed that nobody answered.
     proposals: Vec<quill_model::Proposal>,
+    /// The session it was forked from, and the message the fork starts after.
+    forked: Option<(SessionId, Option<String>)>,
 }
 
 impl Restored {
@@ -694,7 +747,7 @@ impl Restored {
         };
         let mut resume = None;
         let mut before = HashMap::new();
-        let (mut parent, mut title, mut proposals) = (None, None, vec![]);
+        let (mut parent, mut title, mut proposals, mut forked) = (None, None, vec![], None);
         for event in events {
             match event {
                 Event::Linked {
@@ -703,6 +756,7 @@ impl Restored {
                     ..
                 } => parent = Some(*p),
                 Event::Renamed { title: t, .. } => title = Some(t.clone()),
+                Event::Forked { from, at, .. } => forked = Some((*from, at.clone())),
                 Event::Proposed { proposal, .. } => proposals.push(proposal.clone()),
                 Event::ProposalAnswered { task, .. } => proposals.retain(|p| p.id != *task),
                 Event::Agent {
@@ -726,6 +780,7 @@ impl Restored {
             parent,
             title,
             proposals,
+            forked,
         })
     }
 }
@@ -794,6 +849,7 @@ impl Actor {
             mode: new.mode,
             resume: None,
             fork: false,
+            resume_at: None,
         };
         Self {
             id,
@@ -1091,14 +1147,25 @@ impl Actor {
                 });
                 continue;
             }
-            if let AgentEvent::Text { text, parent: None } = &event {
-                self.last_text = text.clone();
+            let mut event = event;
+            if let AgentEvent::Text {
+                text, parent, at, ..
+            } = &mut event
+            {
+                *at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_secs());
+                if parent.is_none() {
+                    self.last_text = text.clone();
+                }
             }
             match &event {
                 AgentEvent::Session { id } => {
                     self.spec.resume = Some(id.clone());
                     // A fork has its own id now: what follows continues it, not its parent.
                     self.spec.fork = false;
+                    self.spec.resume_at = None;
                 }
                 AgentEvent::Running { requests } => self.running = requests.last().cloned(),
                 // A prompt sent while the agent was starting keeps the session running.
@@ -1129,6 +1196,42 @@ impl Actor {
 
 /// The message that tells a session what the sessions it started said, in quill's words for
 /// what Desktop sends (3.6556.2 `<side-sessions-event>`).
+/// Read `text` with speech-dispatcher's voice until it is done or `stop` fires, saying when it
+/// starts and ends. Markdown's marks are left out, so the voice does not read them.
+async fn read_aloud(
+    session: SessionId,
+    text: String,
+    stop: tokio::sync::oneshot::Receiver<()>,
+    sink: Sink,
+) {
+    let spoken: String = text
+        .chars()
+        .filter(|c| !matches!(c, '*' | '`' | '#'))
+        .collect();
+    sink(Event::Reading {
+        session,
+        reading: true,
+    });
+    let voice = Command::new("spd-say")
+        .args(["-w", "-m", "none", "--", &spoken])
+        .kill_on_drop(true)
+        .spawn();
+    if let Ok(mut voice) = voice {
+        tokio::select! {
+            _ = voice.wait() => {}
+            _ = stop => {
+                // The server goes on with what it was given unless told to cancel it.
+                let _ = voice.kill().await;
+                let _ = Command::new("spd-say").arg("-C").status().await;
+            }
+        }
+    }
+    sink(Event::Reading {
+        session,
+        reading: false,
+    });
+}
+
 fn report_text(reports: &[quill_model::Report]) -> String {
     let mut text =
         String::from("<sessions-report>\nSessions you started have finished their turn.\n");

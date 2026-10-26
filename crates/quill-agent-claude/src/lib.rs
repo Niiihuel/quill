@@ -230,7 +230,10 @@ impl AgentAdapter for Claude {
             spec.mode.clone().unwrap_or_else(|| "default".into()),
         ]);
         if let Some(effort) = &spec.effort {
-            args.extend(["--effort".into(), effort.clone()]);
+            // shortcut: Ultracode at launch starts at its effort, extra high, without the
+            // workflows it adds; choosing it again in the session turns them on.
+            let effort = if effort == ULTRACODE { "xhigh" } else { effort };
+            args.extend(["--effort".into(), effort.to_owned()]);
         }
         if let Some(model) = &spec.model {
             args.extend(["--model".into(), model.clone()]);
@@ -239,6 +242,12 @@ impl AgentAdapter for Claude {
             args.push(format!("--resume={id}"));
             if spec.fork {
                 args.push("--fork-session".into());
+            }
+            // Desktop's "Fork from here" resumes with `resumeSessionAt` and `forkSession`
+            // (3.6556.2 bundle `bundle`); the CLI takes it in stream-json
+            // mode too (tried on 2.1.310).
+            if let Some(at) = &spec.resume_at {
+                args.push(format!("--resume-session-at={at}"));
             }
         }
         // Same switches Desktop sets; quill does not claim to be Desktop (spec.md D2).
@@ -439,6 +448,8 @@ impl AgentAdapter for Claude {
                         Some("text") => decoded.events.push(AgentEvent::Text {
                             text: text(&block["text"]),
                             parent: parent.clone(),
+                            id: msg["uuid"].as_str().map(String::from),
+                            at: None,
                         }),
                         Some("tool_use") => {
                             let call = text(&block["id"]);

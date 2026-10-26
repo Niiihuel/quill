@@ -117,9 +117,17 @@ pub enum Intent {
         session: SessionId,
         unread: bool,
     },
-    /// A new session that continues this one's conversation, leaving it as it was.
+    /// A new session that continues this one's conversation, leaving it as it was: all of
+    /// it, or up to the message `at` (the agent's own id of it), as Desktop's "Fork from here".
     Fork {
         session: SessionId,
+        #[serde(default)]
+        at: Option<String>,
+    },
+    /// Read a reply aloud with the system's voice, stopping any other; `None` stops.
+    ReadAloud {
+        session: SessionId,
+        text: Option<String>,
     },
     /// A side question (`/btw`): a fork of the session, opened beside it, that answers without
     /// adding to its conversation.
@@ -264,10 +272,18 @@ pub enum Event {
         session: SessionId,
         unread: bool,
     },
-    /// The session continues `from`'s conversation: what `from` showed until now is its start.
+    /// The session continues `from`'s conversation: what `from` showed until now, or up to
+    /// its message `at`, is its start.
     Forked {
         session: SessionId,
         from: SessionId,
+        #[serde(default)]
+        at: Option<String>,
+    },
+    /// The system's voice started or stopped reading one of the session's replies.
+    Reading {
+        session: SessionId,
+        reading: bool,
     },
     /// The session was started by `parent`, which it reports back to: the sidebar nests it
     /// there. A side chat (`/btw`) reports nothing: it is the person's own aside.
@@ -314,6 +330,7 @@ impl Event {
             | Event::Archived { session, .. }
             | Event::Unread { session, .. }
             | Event::Forked { session, .. }
+            | Event::Reading { session, .. }
             | Event::Linked { session, .. }
             | Event::Proposed { session, .. }
             | Event::ProposalAnswered { session, .. }

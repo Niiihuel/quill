@@ -33,6 +33,14 @@ pub const SEARCH: &str = icon!("<circle cx='8.75' cy='8.75' r='5'/><path d='M12.
 pub const FILTER: &str = icon!("<path d='M3.5 6h13M6 10h8M8.5 14h3'/>");
 pub const SHARE: &str = icon!("<path d='M10 3.5v9M6.5 7L10 3.5 13.5 7M5 10.5v4.75A1.25 1.25 0 0 0 6.25 16.5h7.5A1.25 1.25 0 0 0 15 15.25V10.5'/>");
 pub const PIN: &str = icon!("<path d='M8 3.5h4M9 3.5v4L6.5 10.5h7L11 7.5v-4M10 10.5v6'/>");
+/// A path that parts in two going right: a new session from a point of this one.
+pub const FORK: &str = icon!(
+    "<path d='M3.5 10h3c2.5 0 3.5-4.5 6.5-4.5h3M6.5 10c2.5 0 3.5 4.5 6.5 4.5h3M14.25 3.25l2.25 2.25-2.25 2.25M14.25 12.25l2.25 2.25-2.25 2.25'/>"
+);
+/// A speaker and its sound: read aloud.
+pub const SPEAKER: &str = icon!(
+    "<path d='M3.5 8h2.75L10 5v10l-3.75-3H3.5zM13 7.75a3.25 3.25 0 0 1 0 4.5M15.25 5.5a6.25 6.25 0 0 1 0 9'/>"
+);
 pub const STOP: &str = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'><rect x='2.5' y='2.5' width='15' height='15' rx='3.75' fill='currentColor'/></svg>";
 pub const STOP_CIRCLE: &str = icon!(
     "<circle cx='10' cy='10' r='6.75'/><rect x='7.75' y='7.75' width='4.5' height='4.5' rx='0.75' fill='currentColor' stroke='none'/>"
@@ -93,6 +101,15 @@ pub const LIST: &str = icon!(
 );
 pub const MENU: &str = icon!("<path d='M3.5 6h13M3.5 10h13M3.5 14h8'/>");
 
+/// Settings' theme: the system's, light, dark.
+pub const MONITOR: &str = icon!(
+    "<rect x='3.5' y='4' width='13' height='9' rx='1.5'/><path d='M10 13v2.75M7.25 15.75h5.5'/>"
+);
+pub const SUN: &str = icon!(
+    "<circle cx='10' cy='10' r='2.75'/><path d='M10 3.5v1.5M10 15v1.5M3.5 10H5M15 10h1.5M5.4 5.4l1.05 1.05M13.55 13.55l1.05 1.05M5.4 14.6l1.05-1.05M13.55 6.45l1.05-1.05'/>"
+);
+pub const MOON: &str = icon!("<path d='M15.5 12A6 6 0 0 1 8 4.5a6.25 6.25 0 1 0 7.5 7.5z'/>");
+
 // Code.
 pub const TERMINAL: &str =
     icon!("<rect x='3' y='4' width='14' height='12' rx='2'/><path d='M6.5 8.25l2 1.75-2 1.75M10.5 12.25h3'/>");
@@ -140,6 +157,11 @@ pub const ALL: &[(&str, &str)] = &[
     ("filter", FILTER),
     ("share", SHARE),
     ("pin", PIN),
+    ("fork", FORK),
+    ("speaker", SPEAKER),
+    ("monitor", MONITOR),
+    ("sun", SUN),
+    ("moon", MOON),
     ("stop", STOP),
     ("stop_circle", STOP_CIRCLE),
     ("dots_horizontal", DOTS_HORIZONTAL),

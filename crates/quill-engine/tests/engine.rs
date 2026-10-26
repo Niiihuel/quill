@@ -375,7 +375,10 @@ fn a_name_and_a_pin_are_kept_and_a_deleted_session_is_gone() {
     });
     until(&rx, |e| matches!(e, Event::Unread { .. }));
     // A fork continues the conversation as a new session that runs on its own.
-    engine.send(Intent::Fork { session: 1 });
+    engine.send(Intent::Fork {
+        session: 1,
+        at: None,
+    });
     let forked = until(&rx, |e| matches!(e, Event::Forked { .. }));
     assert!(forked
         .iter()
@@ -384,7 +387,8 @@ fn a_name_and_a_pin_are_kept_and_a_deleted_session_is_gone() {
         forked.last(),
         Some(Event::Forked {
             session: 2,
-            from: 1
+            from: 1,
+            at: None
         })
     ));
     engine.send(Intent::Send {

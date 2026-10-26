@@ -57,6 +57,8 @@ fn streamed_text_becomes_one_message() {
         AgentEvent::Text {
             text: "Hello".into(),
             parent: None,
+            id: Some("m1".into()),
+            at: Some(5),
         },
     );
     let items = &store.session(1).unwrap().items;
@@ -64,7 +66,9 @@ fn streamed_text_becomes_one_message() {
         items.last(),
         Some(&Item::Assistant {
             text: "Hello".into(),
-            streaming: false
+            streaming: false,
+            id: Some("m1".into()),
+            at: Some(5),
         })
     );
     assert_eq!(store.session(1).unwrap().title, "Fix the bug");
@@ -1127,7 +1131,10 @@ fn a_fork_starts_with_its_parents_conversation_and_opens() {
     let (mut store, mut ui) = store_with_session();
     assert_eq!(
         click(&store, &mut ui, "fork:1"),
-        vec![Intent::Fork { session: 1 }]
+        vec![Intent::Fork {
+            session: 1,
+            at: None
+        }]
     );
     let created = Event::SessionCreated {
         session: 2,
@@ -1143,10 +1150,80 @@ fn a_fork_starts_with_its_parents_conversation_and_opens() {
     store.apply(Event::Forked {
         session: 2,
         from: 1,
+        at: None,
     });
     let fork = store.session(2).unwrap();
     assert_eq!(fork.items, store.session(1).unwrap().items);
     assert_eq!(fork.title, "Fix the bug (fork)");
+}
+
+#[test]
+fn a_reply_copies_forks_from_itself_and_reads_aloud() {
+    let (mut store, mut ui) = store_with_session();
+    for (text, id) in [("First", "m1"), ("Second", "m2")] {
+        agent(
+            &mut store,
+            AgentEvent::Text {
+                text: text.into(),
+                parent: None,
+                id: Some(id.into()),
+                at: Some(0),
+            },
+        );
+    }
+    // The person's words, then the two replies.
+    assert!(click(&store, &mut ui, "copy:1:1").is_empty());
+    assert!(ui.copied.is_some());
+    assert_eq!(
+        click(&store, &mut ui, "fork-at:1:1"),
+        vec![Intent::Fork {
+            session: 1,
+            at: Some("m1".into())
+        }]
+    );
+    assert!(ui.waiting_fork);
+    let read = |ui: &mut Ui| click(&store, ui, "read:1:2");
+    assert_eq!(
+        read(&mut ui),
+        vec![Intent::ReadAloud {
+            session: 1,
+            text: Some("Second".into())
+        }]
+    );
+    assert_eq!(ui.reading, Some((1, 2)));
+    ui.applied(&Event::Reading {
+        session: 1,
+        reading: false,
+    });
+    assert_eq!(ui.reading, None);
+    // A fork from the first reply starts with what came up to it.
+    store.apply(Event::SessionCreated {
+        session: 2,
+        agent: "claude".into(),
+        cwd: "/work".into(),
+    });
+    store.apply(Event::Forked {
+        session: 2,
+        from: 1,
+        at: Some("m1".into()),
+    });
+    assert_eq!(
+        store.session(2).unwrap().items,
+        store.session(1).unwrap().items[..2]
+    );
+    assert_eq!(view::ago_from(30), "just now");
+    assert_eq!(view::ago_from(15 * 3600 + 59), "15 hours ago");
+    assert_eq!(view::ago_from(86_400), "1 day ago");
+}
+
+#[test]
+fn the_branch_bars_counts_open_what_is_uncommitted() {
+    let (store, mut ui) = store_with_session();
+    assert_eq!(
+        click(&store, &mut ui, view::VIEW_CHANGES),
+        vec![Intent::WorkingTree { session: 1 }]
+    );
+    assert!(ui.pane_open(Pane::Diff));
 }
 
 #[test]

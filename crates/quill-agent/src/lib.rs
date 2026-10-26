@@ -31,6 +31,8 @@ pub struct SessionSpec {
     pub resume: Option<String>,
     /// Continue `resume` as a new session, leaving the old one as it was.
     pub fork: bool,
+    /// Keep `resume`'s conversation only up to this message of it, by the agent's own id.
+    pub resume_at: Option<String>,
 }
 
 /// One model the agent offers, with the efforts it accepts.
@@ -144,6 +146,12 @@ pub enum AgentEvent {
     Text {
         text: String,
         parent: Option<String>,
+        /// The agent's own id of the message: a fork can start from it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        /// When it came, in seconds since 1970; the engine sets it as it keeps it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<u64>,
     },
     Thinking {
         parent: Option<String>,

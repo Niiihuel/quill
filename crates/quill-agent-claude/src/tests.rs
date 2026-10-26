@@ -336,6 +336,22 @@ fn launch_never_claims_to_be_desktop() {
 }
 
 #[test]
+fn a_fork_from_a_message_resumes_up_to_it_and_replies_carry_their_ids() {
+    let plan = Claude::new().launch(&SessionSpec {
+        cwd: "/work".into(),
+        resume: Some("s".into()),
+        fork: true,
+        resume_at: Some("u1".into()),
+        ..Default::default()
+    });
+    assert!(plan.args.contains(&"--resume-session-at=u1".to_string()));
+    let (_, events, _) = replay("always");
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AgentEvent::Text { id: Some(id), .. } if !id.is_empty())));
+}
+
+#[test]
 fn plan_usage_and_plan_come_from_rate_limits_and_initialize() {
     let (_, events, _) = replay("always");
     let limits = events.iter().find_map(|e| match e {

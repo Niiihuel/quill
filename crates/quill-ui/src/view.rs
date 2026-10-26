@@ -57,6 +57,8 @@ pub const TITLE_MENU: &str = "title-menu";
 pub const TITLE_FIELD: &str = "title:field";
 /// The branch bar's pull request, the menu that picks its kind, and its close button.
 pub const PR_CREATE: &str = "pr:create";
+/// The branch bar's counts, which open the diff of what is uncommitted.
+pub const VIEW_CHANGES: &str = "branch-bar:changes";
 pub const PR_MENU: &str = "pr-menu";
 pub const BAR_CLOSE: &str = "branch-bar:close";
 pub const FILTER_RESET: &str = "filter:reset";
@@ -459,7 +461,8 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
 /// hairline.
 fn pane_header(lead: Element, tools: Vec<Element>, width: f32) -> Element {
     let mut row = vec![hgap(12.0), lead, Element::spacer().flex(1.0)];
-    row.extend(tools);
+    // At their own height in the middle, a button as much as an icon.
+    row.extend(tools.into_iter().map(Element::centered_y));
     row.push(hgap(4.0));
     Element::column(vec![
         Element::row(row)
@@ -1496,6 +1499,10 @@ fn transcript(
     column: f32,
     palette: ComponentPalette,
 ) -> Element {
+    // What is inside the column's 16 px sides: Desktop's text stands in from the composer's
+    // edges. A wider width laid an item out wider than its place.
+    let outer = column;
+    let column = column - 32.0;
     // Desktop opens a session with where it started.
     let mut items: Vec<Element> = vec![muted(format!(
         "Started on this computer · {}",
@@ -1519,7 +1526,7 @@ fn transcript(
     }
     let content = Element::column(items)
         .gap(14.0)
-        .size(Some(column), None)
+        .size(Some(outer), None)
         .padding(16.0)
         .centered_x();
     let scroll = Element::scroll(format!("transcript:{}", session.id), content);
@@ -1624,25 +1631,16 @@ fn entries<'a>(
                 // Under a reply, its actions show while the pointer is on it.
                 let element = match other {
                     Item::Assistant {
-                        streaming: false, ..
-                    } if main => {
-                        let copy = format!("copy:{}:{at}", session.id);
-                        Element::column(vec![
-                            element,
-                            tool_surface(
-                                &copy,
-                                icons::of(icons::COPY),
-                                "Copy",
-                                24.0,
-                                None,
-                                look::tool_hover(),
-                                None,
-                            )
-                            .reveal_on_hover(format!("{copy}:reveal")),
-                        ])
-                        .gap(4.0)
-                        .hover_region()
-                    }
+                        streaming: false,
+                        id,
+                        at: when,
+                        ..
+                    } if main => Element::column(vec![
+                        element,
+                        reply_actions(session, at, id.is_some(), *when, ui),
+                    ])
+                    .gap(4.0)
+                    .hover_region(),
                     _ => element,
                 };
                 items.push(element);
@@ -1659,6 +1657,99 @@ fn entries<'a>(
     };
     flush(&mut steps, &mut items);
     (items, running)
+}
+
+/// What a permission card asks, in Desktop's words: Bash by what it runs, an edit by its
+/// file.
+fn permission_heading(tool: &str, input: &Value) -> String {
+    let path = input["file_path"]
+        .as_str()
+        .or(input["notebook_path"].as_str());
+    match (tool, input["description"].as_str()) {
+        ("Bash", Some(what)) => format!("Allow Claude to run {what}?"),
+        ("Edit" | "MultiEdit" | "NotebookEdit" | "Write", _) if path.is_some() => {
+            format!("Allow Claude to edit {}?", file_of(input))
+        }
+        _ => format!("Allow Claude to use {tool}?"),
+    }
+}
+
+/// How long a copy button shows its check, as Desktop's (3.6556.2 `VA`).
+pub const COPIED_FOR: std::time::Duration = std::time::Duration::from_millis(1200);
+
+/// The row under a reply while the pointer is on it, in Desktop's order [3.6556.2/c96d752d0
+/// `KA`]: copy, fork from here, then the time it came. Read aloud is the person's newer
+/// Desktop's, with the system's own voice; its pin, a chapter
+/// mark, is left out while quill has no chapters.
+fn reply_actions(
+    session: &Session,
+    at: usize,
+    forkable: bool,
+    when: Option<u64>,
+    ui: &Ui,
+) -> Element {
+    let button = |action: &str, icon: &'static str, label: &str| {
+        tool_surface(
+            &format!("{action}:{}:{at}", session.id),
+            icons::of(icon),
+            label,
+            24.0,
+            None,
+            look::tool_hover(),
+            None,
+        )
+    };
+    let copy = format!("copy:{}:{at}", session.id);
+    let copied = ui
+        .copied
+        .as_ref()
+        .is_some_and(|(id, since)| *id == copy && since.elapsed() < COPIED_FOR);
+    let mut row = vec![if copied {
+        button("copy", icons::CHECK, "Copied")
+    } else {
+        button("copy", icons::COPY, "Copy")
+    }];
+    if forkable {
+        row.push(button("fork-at", icons::FORK, "Fork from here"));
+    }
+    let reading = ui.reading == Some((session.id, at));
+    row.push(if reading {
+        button("read", icons::STOP_CIRCLE, "Stop reading")
+    } else {
+        button("read", icons::SPEAKER, "Read aloud")
+    });
+    if let Some(when) = when {
+        row.push(hgap(5.0));
+        row.push(muted(ago(when)).font_size(SMALL).centered_y());
+    }
+    let row = Element::row(row).size(None, Some(24.0));
+    if reading || copied {
+        row
+    } else {
+        row.reveal_on_hover(format!("{copy}:reveal"))
+    }
+}
+
+/// How long ago `when` (seconds since 1970) was, in words, as Desktop's row time writes it
+/// ("15 hours ago"); the wording under a minute is inferred.
+pub(crate) fn ago(when: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(when, |d| d.as_secs());
+    ago_from(now.saturating_sub(when))
+}
+
+pub(crate) fn ago_from(seconds: u64) -> String {
+    let (count, unit) = match seconds {
+        0..=59 => return "just now".into(),
+        60..=3599 => (seconds / 60, "minute"),
+        3600..=86_399 => (seconds / 3600, "hour"),
+        86_400..=2_591_999 => (seconds / 86_400, "day"),
+        2_592_000..=31_535_999 => (seconds / 2_592_000, "month"),
+        _ => (seconds / 31_536_000, "year"),
+    };
+    let s = if count == 1 { "" } else { "s" };
+    format!("{count} {unit}{s} ago")
 }
 
 /// The line under the turn: Desktop's orange dots, then the step running, or the
@@ -1805,7 +1896,9 @@ fn item(
                 .padding(12.0);
             Element::row(vec![Element::spacer().flex(1.0), bubble])
         }
-        Item::Assistant { text: t, streaming } => {
+        Item::Assistant {
+            text: t, streaming, ..
+        } => {
             // Desktop's code: blocks in a white bordered box as wide as their
             // code, no language line, a copy button, 13 px; inline code on a light fill.
             let code_palette = ComponentPalette {
@@ -2572,13 +2665,7 @@ fn permission(item: &Item, ui: &Ui, column: f32, palette: ComponentPalette) -> E
         .as_str()
         .or(input["notebook_path"].as_str());
     let file = file_of(input);
-    let heading = match (tool.as_str(), what) {
-        ("Bash", Some(what)) => format!("Allow Claude to run {what}?"),
-        ("Edit" | "MultiEdit" | "NotebookEdit" | "Write", _) if path.is_some() => {
-            format!("Allow Claude to edit {file}?")
-        }
-        _ => format!("Allow Claude to use {tool}?"),
-    };
+    let heading = permission_heading(tool, input);
     let mut rows = vec![wrapped(text(heading).font_family(FontFamily::SansBold))];
     if let Some(what) = what {
         rows.push(wrapped(muted(what.to_owned())));
@@ -2991,7 +3078,13 @@ fn branch_bar(
                 .render()
                 .centered_y()
         };
-        row.push(bar_chip(
+        // A click shows the diff, with Desktop's tooltip [3.6556.2/c96d752d0 `x1MuR5VeqW`].
+        let counts = ComponentPalette {
+            hover: look::branch_chip_hover(),
+            ..palette
+        }
+        .interactive_surface(Element::clickable(
+            VIEW_CHANGES,
             Element::row(vec![
                 hgap(6.0),
                 count("added", format!("+{}", thousands(added)), look::added()),
@@ -3003,6 +3096,10 @@ fn branch_bar(
                 hgap(6.0),
             ])
             .gap(4.0),
+        ))
+        .size(None, Some(28.0));
+        row.push(bar_chip(
+            limn::Tooltip::new(counts, VIEW_CHANGES, "View changes", look::palette()).render(),
         ));
     }
     let label = if ui.pr_draft {

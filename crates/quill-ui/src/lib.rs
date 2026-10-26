@@ -26,6 +26,10 @@ pub enum Item {
     Assistant {
         text: String,
         streaming: bool,
+        /// The agent's own id of the message, which "Fork from here" starts from.
+        id: Option<String>,
+        /// When it came, in seconds since 1970.
+        at: Option<u64>,
     },
     Tool {
         call: String,
@@ -168,7 +172,10 @@ impl Store {
 
     pub fn apply(&mut self, event: Event) {
         self.clock += 1;
-        if matches!(event, Event::Queued { .. } | Event::Agent { .. }) {
+        if matches!(
+            event,
+            Event::Queued { .. } | Event::Agent { .. } | Event::Forked { .. }
+        ) {
             let clock = self.clock;
             if let Some(s) = self.session_mut(event.session()) {
                 s.touched = clock;
@@ -396,15 +403,25 @@ impl Store {
                     s.parent = Some(parent);
                 }
             }
-            Event::Forked { session, from } => {
-                let parent = self
-                    .session(from)
-                    .map(|p| (p.items.clone(), p.title.clone()));
+            Event::Forked { session, from, at } => {
+                let parent = self.session(from).map(|p| {
+                    // From a message, the fork's transcript ends with it.
+                    let end = at
+                        .as_ref()
+                        .and_then(|at| {
+                            p.items.iter().position(
+                                |i| matches!(i, Item::Assistant { id: Some(id), .. } if id == at),
+                            )
+                        })
+                        .map_or(p.items.len(), |i| i + 1);
+                    (p.items[..end].to_vec(), p.title.clone())
+                });
                 if let (Some(s), Some((items, title))) = (self.session_mut(session), parent) {
                     s.items = items;
                     s.title = format!("{title} (fork)");
                 }
             }
+            Event::Reading { .. } => {}
         }
     }
 }
@@ -460,32 +477,50 @@ fn agent_event(s: &mut Session, event: AgentEvent) {
         AgentEvent::Text {
             text,
             parent: Some(parent),
+            id,
+            at,
         } => s.helpers.entry(parent).or_default().push(Item::Assistant {
             text,
             streaming: false,
+            id,
+            at,
         }),
         // Subagents' own text stays out of the main transcript for now.
         AgentEvent::TextDelta { text, parent: None } => match s.items.last_mut() {
             Some(Item::Assistant {
                 text: shown,
                 streaming: true,
+                ..
             }) => shown.push_str(&text),
             _ => s.items.push(Item::Assistant {
                 text,
                 streaming: true,
+                id: None,
+                at: None,
             }),
         },
-        AgentEvent::Text { text, parent: None } => match s.items.last_mut() {
+        AgentEvent::Text {
+            text,
+            parent: None,
+            id,
+            at,
+        } => match s.items.last_mut() {
             Some(Item::Assistant {
                 text: shown,
                 streaming,
+                id: shown_id,
+                at: shown_at,
             }) if *streaming => {
                 *shown = text;
                 *streaming = false;
+                *shown_id = id;
+                *shown_at = at;
             }
             _ => s.items.push(Item::Assistant {
                 text,
                 streaming: false,
+                id,
+                at,
             }),
         },
         AgentEvent::ToolUse {
@@ -698,6 +733,10 @@ pub struct Ui {
     pub side_chat: Option<SessionId>,
     pub side_waiting: bool,
     pub side_reply: String,
+    /// The copy button last pressed and when: it shows a check for a moment.
+    pub copied: Option<(String, std::time::Instant)>,
+    /// The reply being read aloud, by its session and place.
+    pub reading: Option<(SessionId, usize)>,
     /// The effort slider's thumb in pixels along its travel: where the pointer holds it,
     /// then the spring that carries it to its stop once let go.
     pub effort_thumb: Option<limn::ScalarSpring>,
@@ -837,7 +876,10 @@ fn session_clicked(store: &Store, ui: &mut Ui, id: &str) -> Option<Vec<Intent>> 
         ui.open_menu = None;
         // The fork opens as soon as the engine makes it, as a new session does.
         ui.waiting_fork = true;
-        return Some(vec![Intent::Fork { session: s }]);
+        return Some(vec![Intent::Fork {
+            session: s,
+            at: None,
+        }]);
     } else if let Some(key) = id.strip_prefix("filter-menu:") {
         match key.strip_suffix(":dismiss") {
             Some(key) if ui.filter_menu.as_deref() == Some(key) => ui.filter_menu = None,
@@ -1090,6 +1132,8 @@ impl Ui {
             side_chat: None,
             side_waiting: false,
             side_reply: String::new(),
+            copied: None,
+            reading: None,
             effort_thumb: None,
             effort_dragging: false,
             effort_samples: vec![],
@@ -1106,13 +1150,20 @@ impl Ui {
     }
 
     /// When the host should paint again for what moves on its own: at once for a moving
-    /// thumb, every 33 ms for the Ultracode field, as the reference draws it.
+    /// thumb, every 33 ms for the Ultracode field, as the reference draws it, and when a copy
+    /// button's check is due to go.
     pub fn repaint_after(&self) -> Option<std::time::Duration> {
+        let check = self
+            .copied
+            .as_ref()
+            .and_then(|(_, at)| view::COPIED_FOR.checked_sub(at.elapsed()));
+        let ultra = self
+            .ultra_since
+            .map(|_| std::time::Duration::from_millis(33));
         if self.animating() {
             Some(std::time::Duration::ZERO)
         } else {
-            self.ultra_since
-                .map(|_| std::time::Duration::from_millis(33))
+            [check, ultra].into_iter().flatten().min()
         }
     }
 
@@ -1165,6 +1216,15 @@ impl Ui {
     /// After the engine reported `event`: select a session the person just created
     /// and send what they wrote while it was being made.
     pub fn applied(&mut self, event: &Event) -> Vec<Intent> {
+        if let Event::Reading {
+            session,
+            reading: false,
+        } = event
+        {
+            if self.reading.is_some_and(|(s, _)| s == *session) {
+                self.reading = None;
+            }
+        }
         if let Event::Deleted { session } = event {
             if self.selected == Some(*session) {
                 self.selected = None;
@@ -1539,6 +1599,9 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         return vec![];
     }
     if let Some(intents) = session_clicked(store, ui, id) {
+        return intents;
+    }
+    if let Some(intents) = message_clicked(store, ui, id) {
         return intents;
     }
     if let Some(rest) = id.strip_prefix("ask:") {
@@ -2001,6 +2064,56 @@ fn answer(store: &Store, ui: &mut Ui, rest: &str) -> Vec<Intent> {
         }
     }
     vec![]
+}
+
+/// The actions under a reply [3.6556.2/c96d752d0 `KA`]: copy, fork from it, and read it
+/// aloud, by "{action}:{session}:{item}"; and the branch bar's "View changes". `None` when
+/// `id` is none of them.
+fn message_clicked(store: &Store, ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
+    if id == view::VIEW_CHANGES {
+        let session = ui.selected?;
+        ui.diff = None;
+        ui.open_pane(Pane::Diff);
+        return Some(vec![Intent::WorkingTree { session }]);
+    }
+    let (action, rest) = id.split_once(':')?;
+    let (session, at) = rest.split_once(':')?;
+    let (session, at): (SessionId, usize) = (session.parse().ok()?, at.parse().ok()?);
+    let Some(Item::Assistant {
+        text, id: message, ..
+    }) = store.session(session).and_then(|s| s.items.get(at))
+    else {
+        return None;
+    };
+    Some(match action {
+        // The host puts the words on the clipboard; the button shows a check a moment.
+        "copy" => {
+            ui.copied = Some((id.to_owned(), std::time::Instant::now()));
+            vec![]
+        }
+        "fork-at" => {
+            ui.waiting_fork = true;
+            vec![Intent::Fork {
+                session,
+                at: message.clone(),
+            }]
+        }
+        "read" if ui.reading == Some((session, at)) => {
+            ui.reading = None;
+            vec![Intent::ReadAloud {
+                session,
+                text: None,
+            }]
+        }
+        "read" => {
+            ui.reading = Some((session, at));
+            vec![Intent::ReadAloud {
+                session,
+                text: Some(text.clone()),
+            }]
+        }
+        _ => return None,
+    })
 }
 
 /// The words of the reply a "copy:{session}:{item}" button stands for.
