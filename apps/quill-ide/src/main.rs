@@ -20,6 +20,8 @@ struct App {
     fonts_attached: bool,
     /// `QUILL_THEME` pins the theme over the system's, for demos and captures.
     pinned_theme: bool,
+    /// When the disk was last looked at for files and folders changed by others.
+    polled: std::time::Instant,
 }
 
 impl App {
@@ -43,7 +45,22 @@ impl eframe::App for App {
             self.fonts_attached = true;
         }
         for loaded in std::mem::take(&mut *self.inbox.lock().unwrap()) {
-            self.ide.loaded(loaded);
+            let jobs = self.ide.loaded(loaded);
+            self.run(jobs);
+        }
+        // What an agent or another editor writes shows within a second.
+        if self.polled.elapsed() >= POLL {
+            self.polled = std::time::Instant::now();
+            let jobs = self.ide.poll();
+            self.run(jobs);
+        }
+        // The window closes with unsaved changes only when asked twice.
+        if ctx.input(|i| i.viewport().close_requested())
+            && self.ide.unsaved() > 0
+            && !self.ide.quitting
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.ide.quitting = true;
         }
         let dark = ctx.system_theme() != Some(egui::Theme::Light);
         if !self.pinned_theme && dark != look::is_dark() {
@@ -89,8 +106,11 @@ impl eframe::App for App {
         if let Some(after) = self.tree.animation_repaint_after() {
             ctx.request_repaint_after(after);
         }
+        ctx.request_repaint_after(POLL);
     }
 }
+
+const POLL: std::time::Duration = std::time::Duration::from_secs(1);
 
 fn main() -> eframe::Result {
     let given = std::env::args()
@@ -145,6 +165,7 @@ fn main() -> eframe::Result {
                 ctx: creation.egui_ctx.clone(),
                 fonts_attached: false,
                 pinned_theme: std::env::var_os("QUILL_THEME").is_some(),
+                polled: std::time::Instant::now(),
             };
             app.run(jobs);
             Ok(Box::new(app))

@@ -1,21 +1,70 @@
 //! The `Job`s, on the disk: run on a thread of their own, never the window's.
 
-use crate::ide::{Entry, Job, Loaded};
+use crate::ide::{Entry, Job, Loaded, Stamp};
+use limn_editor::BufferSnapshot;
+use std::io::{self, Write};
 use std::path::Path;
 
 pub fn run(job: Job) -> Loaded {
     match job {
+        // Stamped before they are read, so a change while reading shows at the next look.
         Job::List(dir) => {
-            let entries = list(&dir);
-            Loaded::Listed(dir, entries)
+            let stamp = stamp(&dir);
+            Loaded::Listed(dir.clone(), list(&dir), stamp)
         }
         Job::Read(path) => {
+            let stamp = stamp(&path);
             let text = std::fs::read(&path)
                 .ok()
                 .and_then(|bytes| String::from_utf8(bytes).ok());
-            Loaded::Read(path, text)
+            Loaded::Read(path, text, stamp)
         }
+        Job::Write(path, save) => {
+            let written = write(&path, &save.0).map_err(|e| e.to_string());
+            Loaded::Written(path, save, written)
+        }
+        Job::Stat(watched) => Loaded::Changed(
+            watched
+                .into_iter()
+                .filter_map(|(path, known)| {
+                    let now = stamp(&path);
+                    (now != known).then_some((path, now))
+                })
+                .collect(),
+        ),
     }
+}
+
+fn stamp(path: &Path) -> Stamp {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// Write `snapshot` over `path` whole or not at all: to a file beside it, then renamed over
+/// it with its permissions. A link is followed to the file it names, and stays a link.
+fn write(path: &Path, snapshot: &BufferSnapshot) -> io::Result<Stamp> {
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let (Some(dir), Some(name)) = (target.parent(), target.file_name()) else {
+        return Err(io::Error::other("not a file's path"));
+    };
+    let temporary = dir.join(format!(
+        ".{}.quill-ide-{}",
+        name.to_string_lossy(),
+        std::process::id()
+    ));
+    let written = (|| {
+        let mut out = io::BufWriter::new(std::fs::File::create(&temporary)?);
+        snapshot.write_to(&mut out)?;
+        out.flush()?;
+        out.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+        if let Ok(meta) = std::fs::metadata(&target) {
+            std::fs::set_permissions(&temporary, meta.permissions())?;
+        }
+        std::fs::rename(&temporary, &target)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    written.map(|()| stamp(&target))
 }
 
 /// `dir`'s entries as git sees them: dotfiles shown, .gitignore'd ones and .git left out,
@@ -42,6 +91,7 @@ fn list(dir: &Path) -> Vec<Entry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ide::Save;
 
     #[test]
     fn a_folder_lists_as_git_sees_it() {
@@ -59,5 +109,38 @@ mod tests {
             .collect();
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(names, ["src", ".gitignore", "a.rs", "b.rs"]);
+    }
+
+    #[test]
+    fn a_save_through_a_link_replaces_the_file_whole_and_keeps_its_mode_and_the_link() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let dir = std::env::temp_dir().join(format!("quill-ide-save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (file, link) = (dir.join("run.sh"), dir.join("link.sh"));
+        std::fs::write(&file, "old").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        symlink(&file, &link).unwrap();
+        let known = stamp(&file);
+        let snapshot = limn_editor::TextBuffer::new("new").unwrap().snapshot();
+        let Loaded::Written(_, _, Ok(written)) = run(Job::Write(link.clone(), Save(snapshot)))
+        else {
+            panic!("the save failed");
+        };
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+        let is_link = std::fs::symlink_metadata(&link).unwrap().is_symlink();
+        let left: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
+        let Loaded::Changed(changed) = run(Job::Stat(vec![(file.clone(), known)])) else {
+            panic!("a stat finds what changed");
+        };
+        let content = std::fs::read_to_string(&file).unwrap();
+        let now = stamp(&file);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            (content.as_str(), mode, is_link, left.len()),
+            ("new", 0o755, true, 2)
+        );
+        assert_eq!(written, now);
+        assert_eq!(changed.len(), usize::from(known != written));
     }
 }

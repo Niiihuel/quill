@@ -88,6 +88,35 @@ pub fn toggle(
     tool_surface(id, icon, label, 26.0, fill, hover, shortcut).centered_y()
 }
 
+/// A button with its keys in caps after the label, Desktop's "Revise… Esc" and
+/// "Next Ctrl ⏎": the light fill, or the near-black one when
+/// `primary`.
+pub fn keyed_button(id: &str, label: &str, keys: &str, primary: bool) -> Element {
+    let palette = look::palette();
+    let (fill, hover, ink) = if primary {
+        (palette.text, look::primary_hover(), palette.surface)
+    } else {
+        (look::cancel(), look::tool_hover(), palette.text)
+    };
+    let mut content = vec![hgap(10.0), text(label).foreground(ink).centered_y()];
+    if !keys.is_empty() {
+        let keys = limn::Kbd::new(
+            keys,
+            ComponentPalette {
+                text: ink,
+                ..palette
+            },
+        );
+        content.push(keys.render().centered_y());
+    }
+    content.push(hgap(10.0));
+    let row = Element::row(content).gap(8.0).size(None, Some(30.0));
+    Element::clickable(id, row)
+        .background(fill)
+        .hover_background(hover)
+        .radius(8.0)
+}
+
 /// A sidebar row `height` tall, rounded, lit under the pointer and filled while selected
 ///.
 pub fn side_row(id: String, content: Vec<Element>, selected: bool, height: f32) -> Element {
