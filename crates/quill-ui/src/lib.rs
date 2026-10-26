@@ -2,9 +2,8 @@
 //! is doing ([`Ui`]), what their actions ask ([`update`]) and the window ([`view`]).
 //! Layout and colors follow Claude Desktop's Code surface (docs/ui.md, features/code-*.md).
 
-pub mod icons;
-pub mod look;
 mod pixels;
+pub use quill_components::{icons, look};
 pub mod view;
 
 pub use view::{menu_digit, view};

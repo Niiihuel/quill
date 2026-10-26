@@ -2905,6 +2905,7 @@ dependencies = [
  "eframe",
  "limn",
  "limn-egui",
+ "quill-components",
  "quill-engine",
  "quill-model",
  "quill-pty",
@@ -2948,6 +2949,14 @@ version = "0.0.1"
 dependencies = [
  "serde_json",
  "uuid",
+]
+
+[[package]]
+name = "quill-components"
+version = "0.0.1"
+dependencies = [
+ "limn",
+ "quill-model",
 ]
 
 [[package]]
@@ -3005,6 +3014,7 @@ version = "0.0.1"
 dependencies = [
  "limn",
  "limn-editor",
+ "quill-components",
  "quill-model",
  "serde_json",
 ]

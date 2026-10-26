@@ -845,32 +845,6 @@ impl eframe::App for App {
     }
 }
 
-/// The system's sans and monospace faces, as Desktop's Code surface draws in: it sets
-/// `--font-anthropic-sans` to the system fallbacks, which fontconfig resolves (DejaVu on
-/// NixOS). `None` keeps limn's bundled faces when fontconfig cannot say.
-fn system_fonts() -> Option<limn::Fonts> {
-    let face = |pattern: &str| -> Option<limn::Font> {
-        let out = std::process::Command::new("fc-match")
-            .args(["-f", "%{file}", pattern])
-            .output()
-            .ok()?;
-        let path = String::from_utf8(out.stdout).ok()?;
-        limn::Font::new(std::fs::read(path.trim()).ok()?).ok()
-    };
-    use limn::FontFamily::*;
-    let mut fonts = limn::Fonts::bundled();
-    for (family, pattern) in [
-        (Sans, "sans-serif"),
-        (SansMedium, "sans-serif:bold"),
-        (SansBold, "sans-serif:bold"),
-        (Monospace, "monospace"),
-        (MonospaceBold, "monospace:bold"),
-    ] {
-        fonts = fonts.face(family, face(pattern)?);
-    }
-    Some(fonts)
-}
-
 /// The local time zone's offset from UTC in seconds, as `date +%z` says it (`-0300`).
 fn utc_offset() -> i64 {
     let out = std::process::Command::new("date").arg("+%z").output().ok();
@@ -959,7 +933,7 @@ fn main() -> eframe::Result {
         "quill",
         options,
         Box::new(move |creation| {
-            if let Some(fonts) = system_fonts() {
+            if let Some(fonts) = quill_components::system_fonts() {
                 limn::set_fonts(fonts);
             }
             limn_egui::install_fonts(&creation.egui_ctx);
