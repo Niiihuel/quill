@@ -1590,10 +1590,14 @@ fn transcript(
         "Scroll to bottom",
     ))
     .foreground(look::palette().text)
-    .background(palette.surface)
-    .border(look::card_border(), 1.0)
     .radius(16.0)
     .size(Some(32.0), Some(32.0));
+    // The page's fill on a disc of its own, so what scrolls under it does not show through.
+    let down = Element::row(vec![down])
+        .background(look::theme().background)
+        .border(look::card_border(), 1.0)
+        .radius(16.0)
+        .size(Some(32.0), Some(32.0));
     let float = Element::column(vec![
         Element::spacer().flex(1.0),
         Element::row(vec![
