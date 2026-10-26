@@ -116,18 +116,25 @@ fn muted(s: impl Into<String>) -> Element {
 struct Layout {
     /// The conversation; zero while a pane is expanded over it.
     main: f32,
-    /// The column of panes, and the panes in it from the top.
+    /// The column of panes, laid out `column` wide and drawn `shown` wide as it slides, and
+    /// the panes in it from the top.
     column: f32,
+    shown: f32,
     panes: Vec<Pane>,
-    /// The right panel, shown only while no pane is open.
+    /// The right panel, while no pane is open or as it gives way to them.
     panel: f32,
 }
 
 fn layout(store: &Store, ui: &Ui, window: Size) -> Layout {
     let session = ui.selected.and_then(|id| store.session(id));
     let rest = (window.width - sidebar_width(ui)).max(0.0);
-    let panes: Vec<Pane> = ui
-        .panes
+    // While the column shuts it still draws the pane closed last.
+    let open = if ui.panes.is_empty() {
+        ui.closing.as_slice()
+    } else {
+        &ui.panes
+    };
+    let panes: Vec<Pane> = open
         .iter()
         .copied()
         .filter(|p| *p != Pane::Diff || diff_files(store, ui).is_some())
@@ -138,6 +145,7 @@ fn layout(store: &Store, ui: &Ui, window: Size) -> Layout {
         return Layout {
             main: 0.0,
             column: rest,
+            shown: rest,
             panes: vec![pane],
             panel: 0.0,
         };
@@ -160,15 +168,17 @@ fn layout(store: &Store, ui: &Ui, window: Size) -> Layout {
     } else {
         column_width(rest, ui.column_fraction.unwrap_or(fraction))
     };
-    let panel =
-        if panes.is_empty() && session.is_some() && rest - look::PANEL_WIDTH >= look::column() {
-            ui.panel_shown.value(Instant::now()).round()
-        } else {
-            0.0
-        };
+    let now = Instant::now();
+    let shown = (column * ui.column_shown.value(now).clamp(0.0, 1.0)).round();
+    let panel = if session.is_some() && rest - look::PANEL_WIDTH >= look::column() {
+        ui.panel_shown.value(now).round()
+    } else {
+        0.0
+    };
     Layout {
-        main: rest - column - panel,
+        main: (rest - shown - panel).max(0.0),
         column,
+        shown,
         panes,
         panel,
     }
@@ -299,7 +309,7 @@ fn diff_files<'a>(store: &'a Store, ui: &Ui) -> Option<&'a Vec<FileEffect>> {
         return session
             .working
             .as_ref()
-            .filter(|_| ui.pane_open(Pane::Diff));
+            .filter(|_| ui.pane_open(Pane::Diff) || ui.closing == Some(Pane::Diff));
     };
     let session = Some(session).filter(|s| s.id == *id)?;
     session.items.iter().find_map(|i| match i {
@@ -362,7 +372,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     let palette = look::palette();
     let session = ui.selected.and_then(|id| store.session(id));
     let layout = layout(store, ui, window);
-    let rest = layout.main + layout.column + layout.panel;
+    let rest = layout.main + layout.shown + layout.panel;
     let below = window.height - look::TOP_BAR - 1.0;
     let mut row = vec![];
     if layout.main > 0.0 {
@@ -380,7 +390,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
             .size(Some(layout.main), Some(below)),
         );
     }
-    if !layout.panes.is_empty() {
+    if !layout.panes.is_empty() && layout.shown > 0.0 {
         let heights = pane_heights(&layout, ui, window);
         let width = pane_width(&layout);
         let mut stack = vec![];
@@ -398,10 +408,19 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
                 Pane::Browser => browser_pane(session, ui, width, height, palette),
             });
         }
+        let mut column = vec![];
         if layout.main > 0.0 {
-            row.push(divider(COLUMN_HANDLE, true, below, palette));
+            column.push(divider(COLUMN_HANDLE, true, below, palette));
         }
-        row.push(Element::column(stack).size(Some(width), Some(below)));
+        column.push(Element::column(stack).size(Some(width), Some(below)));
+        // Laid out at its full width and cut to what has slid in, as the panel is.
+        row.push(
+            Element::row(vec![
+                Element::row(column).size(Some(layout.column), Some(below))
+            ])
+            .size(Some(layout.shown), Some(below))
+            .clip_children(),
+        );
     }
     if let (Some(session), true) = (session, layout.panel > 0.0) {
         // Laid out at its full width and cut to what has slid in, so nothing in it rewraps.

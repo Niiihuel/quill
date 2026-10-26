@@ -333,6 +333,7 @@ fn the_terminal_pane_and_its_tabs_fit_in_the_window() {
         scrollback: vec![],
         cursor: None,
     }));
+    settle(&store, &mut ui);
     let window = limn::Size::new(1400.0, 844.0);
     let mut tree = UiTree::new(view(&store, &ui, window));
     let frame = tree.layout(window);
@@ -362,6 +363,7 @@ fn one_terminal_shows_its_folder_and_more_show_as_pills() {
     ui.open_pane(Pane::Terminal);
     ui.terminal.tabs = vec![tab("Terminal 1", false)];
     ui.terminal.screen = Some(std::sync::Arc::default());
+    settle(&store, &mut ui);
     let window = limn::Size::new(1408.0, 844.0);
     let frame = UiTree::new(view(&store, &ui, window)).layout(window);
     assert!(!frame.regions.iter().any(|r| r.id == "terminal:close:0"));
@@ -1733,6 +1735,31 @@ fn hidden_by_a_click_the_sidebar_peeks_again_only_once_the_pointer_left_its_butt
     assert!(ui.peek);
 }
 
+#[test]
+fn the_last_pane_closed_keeps_what_it_shows_until_the_column_has_shut() {
+    let (store, mut ui) = store_with_session();
+    ui.open_pane(Pane::Agent);
+    ui.helper = Some("call".into());
+    ui.tick(&store);
+    ui.close_pane(Pane::Agent);
+    ui.tick(&store);
+    assert_eq!(ui.helper.as_deref(), Some("call"));
+    settle(&store, &mut ui);
+    assert_eq!((ui.helper.as_deref(), ui.closing), (None, None));
+    // One of two goes at once: the column stays open.
+    ui.open_pane(Pane::Agent);
+    ui.open_pane(Pane::Plan);
+    ui.helper = Some("call".into());
+    ui.close_pane(Pane::Agent);
+    assert_eq!((ui.helper.as_deref(), ui.closing), (None, None));
+}
+
+/// The springs at rest, so a pane just opened is drawn whole.
+fn settle(store: &Store, ui: &mut Ui) {
+    ui.reduced_motion = true;
+    ui.tick(store);
+}
+
 fn agent_in(store: &mut Store, session: SessionId, text: &str) {
     store.apply(Event::Agent {
         session,
@@ -1968,6 +1995,7 @@ fn the_browser_opens_from_its_toggle_or_when_a_tab_appears_and_navigates_from_it
         }]
     );
     // The page's surface is laid out where the pane's body is.
+    settle(&store, &mut ui);
     let window = limn::Size::new(1408.0, 844.0);
     let frame = UiTree::new(view(&store, &ui, window)).layout(window);
     let page = frame

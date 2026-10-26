@@ -756,6 +756,10 @@ pub struct Ui {
     /// Whether the peek waits for the pointer to leave the sidebar's button, after a click
     /// on it hid the sidebar.
     pub peek_suppressed: bool,
+    /// How far the column of panes is open, 0 to 1, on a spring as it opens and shuts, and
+    /// the last pane closed, which it still shows while it shuts.
+    pub column_shown: limn::ScalarSpring,
+    pub closing: Option<Pane>,
     /// The session whose sidebar row has its "···" menu open.
     pub row_menu: Option<SessionId>,
     /// The selected session's title while the person renames it in the top bar.
@@ -961,7 +965,7 @@ fn session_clicked(store: &Store, ui: &mut Ui, id: &str) -> Option<Vec<Intent>> 
     } else if let Some(s) = session("thread:") {
         // A session another started opens beside it, as Desktop's threads do [C:video
         // 2100633571543367691]; inferred: the same pane as a side chat.
-        if ui.side_chat != Some(s) {
+        if ui.side_chat != Some(s) || !ui.pane_open(Pane::Side) {
             ui.mark_new(store, s);
         }
         ui.side_chat = Some(s);
@@ -1309,6 +1313,8 @@ impl Ui {
             peek_shown: limn::ScalarSpring::new(0.0, std::time::Instant::now()),
             panel_shown: limn::ScalarSpring::new(look::PANEL_WIDTH, std::time::Instant::now()),
             peek_suppressed: false,
+            column_shown: limn::ScalarSpring::new(0.0, std::time::Instant::now()),
+            closing: None,
             row_menu: None,
             title_edit: None,
             deleting: None,
@@ -1390,6 +1396,7 @@ impl Ui {
             || self.sidebar_shown.is_active(now)
             || self.panel_shown.is_active(now)
             || self.peek_shown.is_active(now)
+            || self.column_shown.is_active(now)
             || self.peek_edge.is_some()
             || self.peek_left.is_some()
     }
@@ -1479,8 +1486,14 @@ impl Ui {
         let open = |open: bool, width: f32| if open { width } else { 0.0 };
         self.sidebar_shown
             .launch(open(self.sidebar_open, look::SIDEBAR_WIDTH), motion, now);
-        self.panel_shown
-            .launch(open(self.panel_open, self.panel_width), motion, now);
+        // The panel gives way to the panes as they open, and comes back as they shut.
+        self.panel_shown.launch(
+            open(self.panel_open && self.panes.is_empty(), self.panel_width),
+            motion,
+            now,
+        );
+        self.column_shown
+            .launch(open(!self.panes.is_empty(), 1.0), motion, now);
         self.follow_pointer(now);
         self.peek_shown
             .launch(open(self.peek, look::SIDEBAR_WIDTH), motion, now);
@@ -1489,6 +1502,16 @@ impl Ui {
             self.sidebar_shown.snap_to(sidebar, now);
             self.panel_shown.snap_to(panel, now);
             self.peek_shown.snap_to(self.peek_shown.target(), now);
+            self.column_shown.snap_to(self.column_shown.target(), now);
+        }
+        // The last pane closed is forgotten once the column has shut, or once another opened.
+        if let Some(pane) = self.closing {
+            if !self.panes.is_empty() || !self.column_shown.is_active(now) {
+                self.closing = None;
+                if !self.pane_open(pane) {
+                    self.forget_pane(pane);
+                }
+            }
         }
         let ultra = view::effort_shown(store, self).as_deref() == Some("ultracode");
         match (ultra, self.ultra_since) {
@@ -1545,6 +1568,17 @@ impl Ui {
         if self.expanded_pane == Some(pane) {
             self.expanded_pane = None;
         }
+        // The last one keeps what it shows while the column shuts; `tick` forgets it after.
+        if self.panes.is_empty() {
+            if let Some(before) = self.closing.replace(pane).filter(|p| *p != pane) {
+                self.forget_pane(before);
+            }
+        } else {
+            self.forget_pane(pane);
+        }
+    }
+
+    fn forget_pane(&mut self, pane: Pane) {
         match pane {
             Pane::Diff => self.diff = None,
             Pane::Agent => self.helper = None,
@@ -1655,7 +1689,8 @@ impl Ui {
         } = event
         {
             // A side chat open in its pane is in view too.
-            let seen = self.selected == Some(*session) || self.side_chat == Some(*session);
+            let seen = self.selected == Some(*session)
+                || (self.side_chat == Some(*session) && self.pane_open(Pane::Side));
             if !seen && self.live.contains(session) {
                 return vec![Intent::MarkUnread {
                     session: *session,

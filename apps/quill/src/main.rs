@@ -281,7 +281,9 @@ impl App {
             ))
         })()
         .filter(|(_, view)| view.width > 0 && view.height > 0);
-        if shown != self.browser_shown {
+        // While the panes slide, the page keeps its size and takes the new one once they rest.
+        let sliding = shown.is_some() && self.ui.animating();
+        if shown != self.browser_shown && !sliding {
             let intent = match (shown, self.browser_shown) {
                 (Some((session, view)), _) => Intent::Browser {
                     session,
