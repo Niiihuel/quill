@@ -2830,11 +2830,16 @@ fn step_group(steps: &[Step], ui: &Ui, column: f32, palette: ComponentPalette) -
 }
 
 /// The small triangle after a group or a step: right while folded, down while open.
+/// Open or closed: a chevron, as the button menus draw theirs.
 fn caret(open: bool) -> Element {
-    text(if open { "▾" } else { "▸" })
-        .font_size(10.0)
-        .foreground(look::muted())
-        .centered_y()
+    Element::icon(icons::of(if open {
+        icons::CARET_DOWN
+    } else {
+        icons::CARET_RIGHT
+    }))
+    .foreground(look::muted())
+    .size(Some(12.0), Some(12.0))
+    .centered_y()
 }
 
 /// One step in its group's card: "Read saludo.py", "Edited saludo.py +1 −1",
@@ -4593,13 +4598,10 @@ fn diff_file_band(file: &FileEffect, width: f32) -> Element {
         .to_owned();
     Element::row(vec![
         hgap(16.0),
-        text("▾")
-            .font_size(10.0)
+        caret(true),
+        Element::icon(icons::of(icons::CODE))
             .foreground(look::muted())
-            .centered_y(),
-        text("‹›")
-            .font_size(SMALL)
-            .foreground(look::muted())
+            .size(Some(14.0), Some(14.0))
             .centered_y(),
         text(name).foreground(look::command_ink()).centered_y(),
         Element::spacer().flex(1.0),
