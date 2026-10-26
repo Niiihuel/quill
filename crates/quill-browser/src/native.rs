@@ -1,53 +1,25 @@
-//! Chromium inside quill's own window (docs/browser.md, "Native view"): each tab is a
-//! window of its own, a child of quill's, that the person uses directly, with no frames in
-//! between, as Desktop's tabs are `WebContentsView`s. The engine drives it
-//! over the same DevTools stream it drives a headless Chromium with: a message for a page
-//! goes to that browser's own DevTools, and the few browser-wide commands it sends
-//! (contexts, tabs, downloads) are answered with CEF's own. Linux on X11 only for now: on
-//! Wayland CEF cannot yet be embedded in another program's window (CEF issue #2804).
-//!
-//! The host decides where the tab shows: `place` every frame with the rectangle the pane
-//! has, or `None` while something of quill's is drawn over it, which nothing can be over a
-//! native window; the page's last frame is shown in its place then, as Desktop does.
+//! Chromium inside quill's own process (docs/browser.md, "Native view"): each tab draws
+//! without a window of its own, and its frames reach the pane's surface as they are painted,
+//! with no screencast in between. The engine drives it over the same DevTools stream it
+//! drives a headless Chromium with: a message for a page goes to that browser's own
+//! DevTools, and the few browser-wide commands it sends (contexts, tabs, downloads) are
+//! answered with CEF's own. Nothing of it is a window, so nothing of the platform's windows
+//! (X11, Wayland, their scales and cursors) is involved, and quill draws over a page as over
+//! anything else of its own. Given the window's GPU, a tab's paints stay on it: Chromium's
+//! buffer (a dmabuf) is copied into a texture of the window's device, which it draws as is.
 
-use crate::frames::{decode, Frames};
+use crate::frames::{Frames, Pixels};
 use cef::*;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// How long a covered page stays up waiting for its last frame before it is hidden anyway,
-/// as Desktop holds its pane (3.6556.2 `cf550b864`, `holdMs` 250).
-const HOLD: Duration = Duration::from_millis(250);
 /// DevTools ids quill's own calls use, far above the engine's, which count from 1.
 const OWN_IDS: i64 = 1 << 30;
-/// quill's own chords, which reach quill rather than the page that has the keys: Windows key
-/// code, Ctrl, Shift. Ctrl+N, B, K, comma and backtick; Ctrl+Shift+I, M, D and B; and the
-/// browser's: Ctrl+L and F6, Ctrl+T, Ctrl+W, Ctrl+R and F5, Ctrl+(Shift+)Tab.
-const CHORDS: [(i32, bool, bool); 17] = [
-    (0x4E, true, false),
-    (0x42, true, false),
-    (0x4B, true, false),
-    (0xBC, true, false),
-    (0xC0, true, false),
-    (0x49, true, true),
-    (0x4D, true, true),
-    (0x44, true, true),
-    (0x42, true, true),
-    (0x4C, true, false),
-    (0x75, false, false),
-    (0x54, true, false),
-    (0x57, true, false),
-    (0x52, true, false),
-    (0x74, false, false),
-    (0x09, true, false),
-    (0x09, true, true),
-];
-
 /// The program run again as one of Chromium's own processes (`--type=renderer`…): it runs
 /// that process and gives its exit code. Call it first thing in `main`.
 pub fn subprocess() -> Option<i32> {
@@ -63,31 +35,6 @@ pub fn subprocess() -> Option<i32> {
     ))
 }
 
-/// The `Xft.dpi` the X server's resources set, the scale the person gave X11 programs.
-pub fn xft_dpi() -> Option<f32> {
-    let lib = x11_dl::xlib::Xlib::open().ok()?;
-    unsafe {
-        let display = (lib.XOpenDisplay)(std::ptr::null());
-        if display.is_null() {
-            return None;
-        }
-        let resources = (lib.XResourceManagerString)(display);
-        let dpi = (!resources.is_null())
-            .then(|| {
-                std::ffi::CStr::from_ptr(resources)
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .and_then(|text| {
-                text.lines()
-                    .find_map(|line| line.strip_prefix("Xft.dpi:"))
-                    .and_then(|value| value.trim().parse().ok())
-            });
-        (lib.XCloseDisplay)(display);
-        dpi
-    }
-}
-
 /// Chromium running in quill's process, and what it shows in quill's window.
 #[derive(Clone)]
 pub struct Native {
@@ -96,36 +43,19 @@ pub struct Native {
 
 impl std::fmt::Debug for Native {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Native")
-            .field("parent", &self.shared.parent)
-            .finish_non_exhaustive()
+        f.debug_struct("Native").finish_non_exhaustive()
     }
 }
 
 struct Shared {
-    /// quill's window, the X11 parent of every tab's.
-    parent: u64,
-    scale: f32,
     frames: Frames,
-    x: Mutex<X11>,
+    gpu: Option<Gpu>,
     pages: Mutex<Pages>,
-    view: Mutex<View>,
+    shown: Mutex<Shown>,
     /// The engine's end of the DevTools stream, while one is open.
     stream: Mutex<Option<std::sync::mpsc::Sender<Vec<u8>>>>,
     own: AtomicI64,
     tokens: AtomicU64,
-    /// The browser's chords pressed while a tab had the keys, for the host to carry out.
-    keys: Mutex<Vec<Key>>,
-    /// A tab was pressed and has the keys; else quill does.
-    keys_on_page: AtomicBool,
-}
-
-/// A chord a tab passes on to quill: its Windows key code, Ctrl, Shift.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Key {
-    pub code: i32,
-    pub ctrl: bool,
-    pub shift: bool,
 }
 
 #[derive(Default)]
@@ -138,6 +68,9 @@ struct Pages {
     made: HashMap<u64, Made>,
     /// The target id of each browser's token, once known.
     targets: HashMap<u64, String>,
+    /// Each browser's size in CSS pixels, by its token: the tab's on screen, or the one the
+    /// agent asked for.
+    sizes: HashMap<u64, (u32, u32)>,
     own: HashMap<i64, Own>,
     downloads: Option<PathBuf>,
     finished: HashSet<u32>,
@@ -147,7 +80,6 @@ struct Pages {
 
 struct Page {
     browser: Browser,
-    xid: u64,
     context: String,
     url: String,
     title: String,
@@ -165,109 +97,73 @@ struct Made {
 
 enum Own {
     TargetInfo { token: u64 },
-    Freeze { surface: String },
-    Nothing,
 }
 
-/// Tells quill, through a DevTools binding, that the person pressed the page: it has the keys
-/// from then on, wherever the pointer goes.
-const PRESSED: &str = "if (!window.__quillPressed) { window.__quillPressed = 1; \
-    addEventListener('pointerdown', () => { try { quillPressed('') } catch (e) {} }, true) }";
-
+/// The tab on screen: the surface its frames go to, and what it last painted, which a
+/// `<select>`'s list, painted apart, is drawn over.
 #[derive(Default)]
-struct View {
-    target: Option<String>,
+struct Shown {
+    token: Option<u64>,
     surface: Option<String>,
-    placed: Option<[i32; 4]>,
-    mapped: bool,
-    covered_since: Option<Instant>,
-    frozen: bool,
+    /// The scale Chromium was last told, to tell it again when the window's changes.
+    scale: f32,
+    /// The page's last paint, RGBA, kept only while a popup is open, and its size in pixels.
+    page: Vec<u8>,
+    size: (usize, usize),
+    /// The open popup, where it is in CSS pixels, and its last paint, RGBA, with its width.
+    popup: Option<Rect>,
+    popup_pixels: Vec<u8>,
+    popup_width: usize,
+    /// On the GPU: the tab's texture, which its surface shows, and the popup's last paint.
+    texture: Option<wgpu::Texture>,
+    popup_texture: Option<wgpu::Texture>,
 }
 
-struct X11 {
-    lib: x11_dl::xlib::Xlib,
-    display: *mut x11_dl::xlib::Display,
-}
-
-// The connection is used under the lock only.
-unsafe impl Send for X11 {}
-
-impl X11 {
-    fn place(&self, window: u64, [x, y, width, height]: [i32; 4]) {
-        unsafe {
-            (self.lib.XMoveResizeWindow)(
-                self.display,
-                window,
-                x,
-                y,
-                width.max(1) as u32,
-                height.max(1) as u32,
-            );
-            (self.lib.XMapWindow)(self.display, window);
-            (self.lib.XFlush)(self.display);
-        }
-    }
-
-    /// Hand quill's window a key X11 gave a page under the pointer while quill has the keys,
-    /// as the X server would have: its keycode, with CEF's modifiers as X11's. winit reads it
-    /// with its own keyboard state, dead keys and compose included.
-    fn resend(&self, window: u64, keycode: i32, press: bool, flags: u32) {
-        use x11_dl::xlib;
-        let state = x11_state(flags);
-        unsafe {
-            let root = (self.lib.XDefaultRootWindow)(self.display);
-            let mut event: xlib::XEvent = std::mem::zeroed();
-            event.key = xlib::XKeyEvent {
-                type_: if press {
-                    xlib::KeyPress
-                } else {
-                    xlib::KeyRelease
-                },
-                serial: 0,
-                send_event: xlib::True,
-                display: self.display,
-                window,
-                root,
-                subwindow: 0,
-                time: xlib::CurrentTime,
-                x: 0,
-                y: 0,
-                x_root: 0,
-                y_root: 0,
-                state,
-                keycode: keycode as u32,
-                same_screen: xlib::True,
-            };
-            let mask = if press {
-                xlib::KeyPressMask
-            } else {
-                xlib::KeyReleaseMask
-            };
-            (self.lib.XSendEvent)(self.display, window, xlib::False, mask, &mut event);
-            (self.lib.XFlush)(self.display);
-        }
-    }
-
-    /// Out of sight, beyond quill's window, which clips it: Chromium maps an unmapped tab
-    /// again on its own, under a pointer dragging something of quill's.
-    fn hide(&self, window: u64) {
-        unsafe {
-            (self.lib.XMoveWindow)(self.display, window, -30000, -30000);
-            (self.lib.XFlush)(self.display);
-        }
-    }
+/// The window's device, which a tab's paints are copied into.
+struct Gpu {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    /// A paint could not be imported once already: said once, not at every paint.
+    failed: std::sync::atomic::AtomicBool,
 }
 
 impl Native {
-    /// Start Chromium for tabs inside the X11 window `parent`, drawn at `scale` device
-    /// pixels per point, keeping what it must in `cache`. Call it on the main thread, once.
-    pub fn start(parent: u64, scale: f32, cache: &Path, frames: Frames) -> Result<Self, String> {
+    /// Start Chromium, its tabs drawn into `frames` at the window's scale, keeping what it
+    /// must in `cache`. Given the window's device, a tab's paints are copied into textures of
+    /// it, if it can import Chromium's buffers (Vulkan's dmabufs) and Chromium has a display
+    /// server to allocate them through; otherwise they reach the CPU. Call it on the main
+    /// thread, once.
+    pub fn start(
+        cache: &Path,
+        frames: Frames,
+        gpu: Option<(wgpu::Device, wgpu::Queue)>,
+    ) -> Result<Self, String> {
         let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
+        // Chromium allocates its GPU buffers through a display server, with no window of its
+        // own: the headless platform has none to give ("Unable to allocate frame"), and on
+        // Wayland it paints at 1× whatever scale it is told. X11 (XWayland in a Wayland
+        // session) takes the window's.
+        let x11 = std::env::var_os("DISPLAY").is_some_and(|v| !v.is_empty());
+        let gpu = gpu.filter(|(device, _)| {
+            let imports = device
+                .features()
+                .contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF);
+            if !(x11 && imports) {
+                let why = if imports {
+                    "no X11 display"
+                } else {
+                    "the window's GPU cannot import dmabufs (not Vulkan?)"
+                };
+                eprintln!("quill: the browser's frames go through the CPU: {why}");
+            }
+            x11 && imports
+        });
         let dir = resources();
         std::fs::create_dir_all(cache).map_err(|e| e.to_string())?;
         let args = cef::args::Args::new();
         let settings = Settings {
             multi_threaded_message_loop: 1,
+            windowless_rendering_enabled: 1,
             resources_dir_path: CefString::from(dir.to_string_lossy().as_ref()),
             locales_dir_path: CefString::from(dir.join("locales").to_string_lossy().as_ref()),
             root_cache_path: CefString::from(cache.to_string_lossy().as_ref()),
@@ -276,7 +172,7 @@ impl Native {
             no_sandbox: i32::from(std::env::var_os("QUILL_NO_SANDBOX").is_some()),
             ..Default::default()
         };
-        let mut app = QuillApp::new(scale);
+        let mut app = QuillApp::new(if gpu.is_some() { "x11" } else { "headless" });
         if initialize(
             Some(args.as_main_args()),
             Some(&settings),
@@ -289,115 +185,21 @@ impl Native {
                 cache.join("chromium.log").display()
             ));
         }
-        let lib = x11_dl::xlib::Xlib::open().map_err(|e| e.to_string())?;
-        let display = unsafe { (lib.XOpenDisplay)(std::ptr::null()) };
-        if display.is_null() {
-            return Err("no X11 display".into());
-        }
         Ok(Self {
             shared: Arc::new(Shared {
-                parent,
-                scale,
                 frames,
-                x: Mutex::new(X11 { lib, display }),
+                gpu: gpu.map(|(device, queue)| Gpu {
+                    device,
+                    queue,
+                    failed: Default::default(),
+                }),
                 pages: Mutex::default(),
-                view: Mutex::default(),
+                shown: Mutex::default(),
                 stream: Mutex::default(),
                 own: AtomicI64::new(OWN_IDS),
                 tokens: AtomicU64::default(),
-                keys: Mutex::default(),
-                keys_on_page: AtomicBool::new(false),
             }),
         })
-    }
-
-    /// Show the visible tab at `at`, `[x, y, width, height]` in the window's pixels, or,
-    /// with `None`, put its last frame in its place because something covers it: the page
-    /// stays up until a fresh frame is in, or for `HOLD` at most, unless `now`, when it goes at
-    /// once and the frame taken last stands in.
-    /// Returns whether the page is still up waiting for its frame: the host paints again
-    /// within `HOLD` then, as nothing else may wake it.
-    pub fn place(&self, at: Option<[i32; 4]>, now: bool) -> bool {
-        let shared = &self.shared;
-        let mut view = shared.view.lock().unwrap();
-        let Some(target) = view.target.clone() else {
-            return false;
-        };
-        let Some(xid) = shared
-            .pages
-            .lock()
-            .unwrap()
-            .open
-            .get(&target)
-            .map(|p| p.xid)
-        else {
-            return false;
-        };
-        match at {
-            Some(rect) => {
-                view.covered_since = None;
-                view.frozen = false;
-                if !view.mapped || view.placed != Some(rect) {
-                    shared.x.lock().unwrap().place(xid, rect);
-                    view.mapped = true;
-                    view.placed = Some(rect);
-                }
-                false
-            }
-            None if view.mapped => {
-                let since = match view.covered_since {
-                    Some(since) => since,
-                    None => {
-                        if let Some(surface) = view.surface.clone() {
-                            shared.post(Job::Freeze { target, surface });
-                        }
-                        let now = Instant::now();
-                        view.covered_since = Some(now);
-                        now
-                    }
-                };
-                if now || view.frozen || since.elapsed() >= HOLD {
-                    shared.x.lock().unwrap().hide(xid);
-                    view.mapped = false;
-                }
-                view.mapped
-            }
-            None => false,
-        }
-    }
-
-    /// Keep the visible tab's frame at hand, for when something covers it or the panes move
-    /// it: the host asks as the pointer leaves the page, which it does before anything of
-    /// quill's is used, as Desktop keeps a warm frame (3.6556.2 `cf550b864` `warmFrame`).
-    pub fn warm(&self) {
-        let view = self.shared.view.lock().unwrap();
-        if let (Some(target), Some(surface), true) =
-            (view.target.clone(), view.surface.clone(), view.mapped)
-        {
-            self.shared.post(Job::Freeze { target, surface });
-        }
-    }
-
-    /// The keys tabs passed on to quill since the last call, in order.
-    pub fn take_keys(&self) -> Vec<Key> {
-        std::mem::take(&mut self.shared.keys.lock().unwrap())
-    }
-
-    /// Whether a tab has the keys: it was pressed, and nothing of quill's since. Keys quill's
-    /// window gets meanwhile are the page's, for the host to send it.
-    pub fn keys_on_page(&self) -> bool {
-        self.shared.keys_on_page.load(Ordering::SeqCst)
-    }
-
-    /// The person pressed somewhere of quill's own: the keys come back to quill, and the
-    /// page's field lets go of them as a page does when its window loses the focus.
-    pub fn blur(&self) {
-        if self.shared.keys_on_page.swap(false, Ordering::SeqCst) {
-            let target = self.shared.view.lock().unwrap().target.clone();
-            if let Some(target) = target {
-                self.shared.post(Job::Blur { target });
-            }
-        }
     }
 
     /// Close every tab and stop Chromium. Call it on the thread `start` ran on, after the
@@ -429,43 +231,198 @@ impl Native {
         )
     }
 
-    /// The tab on screen, and the surface its last frame is shown on; `None` shows none.
-    pub(crate) fn show(&self, shown: Option<(String, String)>) {
-        let shared = &self.shared;
-        let mut view = shared.view.lock().unwrap();
-        let (target, surface) = shown.unzip();
-        if view.target == target {
-            view.surface = surface;
-            return;
-        }
-        if let Some(old) = view.target.take().filter(|_| view.mapped) {
-            if let Some(page) = shared.pages.lock().unwrap().open.get(&old) {
-                shared.x.lock().unwrap().hide(page.xid);
-            }
-        }
-        *view = View {
-            target,
-            surface,
-            ..View::default()
-        };
+    /// The tab on screen, the surface its frames go to and its size in CSS pixels; `None`
+    /// shows none.
+    pub(crate) fn show(&self, shown: Option<(String, String, (u32, u32))>) {
+        self.shared.post(Job::Show(shown));
+    }
+
+    /// Draw the tab `target` at `size` CSS pixels.
+    pub(crate) fn resize(&self, target: String, size: (u32, u32)) {
+        self.shared.post(Job::Resize { target, size });
     }
 }
 
-/// X11's modifier state for CEF's flags. CEF: Caps Lock 1, Shift 2, Ctrl 4, Alt 8, Num Lock
-/// 256, AltGr 4096; X11: Shift 1, Lock 2, Control 4, Mod1 8, Mod2 16, Mod5 128.
-fn x11_state(flags: u32) -> u32 {
-    use x11_dl::xlib;
-    [
-        (2, xlib::ShiftMask),
-        (1, xlib::LockMask),
-        (4, xlib::ControlMask),
-        (8, xlib::Mod1Mask),
-        (256, xlib::Mod2Mask),
-        (4096, xlib::Mod5Mask),
-    ]
-    .iter()
-    .filter(|(cef, _)| flags & cef != 0)
-    .fold(0, |state, (_, x)| state | x)
+/// CEF's premultiplied BGRA as egui's RGBA, in one pass that reads and writes each pixel
+/// once, as a word.
+fn to_rgba(bgra: &[u8]) -> Vec<u8> {
+    // Little-endian BGRA is 0xAARRGGBB and RGBA 0xAABBGGRR: red and blue trade places.
+    let swap = |p: u32| (p & 0xFF00_FF00) | (p & 0x00FF_00FF).rotate_left(16);
+    let mut rgba = vec![0u8; bgra.len()];
+    match (
+        bytemuck::try_cast_slice::<u8, u32>(bgra),
+        bytemuck::try_cast_slice_mut::<u8, u32>(&mut rgba),
+    ) {
+        (Ok(from), Ok(to)) => to
+            .iter_mut()
+            .zip(from)
+            .for_each(|(to, from)| *to = swap(*from)),
+        // Not aligned to a word: pixel by pixel.
+        _ => rgba
+            .chunks_exact_mut(4)
+            .zip(bgra.chunks_exact(4))
+            .for_each(|(to, from)| {
+                to.copy_from_slice(&[from[2], from[1], from[0], from[3]]);
+            }),
+    }
+    rgba
+}
+
+/// The part of a popup of `size` pixels, its corner `at`, inside a page of `page` pixels:
+/// where that part starts in the popup and in the page, and its size. `None` when none is.
+fn clip(at: [i64; 2], size: [usize; 2], page: [usize; 2]) -> Option<[[usize; 2]; 3]> {
+    let mut part = [[0; 2]; 3];
+    for axis in 0..2 {
+        let start = at[axis].max(0);
+        let end = (at[axis] + size[axis] as i64).min(page[axis] as i64);
+        if start >= end {
+            return None;
+        }
+        part[0][axis] = (start - at[axis]) as usize;
+        part[1][axis] = start as usize;
+        part[2][axis] = (end - start) as usize;
+    }
+    Some(part)
+}
+
+/// `page`, RGBA rows `width` pixels wide, with `popup` (its RGBA, its width, where its corner
+/// is) drawn over it, clipped to the page.
+fn over(page: &[u8], width: usize, popup: Option<(&[u8], usize, [i64; 2])>) -> Vec<u8> {
+    let mut out = page.to_vec();
+    let Some((pixels, popup_width, at)) = popup.filter(|(_, w, _)| *w > 0) else {
+        return out;
+    };
+    let size = [popup_width, pixels.len() / (popup_width * 4)];
+    let page_size = [width, page.len() / (width * 4).max(1)];
+    let Some([from, to, [span, rows]]) = clip(at, size, page_size) else {
+        return out;
+    };
+    for row in 0..rows {
+        let src = ((from[1] + row) * popup_width + from[0]) * 4;
+        let dst = ((to[1] + row) * width + to[0]) * 4;
+        out[dst..dst + span * 4].copy_from_slice(&pixels[src..src + span * 4]);
+    }
+    out
+}
+
+impl Gpu {
+    /// Chromium's buffer as a texture of the window's device, to copy from while the paint
+    /// lasts: the buffer goes back to Chromium when it returns.
+    fn import(&self, info: &AcceleratedPaintInfo) -> Result<wgpu::Texture, String> {
+        use std::os::fd::BorrowedFd;
+        use wgpu::hal::api::Vulkan;
+        // shortcut: one plane of BGRA, as Chromium paints a page; another layout is not shown.
+        if info.plane_count != 1 || info.format != ColorType::BGRA_8888 {
+            return Err(format!("{} planes of {:?}", info.plane_count, info.format));
+        }
+        let plane = &info.planes[0];
+        // shortcut: on X11 Chromium names no modifier (DRM_FORMAT_MOD_INVALID); its capture
+        // buffers are the ones it maps for the CPU too, so linear is taken. A tiled one would
+        // show scrambled: then the modifier has to be asked of GBM.
+        let modifier = match info.modifier {
+            0x00ff_ffff_ffff_ffff => 0,
+            modifier => modifier,
+        };
+        let size = wgpu::Extent3d {
+            width: info.extra.coded_size.width.max(1) as u32,
+            height: info.extra.coded_size.height.max(1) as u32,
+            depth_or_array_layers: 1,
+        };
+        // Chromium keeps its descriptor; the driver takes a copy of it.
+        let fd = unsafe { BorrowedFd::borrow_raw(plane.fd) }
+            .try_clone_to_owned()
+            .map_err(|e| e.to_string())?;
+        let hal = unsafe {
+            let device = self
+                .device
+                .as_hal::<Vulkan>()
+                .ok_or("not a Vulkan device")?;
+            let desc = wgpu::hal::TextureDescriptor {
+                label: Some("chromium paint"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Bgra8Unorm,
+                usage: wgpu::TextureUses::COPY_SRC,
+                memory_flags: wgpu::hal::MemoryFlags::empty(),
+                view_formats: Vec::new(),
+            };
+            device
+                .texture_from_dmabuf_fd(fd, &desc, modifier, plane.stride.into(), plane.offset)
+                .map_err(|e| e.to_string())?
+        };
+        let desc = wgpu::TextureDescriptor {
+            label: Some("chromium paint"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            usage: wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        };
+        // Freshly made, its layout is undefined, which keeps a linear buffer's contents.
+        Ok(unsafe {
+            self.device.create_texture_from_hal::<Vulkan>(
+                hal,
+                &desc,
+                wgpu::TextureUses::UNINITIALIZED,
+            )
+        })
+    }
+
+    /// `texture` if it is `width` by `height`, or a new one in its place.
+    fn sized(&self, texture: &mut Option<wgpu::Texture>, width: u32, height: u32) -> wgpu::Texture {
+        if let Some(texture) = texture
+            .as_ref()
+            .filter(|t| (t.width(), t.height()) == (width, height))
+        {
+            return texture.clone();
+        }
+        let made = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("native tab"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        *texture = Some(made.clone());
+        made
+    }
+}
+
+/// Copy `size` pixels from `from` at `at` into `to` at `into`.
+fn copy(
+    encoder: &mut wgpu::CommandEncoder,
+    (from, at): (&wgpu::Texture, [u32; 2]),
+    (to, into): (&wgpu::Texture, [u32; 2]),
+    [width, height]: [u32; 2],
+) {
+    let place = |texture, [x, y]: [u32; 2]| wgpu::TexelCopyTextureInfo {
+        texture,
+        mip_level: 0,
+        origin: wgpu::Origin3d { x, y, z: 0 },
+        aspect: wgpu::TextureAspect::All,
+    };
+    encoder.copy_texture_to_texture(
+        place(from, at),
+        place(to, into),
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
 }
 
 /// Where CEF's resources are: `QUILL_CEF_DIR`, else the CEF quill was built with.
@@ -479,8 +436,9 @@ fn resources() -> PathBuf {
 #[derive(Clone)]
 enum Job {
     Deliver(String),
-    Freeze { target: String, surface: String },
-    Blur { target: String },
+    Show(Option<(String, String, (u32, u32))>),
+    Resize { target: String, size: (u32, u32) },
+    Repaint { target: String },
     CloseAll,
 }
 
@@ -503,6 +461,11 @@ impl Shared {
         post_task(ThreadId::UI, Some(&mut task));
     }
 
+    fn post_later(self: &Arc<Self>, job: Job, ms: i64) {
+        let mut task = Run::new(self.clone(), job);
+        post_delayed_task(ThreadId::UI, Some(&mut task), ms);
+    }
+
     fn run(self: &Arc<Self>, job: Job) {
         match job {
             Job::Deliver(message) => {
@@ -510,23 +473,42 @@ impl Shared {
                     self.deliver(message);
                 }
             }
-            Job::Freeze { target, surface } => {
-                self.own(
-                    &target,
-                    Own::Freeze { surface },
-                    "Page.captureScreenshot",
-                    json!({ "format": "jpeg", "quality": 85 }),
-                );
+            Job::Show(shown) => {
+                let (target, surface, size) = match shown {
+                    Some((target, surface, size)) => (Some(target), Some(surface), Some(size)),
+                    None => (None, None, None),
+                };
+                let token = target.as_deref().and_then(|t| self.token_of(t));
+                let mut shown = self.shown.lock().unwrap();
+                if shown.token != token {
+                    *shown = Shown::default();
+                }
+                shown.token = token;
+                shown.surface = surface;
+                let scale = self.frames.scale();
+                let rescaled = shown.scale != scale;
+                shown.scale = scale;
+                drop(shown);
+                if let (Some(target), Some(size)) = (target, size) {
+                    if let Some(host) = self.host(&target) {
+                        if rescaled {
+                            host.notify_screen_info_changed();
+                        }
+                        // A tab only paints what changes: the one shown now paints it all, at
+                        // its new size if it has one.
+                        if !self.resize(&target, size) {
+                            host.invalidate(PaintElementType::VIEW);
+                        }
+                    }
+                }
             }
-            // Not CEF's focus: without it the page would no longer hand quill the keys X11
-            // gives it while the pointer is over it.
-            Job::Blur { target } => {
-                self.own(
-                    &target,
-                    Own::Nothing,
-                    "Runtime.evaluate",
-                    json!({ "expression": "document.activeElement?.blur()" }),
-                );
+            Job::Resize { target, size } => {
+                self.resize(&target, size);
+            }
+            Job::Repaint { target } => {
+                if let Some(host) = self.host(&target) {
+                    host.invalidate(PaintElementType::VIEW);
+                }
             }
             Job::CloseAll => {
                 let mut pages = self.pages.lock().unwrap();
@@ -546,6 +528,30 @@ impl Shared {
                 }
             }
         }
+    }
+
+    fn token_of(&self, target: &str) -> Option<u64> {
+        let pages = self.pages.lock().unwrap();
+        pages
+            .targets
+            .iter()
+            .find(|(_, t)| t.as_str() == target)
+            .map(|(token, _)| *token)
+    }
+
+    /// Whether `target` had another size, and was resized.
+    fn resize(&self, target: &str, size: (u32, u32)) -> bool {
+        let Some(token) = self.token_of(target) else {
+            return false;
+        };
+        let size = (size.0.max(1), size.1.max(1));
+        let resized = self.pages.lock().unwrap().sizes.insert(token, size) != Some(size);
+        if resized {
+            if let Some(host) = self.host(target) {
+                host.was_resized();
+            }
+        }
+        resized
     }
 
     fn host(&self, target: &str) -> Option<BrowserHost> {
@@ -632,7 +638,11 @@ impl Shared {
                 self.reply(id, Ok(json!({})));
             }
             "Target.createTarget" => {
-                self.make(Some(id), None, text("browserContextId"), text("url"));
+                let size = (
+                    params["width"].as_u64().unwrap_or(1280) as u32,
+                    params["height"].as_u64().unwrap_or(800) as u32,
+                );
+                self.make(Some(id), None, text("browserContextId"), text("url"), size);
             }
             "Target.attachToTarget" => {
                 let target = text("targetId");
@@ -673,10 +683,12 @@ impl Shared {
         opener: Option<String>,
         context: String,
         url: String,
+        size: (u32, u32),
     ) {
         let token = self.tokens.fetch_add(1, Ordering::Relaxed) + 1;
         let mut request = {
             let mut pages = self.pages.lock().unwrap();
+            pages.sizes.insert(token, size);
             pages.made.insert(
                 token,
                 Made {
@@ -689,22 +701,9 @@ impl Shared {
             );
             pages.contexts.get(&context).cloned()
         };
-        // Made a pixel in the corner and hidden once made; `place` shows it where the pane is.
-        // Alloy: the page alone, without Chrome's tab and window machinery, which takes a
-        // child window for a tab of its own and fails on it.
-        let info = WindowInfo {
-            runtime_style: RuntimeStyle::ALLOY,
-            ..Default::default()
-        }
-        .set_as_child(
-            self.parent,
-            &Rect {
-                x: 0,
-                y: 0,
-                width: 1,
-                height: 1,
-            },
-        );
+        // Alloy: the page alone, without Chrome's tab and window machinery.
+        let mut info = WindowInfo::default().set_as_windowless(0);
+        info.shared_texture_enabled = i32::from(self.gpu.is_some());
         let mut client = PageClient::new(self.clone(), token);
         let url = if url.is_empty() {
             "about:blank".to_owned()
@@ -715,30 +714,23 @@ impl Shared {
             Some(&info),
             Some(&mut client),
             Some(&CefString::from(url.as_str())),
-            Some(&BrowserSettings::default()),
+            Some(&BrowserSettings {
+                // A 120 Hz screen's: a steady scroll paints ~100 frames a second, not 60.
+                windowless_frame_rate: 120,
+                // Opaque, as a window's page is: a page with no background of its own is white.
+                background_color: 0xFFFF_FFFF,
+                ..Default::default()
+            }),
             None,
             request.as_mut(),
         );
     }
 
-    /// Call `method` on `target`'s page for quill's own sake.
-    fn own(self: &Arc<Self>, target: &str, purpose: Own, method: &str, params: Value) {
-        let Some(host) = self.host(target) else {
-            return;
-        };
-        let id = self.own.fetch_add(1, Ordering::Relaxed);
-        self.pages.lock().unwrap().own.insert(id, purpose);
-        let call = json!({ "id": id, "method": method, "params": params });
-        host.send_dev_tools_message(Some(call.to_string().as_bytes()));
-    }
-
-    /// A browser was made: it is hidden until shown, and asked for its target id.
+    /// A browser was made: it is asked for its target id.
     fn made(self: &Arc<Self>, token: u64, browser: Browser) {
         let Some(host) = browser.host() else {
             return;
         };
-        let xid = host.window_handle();
-        self.x.lock().unwrap().hide(xid);
         let mut observer = Observer::new(self.clone(), token);
         let registration = host.add_dev_tools_message_observer(Some(&mut observer));
         let mut pages = self.pages.lock().unwrap();
@@ -747,7 +739,6 @@ impl Shared {
         };
         made.page = Some(Page {
             browser,
-            xid,
             context: made.context.clone(),
             url: made.url.clone(),
             title: String::new(),
@@ -776,15 +767,8 @@ impl Shared {
                         .to_owned();
                     self.named(token, target);
                 }
-                Some(Own::Freeze { surface }) => self.frozen(surface, &message),
-                Some(Own::Nothing) | None => {}
+                None => {}
             }
-            return;
-        }
-        if message["method"] == "Runtime.bindingCalled"
-            && message["params"]["name"] == "quillPressed"
-        {
-            self.keys_on_page.store(true, Ordering::SeqCst);
             return;
         }
         let target = self.pages.lock().unwrap().targets.get(&token).cloned();
@@ -807,25 +791,6 @@ impl Shared {
         pages.targets.insert(token, target.clone());
         pages.open.insert(target.clone(), page);
         drop(pages);
-        // A press in the page, in this document and every next one, reaches quill.
-        self.own(
-            &target,
-            Own::Nothing,
-            "Runtime.addBinding",
-            json!({ "name": "quillPressed" }),
-        );
-        self.own(
-            &target,
-            Own::Nothing,
-            "Page.addScriptToEvaluateOnNewDocument",
-            json!({ "source": PRESSED }),
-        );
-        self.own(
-            &target,
-            Own::Nothing,
-            "Runtime.evaluate",
-            json!({ "expression": PRESSED }),
-        );
         if let Some(reply) = made.reply {
             self.reply(reply, Ok(json!({ "targetId": target })));
         }
@@ -838,21 +803,198 @@ impl Shared {
         }
     }
 
-    /// A page's last frame is in: shown in its surface, and the page may go.
-    /// A page's last frame is in, or could not be taken: either way the page may go now.
-    fn frozen(self: &Arc<Self>, surface: String, message: &Value) {
-        use base64::Engine;
-        let jpeg = message["result"]["data"]
-            .as_str()
-            .and_then(|data| base64::engine::general_purpose::STANDARD.decode(data).ok());
-        let shared = self.clone();
-        std::thread::spawn(move || {
-            if let Some(frame) = jpeg.and_then(|jpeg| decode(&jpeg, shared.scale)) {
-                shared.frames.publish(surface, frame);
+    /// The tab of `token` painted `pixels`, BGRA, `width` by `height`: its page, or the
+    /// popup over it. Only the tab on screen is shown.
+    fn painted(
+        self: &Arc<Self>,
+        token: u64,
+        popup: bool,
+        pixels: &[u8],
+        width: usize,
+        height: usize,
+    ) {
+        let mut shown = self.shown.lock().unwrap();
+        if shown.token != Some(token) || pixels.len() < width * height * 4 {
+            return;
+        }
+        if !popup && self.stale(token, width, height, shown.scale) {
+            return;
+        }
+        // shortcut: the copy is on CEF's UI thread; Chromium's shared textures
+        // (OnAcceleratedPaint, dmabuf) avoid it if it shows.
+        let rgba = to_rgba(&pixels[..width * height * 4]);
+        if popup {
+            shown.popup_pixels = rgba;
+            shown.popup_width = width;
+            self.present(&shown);
+            return;
+        }
+        shown.size = (width, height);
+        // The page is kept only while a popup is drawn over it, as either may paint again.
+        if shown.popup.is_some() {
+            shown.page = rgba;
+            self.present(&shown);
+            return;
+        }
+        shown.page = Vec::new();
+        if let Some(surface) = shown.surface.clone() {
+            let scale = shown.scale;
+            let frame = crate::Frame {
+                width,
+                height,
+                scale,
+                pixels: Pixels::Rgba(rgba),
+            };
+            self.frames.publish(surface, frame);
+        }
+    }
+
+    /// Whether a paint of the tab of `token`, `width` by `height` pixels, is still at its size
+    /// before a resize. It would stand in for the new one, as nothing may paint again: only
+    /// the size asked for is shown. Chromium now and then keeps the old size until it paints
+    /// again, so it is asked to, a moment later.
+    fn stale(self: &Arc<Self>, token: u64, width: usize, height: usize, scale: f32) -> bool {
+        let size = self.pages.lock().unwrap().sizes.get(&token).copied();
+        let near = |pixels: usize, css: u32| (pixels as f32 - css as f32 * scale).abs() <= 1.0;
+        if !size.is_some_and(|(w, h)| !near(width, w) || !near(height, h)) {
+            return false;
+        }
+        let target = self.pages.lock().unwrap().targets.get(&token).cloned();
+        if let Some(target) = target {
+            self.post_later(Job::Repaint { target }, 100);
+        }
+        true
+    }
+
+    /// The tab of `token` painted on the GPU, its page or the popup over it: copied into the
+    /// tab's texture, the popup's last paint over the page's, and waited for, as Chromium
+    /// takes its buffer back when this returns. Only the tab on screen is shown.
+    fn accelerated(self: &Arc<Self>, token: u64, popup: bool, info: &AcceleratedPaintInfo) {
+        let Some(gpu) = &self.gpu else {
+            return;
+        };
+        let visible = &info.extra.visible_rect;
+        let (width, height) = (visible.width.max(0) as u32, visible.height.max(0) as u32);
+        let mut shown = self.shown.lock().unwrap();
+        if shown.token != Some(token) || width == 0 || height == 0 {
+            return;
+        }
+        if !popup && self.stale(token, width as usize, height as usize, shown.scale) {
+            return;
+        }
+        let paint = match gpu.import(info) {
+            Ok(paint) => paint,
+            Err(error) => {
+                if !gpu.failed.swap(true, Ordering::Relaxed) {
+                    eprintln!("quill: a page's frame could not be imported: {error}");
+                }
+                return;
             }
-            shared.view.lock().unwrap().frozen = true;
-            shared.frames.wake();
+        };
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        let painted = (&paint, [visible.x.max(0) as u32, visible.y.max(0) as u32]);
+        let target = if popup {
+            &mut shown.popup_texture
+        } else {
+            &mut shown.texture
+        };
+        let into = gpu.sized(target, width, height);
+        copy(&mut encoder, painted, (&into, [0, 0]), [width, height]);
+        let Some(page) = shown.texture.clone() else {
+            // A popup with no page to go over yet: the page paints again.
+            drop(encoder);
+            self.repaint(shown.token);
+            return;
+        };
+        if let (Some(over), Some(at)) = (&shown.popup_texture, &shown.popup) {
+            let at = [at.x, at.y].map(|v| (v as f32 * shown.scale).round() as i64);
+            let size = [over.width(), over.height()].map(|v| v as usize);
+            let page_size = [page.width(), page.height()].map(|v| v as usize);
+            if let Some([from, to, extent]) = clip(at, size, page_size) {
+                let [from, to, extent] = [from, to, extent].map(|p| p.map(|v| v as u32));
+                copy(&mut encoder, (over, from), (&page, to), extent);
+            }
+        }
+        let submitted = gpu.queue.submit([encoder.finish()]);
+        let _ = gpu.device.poll(wgpu::PollType::Wait {
+            submission_index: Some(submitted),
+            timeout: Some(Duration::from_secs(1)),
         });
+        if let Some(surface) = shown.surface.clone() {
+            let frame = crate::Frame {
+                width: page.width() as usize,
+                height: page.height() as usize,
+                scale: shown.scale,
+                pixels: Pixels::Texture(page),
+            };
+            self.frames.publish(surface, frame);
+        }
+    }
+
+    fn repaint(self: &Arc<Self>, token: Option<u64>) {
+        let target = token.and_then(|t| self.pages.lock().unwrap().targets.get(&t).cloned());
+        if let Some(target) = target {
+            self.post(Job::Repaint { target });
+        }
+    }
+
+    /// The tab on screen as it last painted, its popup over it, in its surface.
+    fn present(self: &Arc<Self>, shown: &Shown) {
+        let Some(surface) = shown.surface.clone() else {
+            return;
+        };
+        let (width, height) = shown.size;
+        // No page kept to draw the popup over yet: it paints again.
+        if shown.page.len() != width * height * 4 || width == 0 {
+            self.repaint(shown.token);
+            return;
+        }
+        let scale = shown.scale;
+        let popup = shown
+            .popup
+            .clone()
+            .filter(|_| !shown.popup_pixels.is_empty())
+            .map(|at| {
+                let x = (at.x as f32 * scale).round() as i64;
+                let y = (at.y as f32 * scale).round() as i64;
+                (shown.popup_pixels.as_slice(), shown.popup_width, [x, y])
+            });
+        self.frames.publish(
+            surface,
+            crate::Frame {
+                width,
+                height,
+                scale,
+                pixels: Pixels::Rgba(over(&shown.page, width, popup)),
+            },
+        );
+    }
+
+    fn popup(self: &Arc<Self>, token: u64, at: Option<Rect>) {
+        let mut shown = self.shown.lock().unwrap();
+        if shown.token != Some(token) {
+            return;
+        }
+        match at {
+            // On the GPU the page has the popup drawn into it: it paints again, with the
+            // popup where it is now.
+            Some(_) if self.gpu.is_some() => {
+                shown.popup = at;
+                self.repaint(shown.token);
+            }
+            Some(_) => {
+                shown.popup = at;
+                self.present(&shown);
+            }
+            // The page paints again without it.
+            None => {
+                shown.popup = None;
+                shown.popup_pixels.clear();
+                shown.popup_texture = None;
+                shown.page = Vec::new();
+                self.repaint(shown.token);
+            }
+        }
     }
 
     fn target_of(&self, browser: &Browser) -> Option<String> {
@@ -892,13 +1034,22 @@ impl Shared {
         };
         let mut pages = self.pages.lock().unwrap();
         pages.open.remove(&target);
-        pages.targets.retain(|_, t| *t != target);
+        let gone: Vec<u64> = pages
+            .targets
+            .iter()
+            .filter(|(_, t)| **t == target)
+            .map(|(token, _)| *token)
+            .collect();
+        for token in &gone {
+            pages.targets.remove(token);
+            pages.sizes.remove(token);
+        }
         let last = pages.closing && pages.open.is_empty();
         drop(pages);
         {
-            let mut view = self.view.lock().unwrap();
-            if view.target.as_deref() == Some(target.as_str()) {
-                *view = View::default();
+            let mut shown = self.shown.lock().unwrap();
+            if shown.token.is_some_and(|token| gone.contains(&token)) {
+                *shown = Shown::default();
             }
         }
         self.event(
@@ -960,9 +1111,10 @@ impl Write for Outgoing {
     }
 }
 
+// `platform`: Chromium's display platform; `headless` paints on the CPU only.
 wrap_app! {
     struct QuillApp {
-        scale: f32,
+        platform: &'static str,
     }
 
     impl App {
@@ -974,9 +1126,11 @@ wrap_app! {
             let switch = |name: &str, value: &str| {
                 line.append_switch_with_value(Some(&CefString::from(name)), Some(&CefString::from(value)));
             };
-            // Tabs are children of quill's X11 window, even in a Wayland session (XWayland).
-            switch("ozone-platform", "x11");
-            switch("force-device-scale-factor", &self.scale.to_string());
+            // No window of Chromium's own: a display server only to allocate GPU buffers
+            // through, or none. The GPU through EGL, which ANGLE's default (an X11 display)
+            // would not find without one.
+            switch("ozone-platform", self.platform);
+            switch("use-angle", "gl-egl");
             // As the headless Chromium runs: no keyring prompt, no background chatter.
             switch("password-store", "basic");
             switch("disable-features", "Translate,MediaRouter,OptimizationHints");
@@ -1003,48 +1157,73 @@ wrap_client! {
             Some(Downloads::new(self.shared.clone()))
         }
 
-        fn keyboard_handler(&self) -> Option<KeyboardHandler> {
-            Some(Keys::new(self.shared.clone()))
+        fn render_handler(&self) -> Option<RenderHandler> {
+            Some(Render::new(self.shared.clone(), self.token))
         }
     }
 }
 
-wrap_keyboard_handler! {
-    struct Keys {
+wrap_render_handler! {
+    struct Render {
         shared: Arc<Shared>,
+        token: u64,
     }
 
-    impl KeyboardHandler {
-        fn on_pre_key_event(
-            &self,
-            _browser: Option<&mut Browser>,
-            event: Option<&KeyEvent>,
-            _os_event: Option<&mut cef::sys::XEvent>,
-            _is_keyboard_shortcut: Option<&mut ::std::os::raw::c_int>,
-        ) -> ::std::os::raw::c_int {
-            let Some(event) = event else {
+    impl RenderHandler {
+        fn view_rect(&self, _browser: Option<&mut Browser>, rect: Option<&mut Rect>) {
+            let size = self.shared.pages.lock().unwrap().sizes.get(&self.token).copied();
+            let (width, height) = size.unwrap_or((1280, 800));
+            if let Some(rect) = rect {
+                *rect = Rect { x: 0, y: 0, width: width as i32, height: height as i32 };
+            }
+        }
+
+        fn screen_info(&self, _browser: Option<&mut Browser>, info: Option<&mut ScreenInfo>) -> ::std::os::raw::c_int {
+            let Some(info) = info else {
                 return 0;
             };
-            let down = event.type_ == KeyEventType::RAWKEYDOWN || event.type_ == KeyEventType::KEYDOWN;
-            // X11 hands keys to the window under the pointer while the focus is on one of its
-            // ancestors, and quill's window keeps the focus: a page under the pointer takes
-            // what is typed into quill. Keys never pass above the focused window, so the page
-            // hands them back, to the window they were typed in.
-            if !self.shared.keys_on_page.load(Ordering::SeqCst) {
-                if down || event.type_ == KeyEventType::KEYUP {
-                    let x = self.shared.x.lock().unwrap();
-                    x.resend(self.shared.parent, event.native_key_code, down, event.modifiers);
-                }
-                return 1;
-            }
-            // CEF's flags: Shift 1 << 1, Ctrl 1 << 2.
-            let key = Key { code: event.windows_key_code, ctrl: event.modifiers & 4 != 0, shift: event.modifiers & 2 != 0 };
-            if !down || !CHORDS.contains(&(key.code, key.ctrl, key.shift)) {
-                return 0;
-            }
-            self.shared.keys.lock().unwrap().push(key);
-            self.shared.frames.wake();
+            info.device_scale_factor = self.shared.frames.scale();
             1
+        }
+
+        fn on_popup_show(&self, _browser: Option<&mut Browser>, show: ::std::os::raw::c_int) {
+            if show == 0 {
+                self.shared.popup(self.token, None);
+            }
+        }
+
+        fn on_popup_size(&self, _browser: Option<&mut Browser>, rect: Option<&Rect>) {
+            self.shared.popup(self.token, rect.cloned());
+        }
+
+        fn on_accelerated_paint(
+            &self,
+            _browser: Option<&mut Browser>,
+            type_: PaintElementType,
+            _dirty_rects: Option<&[Rect]>,
+            info: Option<&AcceleratedPaintInfo>,
+        ) {
+            if let Some(info) = info {
+                self.shared.accelerated(self.token, type_ == PaintElementType::POPUP, info);
+            }
+        }
+
+        fn on_paint(
+            &self,
+            _browser: Option<&mut Browser>,
+            type_: PaintElementType,
+            _dirty_rects: Option<&[Rect]>,
+            buffer: *const u8,
+            width: ::std::os::raw::c_int,
+            height: ::std::os::raw::c_int,
+        ) {
+            let (width, height) = (width.max(0) as usize, height.max(0) as usize);
+            if buffer.is_null() || width == 0 || height == 0 {
+                return;
+            }
+            // CEF's buffer: BGRA rows, `width` by `height`, alive for this call.
+            let pixels = unsafe { std::slice::from_raw_parts(buffer, width * height * 4) };
+            self.shared.painted(self.token, type_ == PaintElementType::POPUP, pixels, width, height);
         }
     }
 }
@@ -1083,8 +1262,9 @@ wrap_life_span_handler! {
             if let Some(opener) = opener {
                 let context = self.shared.pages.lock().unwrap().open.get(&opener).map(|p| p.context.clone());
                 let url = target_url.map(|u| u.to_string()).unwrap_or_default();
+                let size = self.shared.pages.lock().unwrap().sizes.get(&self.token).copied();
                 if let Some(context) = context {
-                    self.shared.make(None, Some(opener), context, url);
+                    self.shared.make(None, Some(opener), context, url, size.unwrap_or((1280, 800)));
                 }
             }
             1
@@ -1196,11 +1376,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_key_keeps_its_modifiers_as_x11_names_them() {
-        use x11_dl::xlib;
-        assert_eq!(x11_state(2 | 4), xlib::ShiftMask | xlib::ControlMask);
-        assert_eq!(x11_state(4096 | 256), xlib::Mod5Mask | xlib::Mod2Mask);
-        assert_eq!(x11_state(0), 0);
+    fn bgra_becomes_rgba_aligned_or_not() {
+        let bgra = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+        assert_eq!(to_rgba(&bgra[..8]), [3, 2, 1, 4, 7, 6, 5, 8]);
+        assert_eq!(to_rgba(&bgra[1..]), [4, 3, 2, 5, 8, 7, 6, 9]);
+    }
+
+    #[test]
+    fn a_popup_is_drawn_over_the_page_where_it_is_and_clipped_to_it() {
+        // A 3×2 page of zeros, a 2×2 popup of ones at (2, 1): one pixel of it is inside.
+        let page = vec![0; 3 * 2 * 4];
+        let popup = vec![1; 2 * 2 * 4];
+        let out = over(&page, 3, Some((&popup, 2, [2, 1])));
+        let lit: Vec<usize> = (0..6).filter(|i| out[i * 4] == 1).collect();
+        assert_eq!(lit, [5]);
+        assert_eq!(over(&page, 3, None), page);
+        // Off the page to the left and above, the part inside still shows.
+        let out = over(&page, 3, Some((&popup, 2, [-1, -1])));
+        let lit: Vec<usize> = (0..6).filter(|i| out[i * 4] == 1).collect();
+        assert_eq!(lit, [0]);
+    }
+
+    #[test]
+    fn a_popup_s_part_inside_the_page_is_where_it_starts_in_each_and_its_size() {
+        assert_eq!(clip([2, 1], [2, 2], [3, 2]), Some([[0, 0], [2, 1], [1, 1]]));
+        assert_eq!(
+            clip([-1, -1], [2, 2], [3, 2]),
+            Some([[1, 1], [0, 0], [1, 1]])
+        );
+        assert_eq!(clip([0, 0], [5, 5], [3, 2]), Some([[0, 0], [0, 0], [3, 2]]));
+        assert_eq!(clip([3, 0], [2, 2], [3, 2]), None);
+        assert_eq!(clip([-2, 0], [2, 2], [3, 2]), None);
     }
 
     #[test]
