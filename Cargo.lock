@@ -3050,6 +3050,9 @@ dependencies = [
  "limn-editor",
  "limn-egui",
  "quill-components",
+ "rfd",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

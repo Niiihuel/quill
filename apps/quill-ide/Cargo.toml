@@ -14,3 +14,7 @@ eframe.workspace = true
 quill-components = { path = "../../crates/quill-components" }
 # Lists a folder as git sees it, .gitignore and all, as ripgrep does.
 ignore = "0.4"
+serde.workspace = true
+serde_json.workspace = true
+# The platform's own folder dialog, through the desktop portal (no GTK linked in), as quill's.
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }

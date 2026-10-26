@@ -23,6 +23,19 @@ pub fn run(job: Job) -> Loaded {
             let written = write(&path, &save.0).map_err(|e| e.to_string());
             Loaded::Written(path, save, written)
         }
+        Job::SavePrefs(prefs) => {
+            // shortcut: a failed save of Settings is only said on stderr; worth a line in
+            // Settings if it ever happens.
+            if let Err(error) = save_prefs(&prefs) {
+                eprintln!("quill-ide: Settings not saved: {error}");
+            }
+            Loaded::PrefsSaved
+        }
+        Job::FindPacks(roots) => Loaded::Packs(crate::packs::find(&roots)),
+        Job::LoadPack(json) => {
+            let theme = crate::packs::load(&json);
+            Loaded::Pack(json, theme)
+        }
         Job::Stat(watched) => Loaded::Changed(
             watched
                 .into_iter()
@@ -33,6 +46,18 @@ pub fn run(job: Job) -> Loaded {
                 .collect(),
         ),
     }
+}
+
+/// Settings whole or not at all, as a file is saved.
+fn save_prefs(prefs: &crate::prefs::Prefs) -> io::Result<()> {
+    let path = crate::prefs::path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let temporary = path.with_extension(format!("json.{}", std::process::id()));
+    let json = serde_json::to_vec_pretty(prefs).map_err(io::Error::other)?;
+    std::fs::write(&temporary, json)?;
+    std::fs::rename(&temporary, &path)
 }
 
 fn stamp(path: &Path) -> Stamp {

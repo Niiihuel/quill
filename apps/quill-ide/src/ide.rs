@@ -1,9 +1,16 @@
 //! quill-ide's state, what the person's clicks and keys ask of it, and the window (`view`).
 //! The disk is the host's: `update` returns `Job`s, and what they find comes back to `loaded`.
 
-use limn::{CodeEditor, Component, EditorController, Element, Key, Size, UiAction};
+use crate::packs::{self, Offered, Pack, Theme};
+use crate::prefs::{self, Prefs};
+use limn::{
+    CodeEditor, Component, ComponentPalette, EditorController, Element, Key, Point, Size, TreeRow,
+    UiAction,
+};
 use limn_editor::{BufferSnapshot, EditKind, Selection, TextBuffer};
 use quill_components::look::{self, SMALL};
+use quill_components::settings::{self, SETTINGS_CLOSE, SETTINGS_OPEN, SETTINGS_SEARCH};
+use quill_components::sidebar::Sidebar;
 use quill_components::{icons, pieces::*};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -12,7 +19,6 @@ use std::time::SystemTime;
 pub const TREE_TOGGLE: &str = "tree:toggle";
 /// A row of the file tree: denser than the sidebar's 32 px, as a reader's tree is.
 const ROW: f32 = 26.0;
-const INDENT: f32 = 12.0;
 const NOTICE: f32 = 40.0;
 
 /// When a file or folder last changed on the disk; `None` when it is not there.
@@ -26,6 +32,11 @@ pub enum Job {
     Write(PathBuf, Save),
     /// The paths watched, with when each was last seen changed.
     Stat(Vec<(PathBuf, Stamp)>),
+    SavePrefs(Prefs),
+    /// Look for icon themes in these folders.
+    FindPacks(Vec<PathBuf>),
+    /// Read the icon theme at this JSON.
+    LoadPack(PathBuf),
 }
 
 /// The text a save writes: the buffer as it was when the person asked.
@@ -47,6 +58,9 @@ pub enum Loaded {
     Written(PathBuf, Save, Result<Stamp, String>),
     /// Of the paths a `Stat` asked about, the ones changed since, with their new stamps.
     Changed(Vec<(PathBuf, Stamp)>),
+    Packs(Vec<Offered>),
+    Pack(PathBuf, Result<Theme, String>),
+    PrefsSaved,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -81,7 +95,8 @@ impl Buffer {
 
 pub struct Ide {
     pub root: PathBuf,
-    pub tree_open: bool,
+    /// The files' tree, which slides shut and peeks as quill's sidebar.
+    pub sidebar: Sidebar,
     pub expanded: HashSet<PathBuf>,
     /// The folders listed so far, each with its entries in the order shown.
     pub listed: HashMap<PathBuf, Vec<Entry>>,
@@ -95,14 +110,41 @@ pub struct Ide {
     pub closing: Option<PathBuf>,
     /// The person asked once to close the window with unsaved changes.
     pub quitting: bool,
+    pub prefs: Prefs,
+    /// The icons' pack in use, the icon themes found, and why the chosen one did not load.
+    pub pack: Pack,
+    pub offered: Vec<Offered>,
+    pub pack_error: Option<String>,
+    /// Settings: the page open, what its search holds and the select whose menu is open.
+    pub settings_page: Option<String>,
+    pub settings_query: String,
+    pub settings_menu: Option<String>,
+    /// Where the pointer is and the control under it, which the host sets every frame, for
+    /// the tree's peek.
+    pub pointer: Option<Point>,
+    pub hovered: Option<String>,
+    pub reduced_motion: bool,
 }
 
 impl Ide {
-    pub fn new(root: PathBuf) -> (Self, Vec<Job>) {
-        let jobs = vec![Job::List(root.clone())];
+    pub fn new(root: PathBuf, prefs: Prefs) -> (Self, Vec<Job>) {
+        let mut jobs = vec![
+            Job::List(root.clone()),
+            Job::FindPacks(packs::roots(&prefs.icon_folders)),
+        ];
+        let pack = match prefs.icons.as_str() {
+            packs::QUILL => Pack::Quill,
+            key => {
+                jobs.extend(
+                    key.strip_prefix(packs::THEME)
+                        .map(|json| Job::LoadPack(json.into())),
+                );
+                Pack::Material
+            }
+        };
         let ide = Self {
             root,
-            tree_open: true,
+            sidebar: Sidebar::new(look::SIDEBAR_WIDTH),
             expanded: HashSet::new(),
             listed: HashMap::new(),
             dir_stamps: HashMap::new(),
@@ -111,6 +153,16 @@ impl Ide {
             polling: false,
             closing: None,
             quitting: false,
+            prefs,
+            pack,
+            offered: vec![],
+            pack_error: None,
+            settings_page: None,
+            settings_query: String::new(),
+            settings_menu: None,
+            pointer: None,
+            hovered: None,
+            reduced_motion: false,
         };
         (ide, jobs)
     }
@@ -158,14 +210,23 @@ impl Ide {
                 .map(|(b, s)| vec![Job::Write(b.path.clone(), Save(s))])
                 .unwrap_or_default();
         }
+        if let UiAction::InputChanged { id, value } = action {
+            if id == SETTINGS_SEARCH {
+                self.settings_query = value.clone();
+            }
+            return vec![];
+        }
         let UiAction::Clicked { id } = action else {
             return vec![];
         };
         if !id.starts_with("close:") {
             self.closing = None;
         }
+        if let Some(jobs) = self.settings_clicked(id) {
+            return jobs;
+        }
         if id == TREE_TOGGLE {
-            self.tree_open = !self.tree_open;
+            self.sidebar.toggle();
         } else if let Some(dir) = id.strip_prefix("dir:").map(PathBuf::from) {
             if !self.expanded.remove(&dir) {
                 self.expanded.insert(dir.clone());
@@ -190,6 +251,94 @@ impl Ide {
         vec![]
     }
 
+    /// Settings' own clicks: open and close, pick a page, and change a setting, which is kept
+    /// at once. `None` when `id` is none of them. A select reports its trigger, `set:{name}`,
+    /// then a choice, `set:{name}={value}`.
+    fn settings_clicked(&mut self, id: &str) -> Option<Vec<Job>> {
+        if id == SETTINGS_OPEN {
+            self.settings_page = Some(prefs::FIRST.into());
+            self.settings_query.clear();
+            return Some(vec![Job::FindPacks(packs::roots(&self.prefs.icon_folders))]);
+        }
+        self.settings_page.as_ref()?;
+        if id == SETTINGS_CLOSE {
+            self.settings_page = None;
+            self.settings_menu = None;
+            return Some(vec![]);
+        }
+        if let Some(page) = id.strip_prefix("settings:page:") {
+            self.settings_page = Some(page.to_owned());
+            self.settings_query.clear();
+            return Some(vec![]);
+        }
+        let rest = id.strip_prefix("set:")?;
+        if let Some(menu) = rest.strip_suffix(":dismiss") {
+            if self.settings_menu.as_deref() == Some(menu) {
+                self.settings_menu = None;
+            }
+            return Some(vec![]);
+        }
+        let (name, value) = match rest.split_once('=') {
+            Some((name, value)) => (name, Some(value)),
+            None if Prefs::is_switch(rest) => (rest, None),
+            // A select's trigger opens its menu, or shuts it.
+            None => {
+                let open = self.settings_menu.as_deref() == Some(rest);
+                self.settings_menu = (!open).then(|| rest.to_owned());
+                return Some(vec![]);
+            }
+        };
+        self.settings_menu = None;
+        if !self.prefs.set(name, value) {
+            return Some(vec![]);
+        }
+        let mut jobs = vec![Job::SavePrefs(self.prefs.clone())];
+        if name == "icons" {
+            self.pack_error = None;
+            match self.prefs.icons.as_str() {
+                packs::QUILL => self.pack = Pack::Quill,
+                packs::MATERIAL => self.pack = Pack::Material,
+                key => jobs.extend(
+                    key.strip_prefix(packs::THEME)
+                        .map(|j| Job::LoadPack(j.into())),
+                ),
+            }
+        }
+        Some(jobs)
+    }
+
+    /// A folder to look for icon themes in, from Settings' "Add folder…".
+    pub fn add_icon_folder(&mut self, folder: PathBuf) -> Vec<Job> {
+        if !self.prefs.icon_folders.contains(&folder) {
+            self.prefs.icon_folders.push(folder);
+        }
+        vec![
+            Job::SavePrefs(self.prefs.clone()),
+            Job::FindPacks(packs::roots(&self.prefs.icon_folders)),
+        ]
+    }
+
+    /// Move what moves on its own: the tree's springs and its peek.
+    pub fn tick(&mut self) {
+        let now = std::time::Instant::now();
+        // The pace of limn's own opening and closing slots, as quill's.
+        let motion = limn::SpringMotion::settling_in(std::time::Duration::from_millis(
+            u64::from(limn::tokens().motion.move_ms) * 3 / 2,
+        ));
+        let pointer = quill_components::sidebar::Pointer {
+            at: self.pointer,
+            on_toggle: self.hovered.as_deref() == Some(TREE_TOGGLE),
+            toggle_zone: limn::Rect::new(0.0, 0.0, 48.0, look::TOP_BAR),
+            held: self.settings_page.is_some(),
+        };
+        self.sidebar
+            .tick(&pointer, motion, self.reduced_motion, now);
+    }
+
+    pub fn animating(&self) -> bool {
+        self.sidebar.animating(std::time::Instant::now())
+    }
+
     /// What to look at on the disk, once a second: the open files and the folders listed.
     pub fn poll(&mut self) -> Vec<Job> {
         if self.polling {
@@ -212,6 +361,17 @@ impl Ide {
                 self.listed.insert(dir, entries);
             }
             Loaded::Read(path, text, stamp) => self.read(path, text, stamp),
+            Loaded::Packs(offered) => self.offered = offered,
+            Loaded::PrefsSaved => {}
+            // Only the theme still chosen is put in use.
+            Loaded::Pack(json, theme) => {
+                if self.prefs.icons.strip_prefix(packs::THEME) == json.to_str() {
+                    match theme {
+                        Ok(theme) => self.pack = Pack::Theme(Box::new(theme)),
+                        Err(error) => self.pack_error = Some(error),
+                    }
+                }
+            }
             Loaded::Written(path, Save(snapshot), result) => {
                 let Some(buffer) = self.buffers.iter_mut().find(|b| b.path == path) else {
                     return vec![];
@@ -356,37 +516,46 @@ fn name(path: &Path) -> String {
 
 pub fn view(ide: &Ide, window: Size) -> Element {
     let below = (window.height - look::TOP_BAR - 1.0).max(0.0);
-    let mut body = vec![];
-    let mut width = window.width;
-    if ide.tree_open {
-        body.push(tree(ide, below));
-        body.push(vline(below));
-        width -= look::SIDEBAR_WIDTH + 1.0;
-    }
+    let with_line = || Element::row(vec![tree(ide, below), vline(below)]);
+    let mut body: Vec<Element> = ide.sidebar.docked(with_line(), below).into_iter().collect();
+    let width = window.width - ide.sidebar.docked_width();
     body.push(editor(ide, width, below).flex(1.0));
-    Element::column(vec![
+    let body = Element::row(body).size(Some(window.width), Some(below));
+    // Shut, the tree peeks over the editor under the pointer, as quill's sidebar does.
+    let body = ide
+        .sidebar
+        .peeking(body, with_line, Size::new(window.width, below));
+    let root = Element::column(vec![
         top_bar(ide),
         hline(window.width, look::pane_border()),
-        Element::row(body).size(None, Some(below)),
+        body,
     ])
     .size(Some(window.width), Some(window.height))
-    .background(look::palette().surface)
+    .background(look::palette().surface);
+    match &ide.settings_page {
+        Some(page) => settings::dialog(
+            root,
+            prefs::pages(&ide.prefs, ide.settings_menu.as_deref(), &ide.offered),
+            prefs::groups(),
+            page,
+            &ide.settings_query,
+            window,
+        ),
+        None => root,
+    }
 }
 
 /// The tree's toggle, then the open files as quill's terminal tabs: pills, the one on screen
-/// filled, with a dot while a file has changes not saved.
+/// filled, with a dot while a file has changes not saved; Settings at the end.
 fn top_bar(ide: &Ide) -> Element {
+    let open = ide.sidebar.open;
     let mut row = vec![
         hgap(9.0),
         toggle(
             TREE_TOGGLE,
             icons::of(icons::SIDEBAR),
-            if ide.tree_open {
-                "Hide files"
-            } else {
-                "Show files"
-            },
-            ide.tree_open,
+            if open { "Hide files" } else { "Show files" },
+            open,
             Some("Ctrl+Shift+E"),
         ),
         hgap(8.0),
@@ -423,51 +592,84 @@ fn top_bar(ide: &Ide) -> Element {
         };
         row.push(Element::clickable(format!("buffer:{i}"), pill).centered_y());
     }
-    Element::row(row)
+    let pills = Element::row(row).gap(4.0).flex(1.0).clip_children();
+    let settings = tool_surface(
+        SETTINGS_OPEN,
+        icons::of(icons::SETTINGS),
+        "Settings",
+        26.0,
+        None,
+        look::tool_hover(),
+        Some("Ctrl+,"),
+    );
+    Element::row(vec![pills, settings.centered_y(), hgap(8.0)])
         .gap(4.0)
         .size(None, Some(look::TOP_BAR))
-        .clip_children()
 }
 
-/// The folder's files as git sees them, folders first, each folder listed when first opened.
+/// The folder's files as git sees them, folders first, each folder listed when first opened,
+/// with lines from each to its folder and the icons of the pack in use.
 fn tree(ide: &Ide, height: f32) -> Element {
-    let mut rows = vec![Element::row(vec![
+    let mut header = vec![
         hgap(8.0),
         muted(name(&ide.root)).font_size(SMALL).centered_y(),
-    ])
-    .size(None, Some(ROW))];
+    ];
+    if let Some(error) = &ide.pack_error {
+        header.push(Element::spacer().flex(1.0));
+        let warning = limn::Tooltip::new(
+            Element::icon(icons::of(icons::WARNING))
+                .foreground(look::awaiting())
+                .size(Some(14.0), Some(14.0)),
+            "tree:pack-error",
+            format!("The icon theme did not load: {error}"),
+            look::palette(),
+        );
+        header.push(warning.render().centered_y());
+        header.push(hgap(8.0));
+    }
+    let mut visible = vec![];
+    tree_rows(ide, &ide.root, 0, &mut visible);
+    let depths: Vec<usize> = visible.iter().map(|(_, depth)| *depth).collect();
     let shown = ide.active_buffer().map(|b| b.path.as_path());
-    tree_rows(ide, &ide.root, 0, shown, &mut rows);
+    let palette = ComponentPalette {
+        hover: look::row_hover(),
+        selected: look::selected(),
+        ..look::palette()
+    };
+    let width = look::SIDEBAR_WIDTH - 12.0;
+    // The muted ink at about a third: the divider's gray is lost on the sidebar's fill.
+    let muted = look::muted();
+    let guide = limn::Color::rgba(muted.r, muted.g, muted.b, 80);
+    let mut rows = vec![Element::row(header).size(None, Some(ROW))];
+    for ((entry, _), guides) in visible.iter().zip(limn::guides_for_depths(&depths)) {
+        let open = entry.dir && ide.expanded.contains(&entry.path);
+        let (icon, ink) = ide.pack.icon(&entry.path, entry.dir, open);
+        let icon = Element::icon(icon)
+            .foreground(ink)
+            .size(Some(16.0), Some(16.0))
+            .centered();
+        let kind = if entry.dir { "dir" } else { "file" };
+        let id = format!("{kind}:{}", entry.path.display());
+        let title = text(name(&entry.path)).centered_y();
+        let row = TreeRow::new(|c| Element::clickable(id, c), icon, title, guides, palette)
+            .height(ROW)
+            .width(width)
+            .guide_color(guide)
+            .selected(shown == Some(entry.path.as_path()));
+        rows.push(row.render().radius(6.0));
+    }
     Element::scroll("tree:scroll", Element::column(rows).padding(6.0))
         .size(Some(look::SIDEBAR_WIDTH), Some(height))
         .background(look::sidebar())
         .clip_children()
 }
 
-fn tree_rows(ide: &Ide, dir: &Path, depth: usize, shown: Option<&Path>, rows: &mut Vec<Element>) {
+/// The rows on show, depth first, with their depths.
+fn tree_rows<'a>(ide: &'a Ide, dir: &Path, depth: usize, rows: &mut Vec<(&'a Entry, usize)>) {
     for entry in ide.listed.get(dir).into_iter().flatten() {
-        let indent = hgap(2.0 + depth as f32 * INDENT);
-        let label = text(name(&entry.path)).centered_y();
-        if entry.dir {
-            let open = ide.expanded.contains(&entry.path);
-            let caret = Element::icon(icons::of(if open {
-                icons::CARET_DOWN
-            } else {
-                icons::CARET_RIGHT
-            }))
-            .foreground(look::muted())
-            .size(Some(10.0), Some(10.0))
-            .centered_y();
-            let id = format!("dir:{}", entry.path.display());
-            rows.push(side_row(id, vec![indent, caret, label], false, ROW));
-            if open {
-                tree_rows(ide, &entry.path, depth + 1, shown, rows);
-            }
-        } else {
-            let id = format!("file:{}", entry.path.display());
-            let selected = shown == Some(entry.path.as_path());
-            // Past the caret's 10 px and the row's gap, under the folders' names.
-            rows.push(side_row(id, vec![indent, hgap(10.0), label], selected, ROW));
+        rows.push((entry, depth));
+        if entry.dir && ide.expanded.contains(&entry.path) {
+            tree_rows(ide, &entry.path, depth + 1, rows);
         }
     }
 }
@@ -551,11 +753,14 @@ fn editor(ide: &Ide, width: f32, height: f32) -> Element {
         ) => {
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             // An editor per file keeps each one's caret and scroll while another is on screen.
-            // Vim starts in Normal mode: reading, until `i`.
+            // With Vim keys, a file opens in Normal mode: reading, until `i`.
             CodeEditor::new(buffer.editor_id(), editor.clone())
                 .palette(look::palette())
                 .language(limn::CodeLanguage::from_code_fence(ext))
-                .vim_mode(true)
+                .font_size(ide.prefs.font_size as f32)
+                .vim_mode(ide.prefs.vim)
+                .soft_wrap(ide.prefs.wrap)
+                .minimap(ide.prefs.minimap)
                 .status_bar(true)
                 .height(height)
                 .render()
@@ -574,8 +779,9 @@ mod tests {
     }
 
     fn with_files() -> Ide {
-        let (mut ide, jobs) = Ide::new("/r".into());
-        assert_eq!(jobs, vec![Job::List("/r".into())]);
+        let (mut ide, jobs) = Ide::new("/r".into(), Prefs::default());
+        assert_eq!(jobs[0], Job::List("/r".into()));
+        ide.reduced_motion = true;
         let entry = |p: &str, dir| Entry {
             path: p.into(),
             dir,
@@ -756,6 +962,59 @@ mod tests {
     }
 
     #[test]
+    fn settings_change_the_icons_and_are_kept_at_once() {
+        let mut ide = with_files();
+        assert!(
+            click(&mut ide, "set:vim").is_empty(),
+            "shut, Settings take no clicks"
+        );
+        let jobs = click(&mut ide, SETTINGS_OPEN);
+        assert!(matches!(jobs.as_slice(), [Job::FindPacks(_)]));
+        click(&mut ide, "set:icons");
+        assert_eq!(ide.settings_menu.as_deref(), Some("icons"));
+        let jobs = click(&mut ide, "set:icons=theme:/t/theme.json");
+        assert_eq!(ide.settings_menu, None);
+        assert!(
+            matches!(&jobs[..], [Job::SavePrefs(_), Job::LoadPack(p)] if p == Path::new("/t/theme.json"))
+        );
+        // A theme that comes late, after another was chosen, is not put in use.
+        click(&mut ide, "set:icons=quill");
+        ide.loaded(Loaded::Pack("/t/theme.json".into(), Ok(Theme::default())));
+        assert!(matches!(ide.pack, Pack::Quill));
+        let jobs = click(&mut ide, "set:vim");
+        assert!(!ide.prefs.vim && matches!(&jobs[..], [Job::SavePrefs(p)] if !p.vim));
+        click(&mut ide, SETTINGS_CLOSE);
+        assert_eq!(ide.settings_page, None);
+    }
+
+    #[test]
+    fn the_shut_tree_peeks_from_its_toggle_and_goes_once_the_pointer_left() {
+        let mut ide = with_files();
+        let on_toggle = |ide: &mut Ide| {
+            ide.hovered = Some(TREE_TOGGLE.into());
+            ide.pointer = Some(Point::new(20.0, 18.0));
+        };
+        let away = |ide: &mut Ide| {
+            ide.hovered = None;
+            ide.pointer = Some(Point::new(700.0, 300.0));
+        };
+        on_toggle(&mut ide);
+        click(&mut ide, TREE_TOGGLE);
+        ide.tick();
+        // Hidden by a click, it waits for the pointer to leave its toggle first.
+        assert!(!ide.sidebar.peek);
+        away(&mut ide);
+        ide.tick();
+        assert!(!ide.sidebar.peek);
+        on_toggle(&mut ide);
+        ide.tick();
+        assert!(ide.sidebar.peek);
+        let window = Size::new(1408.0, 844.0);
+        let frame = UiTree::new(view(&ide, window)).layout(window);
+        assert!(frame.regions.iter().any(|r| r.id == "file:/r/a.rs"));
+    }
+
+    #[test]
     fn shortcuts_leave_vim_its_keys_and_cycle_the_files() {
         let mut ide = with_files();
         assert_eq!(ide.shortcut(Key::B, false), None);
@@ -788,6 +1047,7 @@ mod tests {
             .unwrap();
         assert!(row.rect.width > 200.0);
         click(&mut ide, TREE_TOGGLE);
+        ide.tick();
         let frame = UiTree::new(view(&ide, window)).layout(window);
         assert!(!frame.regions.iter().any(|r| r.id == "file:/r/a.rs"));
         assert!(frame.regions.iter().any(|r| r.id == "close:0"));

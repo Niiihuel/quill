@@ -1,0 +1,207 @@
+//! What the person chose in Settings, kept in `$XDG_CONFIG_HOME/quill-ide/settings.json`, and
+//! Settings' pages, drawn as quill's.
+
+use crate::packs::{self, Offered};
+use quill_components::icons;
+use quill_components::settings::{
+    choices, select, setting, setting_button, setting_switch, SettingsPage,
+};
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+pub const FIRST: &str = "general";
+pub const ICON_FOLDER_ADD: &str = "settings:icons:add";
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Prefs {
+    /// "system", "light" or "dark".
+    pub theme: String,
+    pub font_size: u32,
+    pub vim: bool,
+    pub wrap: bool,
+    pub minimap: bool,
+    /// The file icons' pack: `packs::QUILL`, `packs::MATERIAL`, or a theme's key.
+    pub icons: String,
+    /// Folders the person added to look for icon themes in, beside the editors' own.
+    pub icon_folders: Vec<PathBuf>,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Self {
+            theme: "system".into(),
+            font_size: 13,
+            vim: true,
+            wrap: false,
+            minimap: false,
+            icons: packs::MATERIAL.into(),
+            icon_folders: vec![],
+        }
+    }
+}
+
+/// Where they are kept.
+pub fn path() -> PathBuf {
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .unwrap_or_else(|| ".".into());
+    config.join("quill-ide/settings.json")
+}
+
+/// The ones kept, or the defaults when there are none or they can't be read.
+pub fn load() -> Prefs {
+    std::fs::read_to_string(path())
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+const SWITCHES: [&str; 3] = ["vim", "wrap", "minimap"];
+
+impl Prefs {
+    /// A switch flipped, or a choice made: `name` and, for a choice, its value. False when
+    /// `name` is not a setting.
+    pub fn set(&mut self, name: &str, value: Option<&str>) -> bool {
+        match (name, value) {
+            ("vim", None) => self.vim = !self.vim,
+            ("wrap", None) => self.wrap = !self.wrap,
+            ("minimap", None) => self.minimap = !self.minimap,
+            ("theme", Some(v @ ("system" | "light" | "dark"))) => self.theme = v.into(),
+            ("font_size", Some(v)) => match v.parse() {
+                Ok(size @ 10..=24) => self.font_size = size,
+                _ => return false,
+            },
+            ("icons", Some(v)) => self.icons = v.into(),
+            _ => return false,
+        }
+        true
+    }
+
+    pub fn is_switch(name: &str) -> bool {
+        SWITCHES.contains(&name)
+    }
+}
+
+/// Settings' pages, with `open` the select whose menu is open and `offered` the icon themes
+/// found.
+pub fn pages(prefs: &Prefs, open: Option<&str>, offered: &[Offered]) -> Vec<SettingsPage> {
+    let palette = quill_components::look::palette();
+    let pick = |name: &str, options: Vec<(String, String)>, current: &str| {
+        select(name, &options, current, open == Some(name))
+    };
+    let switch = |name: &str, on: bool| setting_switch(name, on, palette);
+    let sizes: Vec<(String, String)> = (11..=18)
+        .map(|size| (size.to_string(), format!("{size} px")))
+        .collect();
+    let mut packs = choices(&[
+        (packs::QUILL, "quill"),
+        (packs::MATERIAL, "Material Icon Theme"),
+    ]);
+    packs.extend(offered.iter().map(|o| (o.key.clone(), o.label.clone())));
+    let page = |key: &str, title: &str, icon, groups| SettingsPage {
+        key: key.into(),
+        title: title.into(),
+        icon,
+        groups,
+    };
+    vec![
+        page(
+            FIRST,
+            "General",
+            icons::SETTINGS,
+            vec![(
+                "Appearance".into(),
+                vec![setting(
+                    "Theme",
+                    "",
+                    pick(
+                        "theme",
+                        choices(&[("system", "System"), ("light", "Light"), ("dark", "Dark")]),
+                        &prefs.theme,
+                    ),
+                )],
+            )],
+        ),
+        page(
+            "editor",
+            "Editor",
+            icons::CODE,
+            vec![(
+                "Editor".into(),
+                vec![
+                    setting(
+                        "Text size",
+                        "",
+                        pick("font_size", sizes, &prefs.font_size.to_string()),
+                    ),
+                    setting(
+                        "Vim keys",
+                        "Files open in Normal mode, to read; i writes.",
+                        switch("vim", prefs.vim),
+                    ),
+                    setting(
+                        "Wrap long lines",
+                        "At the editor's width, instead of scrolling sideways.",
+                        switch("wrap", prefs.wrap),
+                    ),
+                    setting(
+                        "Minimap",
+                        "An overview of the file beside it.",
+                        switch("minimap", prefs.minimap),
+                    ),
+                ],
+            )],
+        ),
+        page(
+            "icons",
+            "File icons",
+            icons::FOLDER,
+            vec![(
+                "File icons".into(),
+                vec![
+                    setting(
+                        "Icon theme",
+                        "quill's drawings, the Material set, or a VS Code icon theme found \
+                         among your editors' extensions.",
+                        pick("icons", packs, &prefs.icons),
+                    ),
+                    setting(
+                        "More icon themes",
+                        "A folder with an icon theme's extension, or a folder of them.",
+                        setting_button(ICON_FOLDER_ADD, "Add folder…"),
+                    ),
+                ],
+            )],
+        ),
+    ]
+}
+
+/// The column's one group.
+pub fn groups() -> Vec<(&'static str, Vec<String>)> {
+    vec![(
+        "Preferences",
+        vec![FIRST.into(), "editor".into(), "icons".into()],
+    )]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_change_only_to_what_they_can_be_and_survive_a_trip_to_json() {
+        let mut prefs = Prefs::default();
+        assert!(prefs.set("vim", None) && !prefs.vim);
+        assert!(prefs.set("font_size", Some("15")) && prefs.font_size == 15);
+        assert!(!prefs.set("font_size", Some("200")));
+        assert!(!prefs.set("theme", Some("pink")));
+        assert!(prefs.set("icons", Some("theme:/x/theme.json")));
+        let json = serde_json::to_string(&prefs).unwrap();
+        assert_eq!(serde_json::from_str::<Prefs>(&json).unwrap(), prefs);
+        // What a later version adds is filled in from the defaults.
+        let old: Prefs = serde_json::from_str(r#"{"vim": false}"#).unwrap();
+        assert_eq!((old.vim, old.font_size), (false, 13));
+    }
+}

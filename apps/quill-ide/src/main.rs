@@ -4,6 +4,8 @@
 
 mod disk;
 mod ide;
+mod packs;
+mod prefs;
 
 use eframe::egui;
 use limn::{Element, Size, UiTree};
@@ -22,6 +24,8 @@ struct App {
     pinned_theme: bool,
     /// When the disk was last looked at for files and folders changed by others.
     polled: std::time::Instant,
+    /// A folder of icon themes chosen in the platform's dialog, picked up on the next frame.
+    picked: Arc<Mutex<Option<PathBuf>>>,
 }
 
 impl App {
@@ -62,7 +66,15 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.ide.quitting = true;
         }
-        let dark = ctx.system_theme() != Some(egui::Theme::Light);
+        if let Some(folder) = self.picked.lock().unwrap().take() {
+            let jobs = self.ide.add_icon_folder(folder);
+            self.run(jobs);
+        }
+        let dark = match self.ide.prefs.theme.as_str() {
+            "light" => false,
+            "dark" => true,
+            _ => ctx.system_theme() != Some(egui::Theme::Light),
+        };
         if !self.pinned_theme && dark != look::is_dark() {
             ctx.set_theme(if dark {
                 egui::Theme::Dark
@@ -74,9 +86,21 @@ impl eframe::App for App {
         limn_egui::normalize_keyboard_input(&ctx);
         let area = ui.max_rect();
         let window = Size::new(area.width(), area.height());
+        // The tree peeks while the pointer is on its toggle or the window's edge.
+        self.ide.pointer = ctx
+            .input(|i| i.pointer.hover_pos())
+            .map(|p| limn::Point::new(p.x - area.min.x, p.y - area.min.y));
+        self.ide.hovered = self.tree.hovered_id().map(str::to_owned);
+        self.ide.tick();
         self.tree.set_root(ide::view(&self.ide, window));
         self.tree.layout(window);
         let mut actions = vec![];
+        // Ctrl+, opens Settings, as quill's; limn has no key for it.
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Comma)) {
+            actions.push(limn::UiAction::Clicked {
+                id: quill_components::settings::SETTINGS_OPEN.into(),
+            });
+        }
         for event in limn_egui::events(&ctx, area.min) {
             if let limn::UiEvent::Key {
                 key,
@@ -96,15 +120,30 @@ impl eframe::App for App {
             if let limn::UiAction::CopyRequested { text } = &action {
                 ctx.copy_text(text.clone());
             }
+            if matches!(&action, limn::UiAction::Clicked { id } if id == prefs::ICON_FOLDER_ADD) {
+                // The dialog blocks until the person answers, so it runs beside the window.
+                let (picked, ctx) = (self.picked.clone(), ctx.clone());
+                std::thread::spawn(move || {
+                    if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                        *picked.lock().unwrap() = Some(folder);
+                        ctx.request_repaint();
+                    }
+                });
+            }
             let jobs = self.ide.update(&action);
             self.run(jobs);
         }
+        self.ide.tick();
         self.tree.set_root(ide::view(&self.ide, window));
         let frame = self.tree.layout(window);
         limn_egui::paint_at(ui, &frame, area.min);
         limn_egui::set_cursor(&ctx, self.tree.cursor());
         if let Some(after) = self.tree.animation_repaint_after() {
             ctx.request_repaint_after(after);
+        }
+        // The tree's springs are the IDE's own, not the tree's.
+        if self.ide.animating() {
+            ctx.request_repaint();
         }
         ctx.request_repaint_after(POLL);
     }
@@ -156,7 +195,7 @@ fn main() -> eframe::Result {
                 egui::Theme::Light
             });
             look::set_dark(dark);
-            let (mut ide, mut jobs) = ide::Ide::new(root);
+            let (mut ide, mut jobs) = ide::Ide::new(root, prefs::load());
             jobs.extend(file.map_or(vec![], |f| ide.open(f)));
             let app = App {
                 tree: UiTree::new(Element::spacer()),
@@ -166,6 +205,7 @@ fn main() -> eframe::Result {
                 fonts_attached: false,
                 pinned_theme: std::env::var_os("QUILL_THEME").is_some(),
                 polled: std::time::Instant::now(),
+                picked: Arc::default(),
             };
             app.run(jobs);
             Ok(Box::new(app))
