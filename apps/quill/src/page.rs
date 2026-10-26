@@ -35,6 +35,8 @@ pub struct Page {
     last: Option<(Instant, egui::Pos2, egui::PointerButton, u8)>,
     /// The window saw no pointer last frame: it was over a native tab, or out of the window.
     pub away: bool,
+    /// A boundary between panes is being dragged: a press on one, not yet let go.
+    pub resizing: bool,
 }
 
 impl Page {

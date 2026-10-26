@@ -63,6 +63,31 @@ pub fn subprocess() -> Option<i32> {
     ))
 }
 
+/// The `Xft.dpi` the X server's resources set, the scale the person gave X11 programs.
+pub fn xft_dpi() -> Option<f32> {
+    let lib = x11_dl::xlib::Xlib::open().ok()?;
+    unsafe {
+        let display = (lib.XOpenDisplay)(std::ptr::null());
+        if display.is_null() {
+            return None;
+        }
+        let resources = (lib.XResourceManagerString)(display);
+        let dpi = (!resources.is_null())
+            .then(|| {
+                std::ffi::CStr::from_ptr(resources)
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .and_then(|text| {
+                text.lines()
+                    .find_map(|line| line.strip_prefix("Xft.dpi:"))
+                    .and_then(|value| value.trim().parse().ok())
+            });
+        (lib.XCloseDisplay)(display);
+        dpi
+    }
+}
+
 /// Chromium running in quill's process, and what it shows in quill's window.
 #[derive(Clone)]
 pub struct Native {
@@ -223,9 +248,11 @@ impl X11 {
         }
     }
 
+    /// Out of sight, beyond quill's window, which clips it: Chromium maps an unmapped tab
+    /// again on its own, under a pointer dragging something of quill's.
     fn hide(&self, window: u64) {
         unsafe {
-            (self.lib.XUnmapWindow)(self.display, window);
+            (self.lib.XMoveWindow)(self.display, window, -30000, -30000);
             (self.lib.XFlush)(self.display);
         }
     }
@@ -286,8 +313,9 @@ impl Native {
 
     /// Show the visible tab at `at`, `[x, y, width, height]` in the window's pixels, or,
     /// with `None`, put its last frame in its place because something covers it: the page
-    /// stays up until that frame is in, or for `HOLD` at most.
-    pub fn place(&self, at: Option<[i32; 4]>) {
+    /// stays up until a fresh frame is in, or for `HOLD` at most, unless `now`, when it goes at
+    /// once and the frame taken last stands in.
+    pub fn place(&self, at: Option<[i32; 4]>, now: bool) {
         let shared = &self.shared;
         let mut view = shared.view.lock().unwrap();
         let Some(target) = view.target.clone() else {
@@ -325,7 +353,7 @@ impl Native {
                         now
                     }
                 };
-                if view.frozen || since.elapsed() >= HOLD {
+                if now || view.frozen || since.elapsed() >= HOLD {
                     shared.x.lock().unwrap().hide(xid);
                     view.mapped = false;
                 }

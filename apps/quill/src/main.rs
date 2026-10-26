@@ -310,7 +310,35 @@ impl App {
             let surface = self
                 .browser_shown
                 .map(|(session, view)| quill_ui::view::browser_surface(session, view.tab));
+            // A boundary dragged over the tab would lose the pointer to it, as Desktop hides its
+            // view while resizing (3.6556.2 `shared-16`, `isResizing`): from a press on one
+            // until the button is let go, wherever the boundary has moved by then.
+            let (pressed, down, origin_at) = ctx.input(|i| {
+                (
+                    i.pointer.any_pressed(),
+                    i.pointer.any_down(),
+                    i.pointer.press_origin(),
+                )
+            });
+            if pressed {
+                self.page.resizing = origin_at.is_some_and(|at| {
+                    let at = limn::Point::new(at.x - origin.x, at.y - origin.y);
+                    frame
+                        .press_region(at)
+                        .is_some_and(|r| r.id.starts_with("split:"))
+                });
+            }
+            self.page.resizing &= down;
+            let resizing = self.page.resizing;
+            // Over a boundary already, so the tab is gone by the press, however fast it is.
+            let near = self
+                .ui
+                .hovered
+                .as_deref()
+                .is_some_and(|id| id.starts_with("split:"));
             let covered = self.ui.animating()
+                || resizing
+                || near
                 || surface
                     .as_deref()
                     .is_none_or(|surface| frame.drawn_over(surface));
@@ -323,7 +351,8 @@ impl App {
                     (rect.height * ppp).round() as i32,
                 ]
             });
-            native.place(at);
+            // A boundary's drag would reach the tab at its first move: it goes at once.
+            native.place(at, resizing);
             // The pointer back over quill's own, from the tab, which takes it while over it:
             // the tab's frame is taken now, while it is fresh.
             let away = ctx.input(|i| i.pointer.hover_pos()).is_none();
@@ -1039,6 +1068,17 @@ fn main() -> eframe::Result {
         .unwrap_or_else(|| ".".into());
     let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
     let native = native_browser(&saved_settings());
+    // On XWayland the compositor scales quill's window itself: without a scale of the
+    // person's own (Xft.dpi, WINIT_X11_SCALE_FACTOR), winit's guess from the screen's size
+    // would scale it a second time.
+    let set = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
+    if native
+        && set("WAYLAND_DISPLAY")
+        && !set("WINIT_X11_SCALE_FACTOR")
+        && quill_engine::native::xft_dpi().is_none()
+    {
+        std::env::set_var("WINIT_X11_SCALE_FACTOR", "1");
+    }
     let started: Arc<Mutex<Option<quill_engine::Native>>> = Arc::default();
     let keep = started.clone();
     let options = eframe::NativeOptions {
