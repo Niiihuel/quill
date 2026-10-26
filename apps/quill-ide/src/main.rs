@@ -4,6 +4,7 @@
 
 mod disk;
 mod find;
+mod grep;
 mod ide;
 mod packs;
 mod prefs;
@@ -128,15 +129,15 @@ impl eframe::App for App {
         }
         let focused = self.tree.focused_id().map(str::to_owned);
         for event in limn_egui::events(&ctx, area.min) {
-            // Opening by name: the arrows move the row Enter opens.
-            if self.ide.quick.is_some() {
+            // Opening by name and finding in every file: the arrows move the row Enter opens.
+            if self.ide.quick.is_some() || self.ide.grep.is_some() {
                 if let limn::UiEvent::Key {
                     key: key @ (limn::Key::ArrowUp | limn::Key::ArrowDown),
                     ..
                 } = &event
                 {
                     self.ide
-                        .quick_step(if *key == limn::Key::ArrowUp { -1 } else { 1 });
+                        .step_chosen(if *key == limn::Key::ArrowUp { -1 } else { 1 });
                     continue;
                 }
             }

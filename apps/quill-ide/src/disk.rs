@@ -49,6 +49,10 @@ pub fn run(job: Job) -> Loaded {
         }
         Job::FindFonts => Loaded::Fonts(monospaced()),
         Job::FindFiles(root) => Loaded::Files(files(&root)),
+        Job::Grep(root, query, count) => {
+            let hits = crate::grep::grep(&root, &files(&root), &query);
+            Loaded::Grep(count, hits)
+        }
         Job::SaveSession(root, session) => {
             // shortcut: a session that fails to save is only said on stderr, as Settings.
             if let Err(error) = crate::session::save(&root, &session) {

@@ -2,6 +2,7 @@
 //! The disk is the host's: `update` returns `Job`s, and what they find comes back to `loaded`.
 
 use crate::find::{Find, FIND, FIND_OPEN, FIND_QUERY};
+use crate::grep::{Hit, GREP_CLOSE, GREP_FIELD, GREP_OPEN};
 use crate::packs::{self, Offered, Pack, Theme};
 use crate::prefs::{self, Prefs};
 use crate::quick::{self, QUICK_CLOSE, QUICK_FIELD, QUICK_OPEN};
@@ -55,6 +56,8 @@ pub enum Job {
     /// Every file of the folder git sees, for opening by name.
     FindFiles(PathBuf),
     SaveSession(PathBuf, Session),
+    /// The lines of the folder's files that hold the query, for the search numbered so.
+    Grep(PathBuf, String, u64),
 }
 
 /// A family's regular and bold faces, for the editor.
@@ -96,6 +99,7 @@ pub enum Loaded {
     /// The folder's files, from the folder.
     Files(Vec<PathBuf>),
     SessionSaved,
+    Grep(u64, Vec<Hit>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -183,6 +187,20 @@ pub struct Ide {
     /// Words for the clipboard, and a tree row to scroll into view, for the host.
     pub copy: Option<String>,
     pub reveal_row: Option<String>,
+    /// Finding in every file: the query, the row Enter opens, the lines found, and the
+    /// number of the latest search, whose lines alone are shown.
+    pub grep: Option<Grep>,
+    pub grep_count: u64,
+    /// A file's row to take the caret to once it is read.
+    pub pending_goto: Option<(PathBuf, usize)>,
+}
+
+#[derive(Default)]
+pub struct Grep {
+    pub query: String,
+    pub chosen: usize,
+    pub hits: Vec<Hit>,
+    pub searching: bool,
 }
 
 impl Ide {
@@ -256,6 +274,9 @@ impl Ide {
             reveal: false,
             copy: None,
             reveal_row: None,
+            grep: None,
+            grep_count: 0,
+            pending_goto: None,
         };
         (ide, jobs)
     }
@@ -308,6 +329,8 @@ impl Ide {
                 self.settings_query = value.clone();
             } else if id == QUICK_FIELD {
                 self.quick = Some((value.clone(), 0));
+            } else if id == GREP_FIELD {
+                return self.grep_for(value);
             } else if id == FIND_QUERY {
                 self.find_with(|find, editor| {
                     find.query = value.clone();
@@ -320,6 +343,10 @@ impl Ide {
         if let UiAction::Submitted { id, .. } = action {
             if id == QUICK_FIELD {
                 return self.quick_chosen();
+            }
+            if id == GREP_FIELD {
+                let chosen = self.grep.as_ref().map_or(0, |g| g.chosen);
+                return self.grep_open(chosen);
             }
             if id == FIND_QUERY {
                 self.find_with(|find, editor| find.step(editor, 1));
@@ -337,6 +364,17 @@ impl Ide {
         }
         if let Some(jobs) = self.quick_clicked(id) {
             return jobs;
+        }
+        if id == GREP_OPEN {
+            self.grep = Some(Grep::default());
+            return vec![];
+        }
+        if id == GREP_CLOSE {
+            self.grep = None;
+            return vec![];
+        }
+        if let Some(at) = id.strip_prefix("grep:hit:").and_then(|i| i.parse().ok()) {
+            return self.grep_open(at);
         }
         if self.find_clicked(id) {
             return vec![];
@@ -462,12 +500,79 @@ impl Ide {
         quick::best(query, &self.files)
     }
 
-    /// Move the row Enter opens by `by`, within the rows.
-    pub fn quick_step(&mut self, by: isize) {
-        let count = self.quick_found().len() as isize;
+    /// Move the row Enter opens by `by`, within the rows, in whichever search is open.
+    pub fn step_chosen(&mut self, by: isize) {
+        let step = |chosen: &mut usize, count: usize| {
+            *chosen = (*chosen as isize + by).clamp(0, count.saturating_sub(1) as isize) as usize;
+        };
+        let count = self.quick_found().len();
         if let Some((_, chosen)) = self.quick.as_mut() {
-            *chosen = (*chosen as isize + by).clamp(0, (count - 1).max(0)) as usize;
+            step(chosen, count);
         }
+        if let Some(grep) = self.grep.as_mut() {
+            step(&mut grep.chosen, grep.hits.len());
+        }
+    }
+
+    /// Search every file for `query`, from two letters on; what an older search finds is
+    /// dropped when it comes.
+    fn grep_for(&mut self, query: &str) -> Vec<Job> {
+        let Some(grep) = self.grep.as_mut() else {
+            return vec![];
+        };
+        self.grep_count += 1;
+        grep.query = query.to_owned();
+        grep.chosen = 0;
+        grep.searching = query.chars().count() >= 2;
+        if !grep.searching {
+            grep.hits.clear();
+            return vec![];
+        }
+        vec![Job::Grep(
+            self.root.clone(),
+            query.to_owned(),
+            self.grep_count,
+        )]
+    }
+
+    fn grep_open(&mut self, at: usize) -> Vec<Job> {
+        let Some(hit) = self.grep.as_ref().and_then(|g| g.hits.get(at)).cloned() else {
+            return vec![];
+        };
+        self.grep = None;
+        self.goto(self.root.join(&hit.path), hit.row)
+    }
+
+    /// Open `path` with the caret at the start of `row`, now or once it is read.
+    pub fn goto(&mut self, path: PathBuf, row: usize) -> Vec<Job> {
+        let jobs = self.open(path.clone());
+        self.pending_goto = Some((path, row));
+        self.apply_goto();
+        jobs
+    }
+
+    /// The pending row, if its file is read: the caret to it, in view, with the keys.
+    fn apply_goto(&mut self) {
+        let Some((path, row)) = self.pending_goto.clone() else {
+            return;
+        };
+        let Some(buffer) = self.buffers.iter().find(|b| b.path == path && !b.loading) else {
+            return;
+        };
+        self.pending_goto = None;
+        let Some(editor) = &buffer.editor else {
+            return;
+        };
+        let shared = editor.shared_buffer();
+        if let Ok(mut text) = shared.lock() {
+            let snapshot = text.snapshot();
+            let row = row.min(snapshot.line_count().saturating_sub(1));
+            if let Ok(line) = snapshot.line_range(row) {
+                let _ = text.set_selection(Selection::caret(line.start));
+            }
+        }
+        self.focus = Some(buffer.editor_id());
+        self.reveal = true;
     }
 
     fn quick_chosen(&mut self) -> Vec<Job> {
@@ -640,6 +745,12 @@ impl Ide {
             Loaded::PrefsSaved => {}
             Loaded::Fonts(fonts) => self.fonts = fonts,
             Loaded::Files(files) => self.files = files,
+            Loaded::Grep(count, hits) => {
+                if let Some(grep) = self.grep.as_mut().filter(|_| count == self.grep_count) {
+                    grep.hits = hits;
+                    grep.searching = false;
+                }
+            }
             Loaded::SessionSaved => {}
             // Only the family still chosen is put in use; one that fails keeps the faces.
             Loaded::Font(family, Ok(Faces(regular, bold))) => {
@@ -724,6 +835,7 @@ impl Ide {
                 loading: false,
             });
             self.active = Some(self.buffers.len() - 1);
+            self.apply_goto();
             return;
         };
         buffer.loading = false;
@@ -740,6 +852,7 @@ impl Ide {
         }
         buffer.stamp = stamp;
         buffer.reloading = false;
+        self.apply_goto();
     }
 
     /// The control a Ctrl shortcut clicks. Vim's own Ctrl keys (B, F, U, D, J, N, R) stay
@@ -757,6 +870,7 @@ impl Ide {
             (Key::PageUp, false) => step(-1),
             // Over Vim's Ctrl+P, a line up as `k` is.
             (Key::P, false) => Some(QUICK_OPEN.into()),
+            (Key::F, true) => Some(GREP_OPEN.into()),
             // With Vim keys Ctrl+F is a page down, and `/` finds.
             (Key::F, false) if !self.prefs.vim => Some(FIND_OPEN.into()),
             _ => None,
@@ -862,6 +976,40 @@ pub fn view(ide: &Ide, window: Size) -> Element {
                 "Open a file by its name",
                 vec![(title.into(), rows)],
                 *chosen,
+            )
+        }
+        None => root,
+    };
+    let root = match &ide.grep {
+        Some(grep) => {
+            let rows = grep
+                .hits
+                .iter()
+                .enumerate()
+                .map(|(at, hit)| {
+                    let full = ide.root.join(&hit.path);
+                    let mut row = Found::new(format!("grep:hit:{at}"), hit.text.clone());
+                    row.detail = Some(format!("{}:{}", hit.path.display(), hit.row + 1));
+                    row.icon = Some(ide.pack.icon(&full, false, false));
+                    row
+                })
+                .collect();
+            let title = match (grep.searching, grep.hits.len()) {
+                (true, _) => "Finding…".to_owned(),
+                (false, 0) if grep.query.chars().count() >= 2 => "Nothing found".to_owned(),
+                (false, 0) => "Two letters or more".to_owned(),
+                (false, n) if n >= crate::grep::LIMIT => format!("The first {n} lines"),
+                (false, 1) => "1 line".to_owned(),
+                (false, n) => format!("{n} lines"),
+            };
+            search::dialog(
+                root,
+                GREP_FIELD,
+                GREP_CLOSE,
+                &grep.query,
+                "Find in every file",
+                vec![(title, rows)],
+                grep.chosen,
             )
         }
         None => root,
@@ -1540,8 +1688,8 @@ mod tests {
             id: QUICK_FIELD.into(),
             value: "rs".into(),
         });
-        ide.quick_step(1);
-        ide.quick_step(5);
+        ide.step_chosen(1);
+        ide.step_chosen(5);
         let jobs = ide.update(&UiAction::Submitted {
             id: QUICK_FIELD.into(),
             value: "rs".into(),
@@ -1587,6 +1735,48 @@ mod tests {
             vec![Job::List("/r/src/deep".into()), Job::List("/r/src".into())]
         );
         assert_eq!(ide.reveal_row.as_deref(), Some("file:/r/src/deep/x.rs"));
+    }
+
+    #[test]
+    fn a_line_found_in_every_file_opens_with_the_caret_on_it() {
+        let mut ide = with_files();
+        click(&mut ide, GREP_OPEN);
+        let input = |ide: &mut Ide, value: &str| {
+            ide.update(&UiAction::InputChanged {
+                id: GREP_FIELD.into(),
+                value: value.into(),
+            })
+        };
+        assert!(
+            input(&mut ide, "l").is_empty(),
+            "one letter finds nothing yet"
+        );
+        assert_eq!(
+            input(&mut ide, "le")[0],
+            Job::Grep("/r".into(), "le".into(), 2)
+        );
+        input(&mut ide, "let");
+        let hit = |row| Hit {
+            path: "src/b.rs".into(),
+            row,
+            text: "let".into(),
+        };
+        // What the older search finds is dropped.
+        ide.loaded(Loaded::Grep(2, vec![hit(0)]));
+        assert!(ide.grep.as_ref().unwrap().hits.is_empty());
+        ide.loaded(Loaded::Grep(3, vec![hit(0), hit(2)]));
+        ide.step_chosen(1);
+        let jobs = ide.update(&UiAction::Submitted {
+            id: GREP_FIELD.into(),
+            value: "let".into(),
+        });
+        assert_eq!(jobs, vec![Job::Read("/r/src/b.rs".into())]);
+        assert!(ide.grep.is_none());
+        read(&mut ide, "/r/src/b.rs", "a\nb\nlet c = 1;\n");
+        let editor = ide.buffers[0].editor.as_ref().unwrap();
+        assert_eq!(editor.snapshot().unwrap().selection().head, 4);
+        assert_eq!(ide.focus.as_deref(), Some("editor:/r/src/b.rs"));
+        assert!(ide.reveal);
     }
 
     #[test]
