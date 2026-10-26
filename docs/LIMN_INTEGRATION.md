@@ -19,6 +19,7 @@ When they are all merged, point `Cargo.toml` back at `../lienzo` and drop the br
 | — | `feat/modal-flush-body` | Settings' modal, a body without padding | local, not pushed |
 | — | `feat/select-plain` | Settings' plain selects | local, not pushed |
 | — | `feat/focus-area` | the browser pane's input surface (`Element::focus_area` public) | local, not pushed |
+| — | `feat/drawn-over` | the browser's native tabs: `Frame::drawn_over(id)` says when quill draws over a page, which then shows its last frame | local, not pushed |
 
 Updating the branch: `git -C ../limn-quill-integration merge <branch>`; the only conflicts so
 far were rows added side by side in `docs/components.md`, `CHANGELOG.md` and `lib.rs`, and
