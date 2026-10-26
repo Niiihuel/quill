@@ -41,6 +41,19 @@ pub enum Job {
     LoadPack(PathBuf),
     /// The branch checked out in this folder's repository.
     Branch(PathBuf),
+    /// The monospaced families installed.
+    FindFonts,
+    /// The faces of this family, or of the system's monospace when empty.
+    LoadFont(String),
+}
+
+/// A family's regular and bold faces, for the editor.
+pub struct Faces(pub limn::Font, pub limn::Font);
+
+impl std::fmt::Debug for Faces {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Faces")
+    }
 }
 
 /// The text a save writes: the buffer as it was when the person asked.
@@ -68,6 +81,8 @@ pub enum Loaded {
     /// The branch, or the commit when none is checked out, and the HEAD file it was read
     /// from, to read again when it changes.
     Branch(Option<String>, Option<(PathBuf, Stamp)>),
+    Fonts(Vec<String>),
+    Font(String, Result<Faces, String>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -136,6 +151,10 @@ pub struct Ide {
     pub branch: Option<String>,
     /// The repository's HEAD file and when it last changed.
     pub head: Option<(PathBuf, Stamp)>,
+    /// The monospaced families found, for Settings.
+    pub fonts: Vec<String>,
+    /// The faces to lay code out in from the next frame, which the host installs.
+    pub fonts_due: Option<limn::Fonts>,
 }
 
 impl Ide {
@@ -143,8 +162,12 @@ impl Ide {
         let mut jobs = vec![
             Job::List(root.clone()),
             Job::Branch(root.clone()),
+            Job::FindFonts,
             Job::FindPacks(packs::roots(&prefs.icon_folders)),
         ];
+        if !prefs.editor_font.is_empty() {
+            jobs.push(Job::LoadFont(prefs.editor_font.clone()));
+        }
         let pack = match prefs.icons.as_str() {
             packs::QUILL => Pack::Quill,
             key => {
@@ -179,6 +202,8 @@ impl Ide {
             vim_mode: None,
             branch: None,
             head: None,
+            fonts: vec![],
+            fonts_due: None,
         };
         (ide, jobs)
     }
@@ -274,7 +299,8 @@ impl Ide {
         if id == SETTINGS_OPEN {
             self.settings_page = Some(prefs::FIRST.into());
             self.settings_query.clear();
-            return Some(vec![Job::FindPacks(packs::roots(&self.prefs.icon_folders))]);
+            let roots = packs::roots(&self.prefs.icon_folders);
+            return Some(vec![Job::FindPacks(roots), Job::FindFonts]);
         }
         self.settings_page.as_ref()?;
         if id == SETTINGS_CLOSE {
@@ -309,6 +335,9 @@ impl Ide {
             return Some(vec![]);
         }
         let mut jobs = vec![Job::SavePrefs(self.prefs.clone())];
+        if name == "editor_font" {
+            jobs.push(Job::LoadFont(self.prefs.editor_font.clone()));
+        }
         if name == "icons" {
             self.pack_error = None;
             match self.prefs.icons.as_str() {
@@ -380,6 +409,18 @@ impl Ide {
             Loaded::Read(path, text, stamp) => self.read(path, text, stamp),
             Loaded::Packs(offered) => self.offered = offered,
             Loaded::PrefsSaved => {}
+            Loaded::Fonts(fonts) => self.fonts = fonts,
+            // Only the family still chosen is put in use; one that fails keeps the faces.
+            Loaded::Font(family, Ok(Faces(regular, bold))) => {
+                if family == self.prefs.editor_font {
+                    use limn::FontFamily::{Monospace, MonospaceBold};
+                    let fonts = limn::fonts()
+                        .face(Monospace, regular)
+                        .face(MonospaceBold, bold);
+                    self.fonts_due = Some(fonts);
+                }
+            }
+            Loaded::Font(_, Err(_)) => {}
             Loaded::Branch(branch, head) => {
                 self.branch = branch;
                 self.head = head;
@@ -564,7 +605,12 @@ pub fn view(ide: &Ide, window: Size) -> Element {
     match &ide.settings_page {
         Some(page) => settings::dialog(
             root,
-            prefs::pages(&ide.prefs, ide.settings_menu.as_deref(), &ide.offered),
+            prefs::pages(
+                &ide.prefs,
+                ide.settings_menu.as_deref(),
+                &ide.offered,
+                &ide.fonts,
+            ),
             prefs::groups(),
             page,
             &ide.settings_query,
@@ -593,7 +639,12 @@ fn top_bar(ide: &Ide) -> Element {
         row.push(muted(name(&ide.root)).centered_y());
     }
     for (i, buffer) in ide.buffers.iter().enumerate() {
-        let mut items = vec![hgap(4.0), text(name(&buffer.path)).centered_y()];
+        let (icon, ink) = ide.pack.icon(&buffer.path, false, false);
+        let icon = Element::icon(icon)
+            .foreground(ink)
+            .size(Some(14.0), Some(14.0))
+            .centered_y();
+        let mut items = vec![hgap(6.0), icon, text(name(&buffer.path)).centered_y()];
         let mark = match buffer {
             b if b.error.is_some() => Some(look::failed()),
             b if b.stale => Some(look::awaiting()),
@@ -1101,7 +1152,10 @@ mod tests {
             "shut, Settings take no clicks"
         );
         let jobs = click(&mut ide, SETTINGS_OPEN);
-        assert!(matches!(jobs.as_slice(), [Job::FindPacks(_)]));
+        assert!(matches!(
+            jobs.as_slice(),
+            [Job::FindPacks(_), Job::FindFonts]
+        ));
         click(&mut ide, "set:icons");
         assert_eq!(ide.settings_menu.as_deref(), Some("icons"));
         let jobs = click(&mut ide, "set:icons=theme:/t/theme.json");
@@ -1117,6 +1171,28 @@ mod tests {
         assert!(!ide.prefs.vim && matches!(&jobs[..], [Job::SavePrefs(p)] if !p.vim));
         click(&mut ide, SETTINGS_CLOSE);
         assert_eq!(ide.settings_page, None);
+    }
+
+    #[test]
+    fn the_chosen_family_is_laid_out_in_and_a_late_one_is_not() {
+        let mut ide = with_files();
+        click(&mut ide, SETTINGS_OPEN);
+        let jobs = click(&mut ide, "set:editor_font=Fira Code");
+        assert!(matches!(&jobs[..], [Job::SavePrefs(_), Job::LoadFont(f)] if f == "Fira Code"));
+        let bundled = limn::Fonts::bundled();
+        let face = bundled
+            .face_of(limn::FontFamily::Monospace)
+            .unwrap()
+            .clone();
+        let faces = || Faces(face.clone(), face.clone());
+        ide.loaded(Loaded::Font("Hack".into(), Ok(faces())));
+        assert!(ide.fonts_due.is_none());
+        ide.loaded(Loaded::Font("Fira Code".into(), Ok(faces())));
+        let due = ide.fonts_due.take().unwrap();
+        assert_eq!(
+            due.face_of(limn::FontFamily::Monospace).unwrap().id(),
+            face.id()
+        );
     }
 
     #[test]

@@ -33,34 +33,52 @@ pub struct SettingsPage {
     pub groups: Vec<(String, Vec<Setting>)>,
 }
 
-/// A select of Settings: `set:{name}` opens it and each choice reports `set:{name}={value}`.
+/// A select of Settings: its choice and a chevron at the end of a row, as Desktop's, opening
+/// quill's menu. `set:{name}` opens it and each choice reports `set:{name}={value}`.
 pub fn select(name: &str, choices: &[(String, String)], current: &str, open: bool) -> Element {
     let label = choices
         .iter()
         .find(|(value, _)| value == current)
         .map_or_else(|| current.to_owned(), |(_, label)| label.clone());
-    let options = choices
+    let entries = choices
         .iter()
         .map(|(value, label)| {
-            limn::DropdownOption::new(format!("set:{name}={value}"), label.clone())
+            limn::DropdownMenuItem::new(format!("set:{name}={value}"), label.clone())
                 .selected(value == current)
+                .into()
         })
         .collect();
-    limn::Select::new(
-        format!("set:{name}"),
-        label,
-        options,
+    let chevron = Element::icon(crate::icons::of(crate::icons::CARET_DOWN))
+        .foreground(look::muted())
+        .size(Some(12.0), Some(12.0))
+        .centered_y();
+    let trigger = Element::row(vec![
+        hgap(8.0),
+        text(label).font_size(15.0).centered_y(),
+        chevron,
+        hgap(6.0),
+    ])
+    .gap(6.0)
+    .size(None, Some(30.0));
+    let trigger = ComponentPalette {
+        hover: look::tool_hover(),
+        ..look::palette()
+    }
+    .interactive_surface(Element::clickable(format!("set:{name}"), trigger))
+    .radius(8.0);
+    let trigger = if open {
+        trigger.background(look::active())
+    } else {
+        trigger
+    };
+    crate::pieces::menu(
+        trigger,
+        entries,
         open,
-        format!("set:{name}:dismiss"),
-        look::palette(),
+        &format!("set:{name}"),
+        260.0,
+        limn::PopoverPlacement::BottomEnd,
     )
-    // Desktop's choice at the end of a row: its label and a chevron, no outline.
-    .variant(limn::SelectVariant::Plain)
-    .font_size(15.0)
-    .menu_palette(look::menu_palette())
-    .menu_width(200.0)
-    .placement(limn::PopoverPlacement::BottomEnd)
-    .render()
 }
 
 pub fn choices(pairs: &[(&str, &str)]) -> Vec<(String, String)> {

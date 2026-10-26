@@ -18,6 +18,8 @@ pub struct Prefs {
     /// "system", "light" or "dark".
     pub theme: String,
     pub font_size: u32,
+    /// The editor's family, or the system's monospace when empty.
+    pub editor_font: String,
     pub vim: bool,
     pub wrap: bool,
     pub minimap: bool,
@@ -32,6 +34,7 @@ impl Default for Prefs {
         Self {
             theme: "system".into(),
             font_size: 13,
+            editor_font: String::new(),
             vim: true,
             wrap: false,
             minimap: false,
@@ -74,6 +77,7 @@ impl Prefs {
                 _ => return false,
             },
             ("icons", Some(v)) => self.icons = v.into(),
+            ("editor_font", Some(v)) => self.editor_font = v.into(),
             _ => return false,
         }
         true
@@ -84,9 +88,14 @@ impl Prefs {
     }
 }
 
-/// Settings' pages, with `open` the select whose menu is open and `offered` the icon themes
-/// found.
-pub fn pages(prefs: &Prefs, open: Option<&str>, offered: &[Offered]) -> Vec<SettingsPage> {
+/// Settings' pages, with `open` the select whose menu is open, `offered` the icon themes
+/// found and `fonts` the monospaced families.
+pub fn pages(
+    prefs: &Prefs,
+    open: Option<&str>,
+    offered: &[Offered],
+    fonts: &[String],
+) -> Vec<SettingsPage> {
     let palette = quill_components::look::palette();
     let pick = |name: &str, options: Vec<(String, String)>, current: &str| {
         select(name, &options, current, open == Some(name))
@@ -95,6 +104,8 @@ pub fn pages(prefs: &Prefs, open: Option<&str>, offered: &[Offered]) -> Vec<Sett
     let sizes: Vec<(String, String)> = (11..=18)
         .map(|size| (size.to_string(), format!("{size} px")))
         .collect();
+    let mut families = choices(&[("", "System monospace")]);
+    families.extend(fonts.iter().map(|f| (f.clone(), f.clone())));
     let mut packs = choices(&[
         (packs::QUILL, "quill"),
         (packs::MATERIAL, "Material Icon Theme"),
@@ -131,6 +142,11 @@ pub fn pages(prefs: &Prefs, open: Option<&str>, offered: &[Offered]) -> Vec<Sett
             vec![(
                 "Editor".into(),
                 vec![
+                    setting(
+                        "Font",
+                        "Any monospaced family installed.",
+                        pick("editor_font", families, &prefs.editor_font),
+                    ),
                     setting(
                         "Text size",
                         "",

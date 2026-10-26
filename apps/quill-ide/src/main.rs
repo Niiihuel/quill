@@ -83,6 +83,14 @@ impl eframe::App for App {
             });
             look::set_dark(dark);
         }
+        // A family chosen in Settings: laid out and painted in from the next frame on, when
+        // the tree measures with it again.
+        if let Some(fonts) = self.ide.fonts_due.take() {
+            limn::set_fonts(fonts);
+            limn_egui::install_fonts(&ctx);
+            self.fonts_attached = false;
+            ctx.request_repaint();
+        }
         limn_egui::normalize_keyboard_input(&ctx);
         let area = ui.max_rect();
         let window = Size::new(area.width(), area.height());

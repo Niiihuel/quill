@@ -9,7 +9,7 @@ use limn::{
     TextShimmer,
 };
 use quill_components::pieces::{
-    hgap, hline, icon_tool, keyed_button, muted, text, toggle, tool_surface, vline,
+    hgap, hline, icon_tool, keyed_button, menu, muted, text, toggle, tool_surface, vline,
 };
 use quill_components::settings::{
     self, choices, setting, setting_button, setting_switch, Setting, SettingsPage,
@@ -4255,44 +4255,6 @@ fn plus_menu(ui: &Ui) -> Element {
         320.0,
         limn::PopoverPlacement::TopStart,
     )
-}
-
-/// A menu in Desktop's style: white, rounded, above the composer.
-fn menu(
-    anchor: Element,
-    entries: Vec<limn::DropdownMenuEntry>,
-    open: bool,
-    id: &str,
-    width: f32,
-    placement: limn::PopoverPlacement,
-) -> Element {
-    // Desktop's rows are 28 px with 14 px labels and 13 px captions.
-    let sizing = limn::SelectorSizing {
-        preferred_width: width,
-        min_width: width,
-        row_height: 28.0,
-        detail_row_height: 44.0,
-        header_height: 26.0,
-        icon_size: 16.0,
-        label_size: BODY,
-        detail_size: SMALL,
-        padding: 8.0,
-        max_visible_items: 12,
-        ..limn::SelectorSizing::COMPACT
-    };
-    limn::DropdownMenu::new(
-        anchor,
-        entries,
-        open,
-        format!("{id}:dismiss"),
-        look::menu_palette(),
-    )
-    .sizing(sizing)
-    // The current row has only Desktop's blue check, no fill (limn #127).
-    .check_ink(look::handle())
-    .selected_fill(false)
-    .placement(placement)
-    .render()
 }
 
 /// A footer chip: an icon and words, gray under the pointer and darker while its menu is

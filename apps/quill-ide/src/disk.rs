@@ -47,6 +47,11 @@ pub fn run(job: Job) -> Loaded {
                 }),
             )
         }
+        Job::FindFonts => Loaded::Fonts(monospaced()),
+        Job::LoadFont(family) => {
+            let faces = faces(&family);
+            Loaded::Font(family, faces)
+        }
         Job::Stat(watched) => Loaded::Changed(
             watched
                 .into_iter()
@@ -82,6 +87,48 @@ fn branch_in(head: &Path) -> Option<String> {
         Some(branch) => Some(branch.to_owned()),
         None => Some(head.get(..7)?.to_owned()),
     }
+}
+
+/// The monospaced families fontconfig knows, each by its first name, sorted.
+fn monospaced() -> Vec<String> {
+    let Ok(out) = std::process::Command::new("fc-list")
+        // Faces for writing in, not monospaced emoji or symbol sets.
+        .args([":spacing=100:lang=en", "family"])
+        .output()
+    else {
+        return vec![];
+    };
+    let mut families: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| line.split(',').next())
+        .map(|family| family.trim().to_owned())
+        .filter(|family| !family.is_empty())
+        .collect();
+    families.sort();
+    families.dedup();
+    families
+}
+
+/// `family`'s regular and bold faces as fontconfig finds them; the system's monospace for
+/// an empty one. A family without a bold takes its regular face for it.
+fn faces(family: &str) -> Result<crate::ide::Faces, String> {
+    let family = if family.is_empty() {
+        "monospace"
+    } else {
+        family
+    };
+    let face = |pattern: String| -> Result<limn::Font, String> {
+        let out = std::process::Command::new("fc-match")
+            .args(["-f", "%{file}", &pattern])
+            .output()
+            .map_err(|e| e.to_string())?;
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+        let bytes = std::fs::read(&path).map_err(|e| format!("{path}: {e}"))?;
+        limn::Font::new(bytes).map_err(|e| format!("{path}: {e:?}"))
+    };
+    let regular = face(family.to_owned())?;
+    let bold = face(format!("{family}:bold")).unwrap_or_else(|_| regular.clone());
+    Ok(crate::ide::Faces(regular, bold))
 }
 
 /// Settings whole or not at all, as a file is saved.

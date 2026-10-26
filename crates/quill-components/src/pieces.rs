@@ -1,6 +1,6 @@
 //! The small pieces quill's views are built from, for every app of quill to draw the same.
 
-use crate::look::{self, BODY};
+use crate::look::{self, BODY, SMALL};
 use limn::{Component, ComponentPalette, Element, FontFamily};
 
 pub fn text(s: impl Into<String>) -> Element {
@@ -160,4 +160,42 @@ pub fn side_row(id: String, content: Vec<Element>, selected: bool, height: f32) 
     } else {
         row
     }
+}
+
+/// A menu in Desktop's style: rounded, 28 px rows, the current one marked by a blue check.
+pub fn menu(
+    anchor: Element,
+    entries: Vec<limn::DropdownMenuEntry>,
+    open: bool,
+    id: &str,
+    width: f32,
+    placement: limn::PopoverPlacement,
+) -> Element {
+    // Desktop's rows are 28 px with 14 px labels and 13 px captions.
+    let sizing = limn::SelectorSizing {
+        preferred_width: width,
+        min_width: width,
+        row_height: 28.0,
+        detail_row_height: 44.0,
+        header_height: 26.0,
+        icon_size: 16.0,
+        label_size: BODY,
+        detail_size: SMALL,
+        padding: 8.0,
+        max_visible_items: 12,
+        ..limn::SelectorSizing::COMPACT
+    };
+    limn::DropdownMenu::new(
+        anchor,
+        entries,
+        open,
+        format!("{id}:dismiss"),
+        look::menu_palette(),
+    )
+    .sizing(sizing)
+    // The current row has only Desktop's blue check, no fill (limn #127).
+    .check_ink(look::handle())
+    .selected_fill(false)
+    .placement(placement)
+    .render()
 }
