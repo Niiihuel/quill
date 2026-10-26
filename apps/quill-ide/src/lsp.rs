@@ -142,8 +142,8 @@ impl Lsp {
                 new_name: new_name.clone(),
             },
             AskKind::Format => Request::Formatting {
-                tab_size: 4,
-                insert_spaces: true,
+                tab_size: ide.prefs.tab_width,
+                insert_spaces: ide.prefs.spaces,
             },
         };
         match server.request(&ask.path, &snapshot, request) {
@@ -178,7 +178,14 @@ impl Lsp {
                         })
                     })
                     .collect();
-                ide.diagnostics.insert(path, (document.revision, found));
+                let text: String = snapshot.chunks().collect();
+                let diagnostics = crate::ide::Diagnostics {
+                    revision: document.revision,
+                    text: text.into(),
+                    items: found,
+                    carried: None,
+                };
+                ide.diagnostics.insert(path, diagnostics);
             }
             Event::UnversionedDiagnostics { .. } => {}
             Event::Response {
@@ -237,7 +244,7 @@ fn answered(ide: &mut Ide, path: &Path, revision: u64, kind: AskKind, value: &Va
             ide.hover = Some(hover_text(value).unwrap_or_else(|| "Nothing to say here.".into()));
         }
         AskKind::Definition => match locations(value).into_iter().next() {
-            Some(found) => return ide.goto(found.path, found.row),
+            Some(found) => return ide.goto_at(found.path, found.row, found.column),
             None => ide.lsp_note = Some("No definition found".into()),
         },
         AskKind::References => {
@@ -344,6 +351,7 @@ pub fn locations(value: &Value) -> Vec<Location> {
         Some(Location {
             path: lsp::uri_path(uri).ok()?,
             row: range["start"]["line"].as_u64()? as usize,
+            column: range["start"]["character"].as_u64()? as u32,
         })
     };
     match value {
@@ -399,7 +407,8 @@ mod tests {
             locations(&one),
             vec![Location {
                 path: "/r/a.rs".into(),
-                row: 4
+                row: 4,
+                column: 2
             }]
         );
         assert_eq!(locations(&link)[0].path, PathBuf::from("/r/b.rs"));

@@ -21,6 +21,10 @@ pub struct Prefs {
     /// The editor's family, or the system's monospace when empty.
     pub editor_font: String,
     pub vim: bool,
+    /// Columns of a tab and of an indent level, and whether Tab and formatting indent with
+    /// spaces rather than tabs.
+    pub tab_width: u32,
+    pub spaces: bool,
     pub wrap: bool,
     pub minimap: bool,
     /// The file icons' pack: `packs::QUILL`, `packs::MATERIAL`, or a theme's key.
@@ -36,6 +40,8 @@ impl Default for Prefs {
             font_size: 13,
             editor_font: String::new(),
             vim: true,
+            tab_width: 4,
+            spaces: true,
             wrap: false,
             minimap: false,
             icons: packs::MATERIAL.into(),
@@ -61,7 +67,7 @@ pub fn load() -> Prefs {
         .unwrap_or_default()
 }
 
-const SWITCHES: [&str; 3] = ["vim", "wrap", "minimap"];
+const SWITCHES: [&str; 4] = ["vim", "wrap", "minimap", "spaces"];
 
 impl Prefs {
     /// A switch flipped, or a choice made: `name` and, for a choice, its value. False when
@@ -71,6 +77,11 @@ impl Prefs {
             ("vim", None) => self.vim = !self.vim,
             ("wrap", None) => self.wrap = !self.wrap,
             ("minimap", None) => self.minimap = !self.minimap,
+            ("spaces", None) => self.spaces = !self.spaces,
+            ("tab_width", Some(v)) => match v.parse() {
+                Ok(width @ 1..=8) => self.tab_width = width,
+                _ => return false,
+            },
             ("theme", Some(v @ ("system" | "light" | "dark"))) => self.theme = v.into(),
             ("font_size", Some(v)) => match v.parse() {
                 Ok(size @ 10..=24) => self.font_size = size,
@@ -145,6 +156,20 @@ pub fn pages(
                         pick("font_size", sizes, &prefs.font_size.to_string()),
                     ),
                     setting(
+                        "Tab width",
+                        "Columns of a tab and of an indent level.",
+                        pick(
+                            "tab_width",
+                            choices(&[("2", "2"), ("4", "4"), ("8", "8")]),
+                            &prefs.tab_width.to_string(),
+                        ),
+                    ),
+                    setting(
+                        "Indent with spaces",
+                        "Tab and formatting put spaces; off, a tab.",
+                        switch("spaces", prefs.spaces),
+                    ),
+                    setting(
                         "Vim keys",
                         "Files open in Normal mode, to read; i writes.",
                         switch("vim", prefs.vim),
@@ -206,6 +231,9 @@ mod tests {
         assert!(!prefs.set("font_size", Some("200")));
         assert!(!prefs.set("theme", Some("pink")));
         assert!(prefs.set("icons", Some("theme:/x/theme.json")));
+        assert!(prefs.set("tab_width", Some("2")) && prefs.tab_width == 2);
+        assert!(!prefs.set("tab_width", Some("0")));
+        assert!(prefs.set("spaces", None) && !prefs.spaces);
         let json = serde_json::to_string(&prefs).unwrap();
         assert_eq!(serde_json::from_str::<Prefs>(&json).unwrap(), prefs);
         // What a later version adds is filled in from the defaults.

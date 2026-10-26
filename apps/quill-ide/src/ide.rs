@@ -232,11 +232,67 @@ pub struct Diagnostic {
     pub message: String,
 }
 
+/// A file's diagnostics as the server sent them, the text they came for, and the same carried
+/// to the buffer's later revision while the server has not answered for it.
+#[derive(Clone, Debug)]
+pub struct Diagnostics {
+    pub revision: u64,
+    pub text: std::sync::Arc<str>,
+    pub items: Vec<Diagnostic>,
+    pub carried: Option<(u64, Vec<Diagnostic>)>,
+}
+
+impl Diagnostics {
+    /// Those to show on `revision`: the server's own, or those carried to it.
+    pub fn at(&self, revision: u64) -> Option<&[Diagnostic]> {
+        if self.revision == revision {
+            return Some(&self.items);
+        }
+        self.carried
+            .as_ref()
+            .filter(|(r, _)| *r == revision)
+            .map(|(_, d)| d.as_slice())
+    }
+}
+
+/// `items`, found in `old`, where they are in `new`: those before what changed stay, those
+/// after it move with the text, and those on it go until the server says again.
+pub fn carry(items: &[Diagnostic], old: &str, new: &str) -> Vec<Diagnostic> {
+    let (old, new): (Vec<char>, Vec<char>) = (old.chars().collect(), new.chars().collect());
+    let prefix = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
+    let suffix = old[prefix..]
+        .iter()
+        .rev()
+        .zip(new[prefix..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let end = old.len() - suffix;
+    items
+        .iter()
+        .filter_map(|item| {
+            let range = if item.range.end <= prefix {
+                item.range.clone()
+            } else if item.range.start >= end {
+                let shift = |at: usize| at + new.len() - old.len();
+                shift(item.range.start)..shift(item.range.end)
+            } else {
+                return None;
+            };
+            Some(Diagnostic {
+                range,
+                ..item.clone()
+            })
+        })
+        .collect()
+}
+
 /// A place a server names: a file and its row.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Location {
     pub path: PathBuf,
     pub row: usize,
+    /// In UTF-16 units of the row, as servers count them.
+    pub column: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -367,8 +423,9 @@ pub struct Ide {
     /// number of the latest search, whose lines alone are shown.
     pub grep: Option<Grep>,
     pub grep_count: u64,
-    /// A file's row to take the caret to once it is read.
-    pub pending_goto: Option<(PathBuf, usize)>,
+    /// A file's row, and column in UTF-16 units as servers count them, to take the caret to
+    /// once it is read.
+    pub pending_goto: Option<(PathBuf, usize, u32)>,
     pub terminal: TerminalPane,
     /// The tree's file operations: a name being typed, what waits to go to the trash, and
     /// why the last one failed.
@@ -379,7 +436,7 @@ pub struct Ide {
     /// diagnostics with the revision they came for, the hover shown, the references listed
     /// with the row Enter opens, the name a symbol is being renamed to, and the last news.
     pub lsp_asks: Vec<Ask>,
-    pub diagnostics: HashMap<PathBuf, (u64, Vec<Diagnostic>)>,
+    pub diagnostics: HashMap<PathBuf, Diagnostics>,
     pub hover: Option<String>,
     pub references: Option<(Vec<Location>, usize)>,
     pub renaming_symbol: Option<String>,
@@ -780,15 +837,20 @@ impl Ide {
 
     /// Open `path` with the caret at the start of `row`, now or once it is read.
     pub fn goto(&mut self, path: PathBuf, row: usize) -> Vec<Job> {
+        self.goto_at(path, row, 0)
+    }
+
+    /// Open `path` with the caret at `column` (UTF-16 units) of `row`.
+    pub fn goto_at(&mut self, path: PathBuf, row: usize, column: u32) -> Vec<Job> {
         let jobs = self.open(path.clone());
-        self.pending_goto = Some((path, row));
+        self.pending_goto = Some((path, row, column));
         self.apply_goto();
         jobs
     }
 
     /// The pending row, if its file is read: the caret to it, in view, with the keys.
     fn apply_goto(&mut self) {
-        let Some((path, row)) = self.pending_goto.clone() else {
+        let Some((path, row, column)) = self.pending_goto.clone() else {
             return;
         };
         let Some(buffer) = self.buffers.iter().find(|b| b.path == path && !b.loading) else {
@@ -803,7 +865,13 @@ impl Ide {
             let snapshot = text.snapshot();
             let row = row.min(snapshot.line_count().saturating_sub(1));
             if let Ok(line) = snapshot.line_range(row) {
-                let _ = text.set_selection(Selection::caret(line.start));
+                let at = limn_language::Position {
+                    line: row as u32,
+                    character: column,
+                };
+                let offset = limn_language::utf16_to_offset(&snapshot, at)
+                    .map_or(line.start, |o| o.clamp(line.start, line.end));
+                let _ = text.set_selection(Selection::caret(offset));
             }
         }
         self.focus = Some(buffer.editor_id());
@@ -1192,7 +1260,7 @@ impl Ide {
         else {
             return vec![];
         };
-        self.goto(found.path, found.row)
+        self.goto_at(found.path, found.row, found.column)
     }
 
     /// An editing key on the file on screen, as one undoable step; the caret stays in view.
@@ -1209,7 +1277,7 @@ impl Ide {
             Edit::DuplicateLines => DuplicateLines,
             Edit::AddCursor { below } => AddCursorVertical {
                 below,
-                tab_width: 4,
+                tab_width: self.prefs.tab_width.clamp(1, 32) as usize,
             },
             Edit::DeleteLines => DeleteLines,
             Edit::ToggleComment => {
@@ -1424,6 +1492,20 @@ impl Ide {
         };
         self.sidebar
             .tick(&pointer, motion, self.reduced_motion, now);
+        // Diagnostics of an older text follow the edits until the server answers again.
+        for buffer in &self.buffers {
+            let Some(snapshot) = buffer.editor.as_ref().and_then(|e| e.snapshot().ok()) else {
+                continue;
+            };
+            let Some(found) = self.diagnostics.get_mut(&buffer.path) else {
+                continue;
+            };
+            let revision = snapshot.revision();
+            if found.at(revision).is_none() {
+                let now: String = snapshot.chunks().collect();
+                found.carried = Some((revision, carry(&found.items, &found.text, &now)));
+            }
+        }
         // Matches found in an older text are found again in this one.
         let editor = self.active_buffer().and_then(|b| b.editor.clone());
         if let (Some(find), Some(editor)) = (self.find.as_mut(), editor) {
@@ -2175,6 +2257,8 @@ fn editor(ide: &Ide, width: f32, height: f32) -> Element {
                 .palette(look::palette())
                 .language(limn::CodeLanguage::from_code_fence(ext))
                 .font_size(ide.prefs.font_size as f32)
+                .tab_width(ide.prefs.tab_width as usize)
+                .indent_style(indent_style(&ide.prefs))
                 .vim_mode(ide.prefs.vim)
                 .soft_wrap(ide.prefs.wrap)
                 .minimap(ide.prefs.minimap)
@@ -2387,7 +2471,7 @@ fn terminal_pane(ide: &Ide, width: f32, height: f32) -> Element {
 /// The server's diagnostics of `path` as the editor underlines them, if they came for
 /// `revision`: errors in quill's failed red, warnings in its amber, the rest muted.
 fn diagnostics(ide: &Ide, path: &Path, revision: u64) -> Vec<limn::CodeDiagnostic> {
-    let Some((_, found)) = ide.diagnostics.get(path).filter(|(r, _)| *r == revision) else {
+    let Some(found) = ide.diagnostics.get(path).and_then(|d| d.at(revision)) else {
         return vec![];
     };
     found
@@ -2466,6 +2550,16 @@ fn context_actions(vim: bool) -> Vec<limn::ContextMenuEntry> {
         Item(ContextMenuItem::new(COPY_RELATIVE, "Copy relative path")),
         Item(ContextMenuItem::new(REVEAL, "Reveal in files")),
     ]
+}
+
+/// One indent level as Settings say: spaces, or a tab, so many columns wide.
+pub fn indent_style(prefs: &Prefs) -> limn_editor::IndentStyle {
+    let width = prefs.tab_width.clamp(1, 32) as usize;
+    if prefs.spaces {
+        limn_editor::IndentStyle::Spaces(width)
+    } else {
+        limn_editor::IndentStyle::Tabs(width)
+    }
 }
 
 /// Code in quill's inks, as its conversation's code blocks: keywords orange, strings the
@@ -2556,12 +2650,9 @@ fn footer(ide: &Ide, width: f32) -> Element {
         let snapshot = b.editor.as_ref()?.snapshot().ok()?;
         Some((b.path.clone(), snapshot.revision()))
     }) {
-        let found = ide.diagnostics.get(&path).filter(|(r, _)| *r == revision);
-        let count = |severity| {
-            found.map_or(0, |(_, d)| {
-                d.iter().filter(|d| d.severity == severity).count()
-            })
-        };
+        let found = ide.diagnostics.get(&path).and_then(|d| d.at(revision));
+        let count =
+            |severity| found.map_or(0, |d| d.iter().filter(|d| d.severity == severity).count());
         let (errors, warnings) = (count(1), count(2));
         if errors > 0 {
             tail.insert(
@@ -3271,6 +3362,7 @@ mod tests {
         let place = |row| Location {
             path: "/r/b.rs".into(),
             row,
+            column: 2,
         };
         ide.references = Some((vec![place(3), place(9)], 0));
         ide.step_chosen(1);
@@ -3279,7 +3371,52 @@ mod tests {
             value: String::new(),
         });
         assert_eq!(jobs, vec![Job::Read("/r/b.rs".into())]);
-        assert_eq!(ide.pending_goto, Some(("/r/b.rs".into(), 9)));
+        assert_eq!(ide.pending_goto, Some(("/r/b.rs".into(), 9, 2)));
+    }
+
+    #[test]
+    fn diagnostics_follow_the_edits_until_the_server_answers() {
+        let mark = |range: std::ops::Range<usize>| Diagnostic {
+            range,
+            severity: 1,
+            message: "x".into(),
+        };
+        let old = "let a = 1;\nlet b = 2;\n";
+        let items = [mark(4..5), mark(15..16), mark(8..10)];
+        // Typed after the first line's `=`: the first stays, the second moves, the third went.
+        let new = "let a = 10;\nlet b = 2;\n";
+        assert_eq!(carry(&items, old, new), vec![mark(4..5), mark(16..17)]);
+        let mut ide = with_files();
+        read(&mut ide, "/r/a.rs", old);
+        let revision = ide.buffers[0]
+            .editor
+            .as_ref()
+            .unwrap()
+            .snapshot()
+            .unwrap()
+            .revision();
+        let text: std::sync::Arc<str> = old.into();
+        let found = Diagnostics {
+            revision,
+            text,
+            items: items.to_vec(),
+            carried: None,
+        };
+        ide.diagnostics.insert("/r/a.rs".into(), found);
+        type_in(&ide.buffers[0], 0, "  ");
+        ide.tick();
+        let now = ide.buffers[0]
+            .editor
+            .as_ref()
+            .unwrap()
+            .snapshot()
+            .unwrap()
+            .revision();
+        let shown = ide.diagnostics[Path::new("/r/a.rs")]
+            .at(now)
+            .unwrap()
+            .to_vec();
+        assert_eq!(shown, vec![mark(6..7), mark(17..18), mark(10..12)]);
     }
 
     #[test]
