@@ -6,6 +6,7 @@ mod disk;
 mod find;
 mod grep;
 mod ide;
+mod marks;
 mod packs;
 mod prefs;
 mod quick;
@@ -58,6 +59,8 @@ impl eframe::App for App {
             let jobs = self.ide.loaded(loaded);
             self.run(jobs);
         }
+        let jobs = self.ide.marks_due();
+        self.run(jobs);
         // What an agent or another editor writes shows within a second.
         if self.polled.elapsed() >= POLL {
             self.polled = std::time::Instant::now();

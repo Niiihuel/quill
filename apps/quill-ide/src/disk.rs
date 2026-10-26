@@ -49,6 +49,15 @@ pub fn run(job: Job) -> Loaded {
         }
         Job::FindFonts => Loaded::Fonts(monospaced()),
         Job::FindFiles(root) => Loaded::Files(files(&root)),
+        Job::Committed(path) => {
+            let text = crate::marks::committed(&path);
+            Loaded::Committed(path, text)
+        }
+        Job::Changes(path, committed, save) => {
+            let now: String = save.0.chunks().collect();
+            let changes = crate::marks::changes(&committed, &now);
+            Loaded::Changes(path, save.0.revision(), changes)
+        }
         Job::Grep(root, query, count) => {
             let hits = crate::grep::grep(&root, &files(&root), &query);
             Loaded::Grep(count, hits)

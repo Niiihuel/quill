@@ -3,6 +3,7 @@
 
 use crate::find::{Find, FIND, FIND_OPEN, FIND_QUERY};
 use crate::grep::{Hit, GREP_CLOSE, GREP_FIELD, GREP_OPEN};
+use crate::marks::Change;
 use crate::packs::{self, Offered, Pack, Theme};
 use crate::prefs::{self, Prefs};
 use crate::quick::{self, QUICK_CLOSE, QUICK_FIELD, QUICK_OPEN};
@@ -58,6 +59,10 @@ pub enum Job {
     SaveSession(PathBuf, Session),
     /// The lines of the folder's files that hold the query, for the search numbered so.
     Grep(PathBuf, String, u64),
+    /// The file as its last commit holds it.
+    Committed(PathBuf),
+    /// What changed in the buffer's text since that commit.
+    Changes(PathBuf, std::sync::Arc<str>, Save),
 }
 
 /// A family's regular and bold faces, for the editor.
@@ -100,6 +105,9 @@ pub enum Loaded {
     Files(Vec<PathBuf>),
     SessionSaved,
     Grep(u64, Vec<Hit>),
+    Committed(PathBuf, Option<String>),
+    /// A file's changes since its commit, at the buffer's revision.
+    Changes(PathBuf, u64, Vec<(std::ops::Range<usize>, Change)>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -121,9 +129,41 @@ pub struct Buffer {
     pub error: Option<String>,
     /// Reopened from the last session and not read yet.
     pub loading: bool,
+    /// The file as its last commit holds it: not asked yet, asked, or `None` inside when it
+    /// has none.
+    pub committed: Committed,
+    /// The rows changed since that commit, the revision they were worked out at, and whether
+    /// they are being worked out again.
+    pub changes: Vec<(std::ops::Range<usize>, Change)>,
+    pub changes_revision: Option<u64>,
+    pub marking: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub enum Committed {
+    #[default]
+    Unknown,
+    Asked,
+    Known(Option<std::sync::Arc<str>>),
 }
 
 impl Buffer {
+    fn new(path: PathBuf, editor: Option<EditorController>, stamp: Stamp, loading: bool) -> Self {
+        Self {
+            path,
+            editor,
+            stamp,
+            stale: false,
+            reloading: false,
+            error: None,
+            loading,
+            committed: Committed::Unknown,
+            changes: vec![],
+            changes_revision: None,
+            marking: false,
+        }
+    }
+
     pub fn dirty(&self) -> bool {
         let snapshot = self.editor.as_ref().and_then(|e| e.snapshot().ok());
         snapshot.is_some_and(|s| s.is_dirty())
@@ -230,15 +270,7 @@ impl Ide {
         let buffers: Vec<Buffer> = session
             .open
             .iter()
-            .map(|path| Buffer {
-                path: path.clone(),
-                editor: None,
-                stamp: None,
-                stale: false,
-                reloading: false,
-                error: None,
-                loading: true,
-            })
+            .map(|path| Buffer::new(path.clone(), None, None, true))
             .collect();
         let active = session.active.filter(|a| *a < buffers.len());
         let ide = Self {
@@ -689,6 +721,36 @@ impl Ide {
         }
     }
 
+    /// What the gutter's marks need from the disk: each open file as committed, then what
+    /// changed in its text since, once per revision and one at a time.
+    pub fn marks_due(&mut self) -> Vec<Job> {
+        let mut jobs = vec![];
+        for buffer in &mut self.buffers {
+            let Some(editor) = &buffer.editor else {
+                continue;
+            };
+            match &buffer.committed {
+                Committed::Unknown => {
+                    buffer.committed = Committed::Asked;
+                    jobs.push(Job::Committed(buffer.path.clone()));
+                }
+                Committed::Known(Some(committed)) if !buffer.marking => {
+                    let Ok(snapshot) = editor.snapshot() else {
+                        continue;
+                    };
+                    if buffer.changes_revision != Some(snapshot.revision()) {
+                        buffer.marking = true;
+                        let job =
+                            Job::Changes(buffer.path.clone(), committed.clone(), Save(snapshot));
+                        jobs.push(job);
+                    }
+                }
+                _ => {}
+            }
+        }
+        jobs
+    }
+
     /// Move what moves on its own: the tree's springs and its peek.
     pub fn tick(&mut self) {
         let now = std::time::Instant::now();
@@ -745,6 +807,20 @@ impl Ide {
             Loaded::PrefsSaved => {}
             Loaded::Fonts(fonts) => self.fonts = fonts,
             Loaded::Files(files) => self.files = files,
+            Loaded::Committed(path, text) => {
+                if let Some(buffer) = self.buffers.iter_mut().find(|b| b.path == path) {
+                    buffer.committed = Committed::Known(text.map(Into::into));
+                    buffer.changes_revision = None;
+                    buffer.changes.clear();
+                }
+            }
+            Loaded::Changes(path, revision, changes) => {
+                if let Some(buffer) = self.buffers.iter_mut().find(|b| b.path == path) {
+                    buffer.changes = changes;
+                    buffer.changes_revision = Some(revision);
+                    buffer.marking = false;
+                }
+            }
             Loaded::Grep(count, hits) => {
                 if let Some(grep) = self.grep.as_mut().filter(|_| count == self.grep_count) {
                     grep.hits = hits;
@@ -799,6 +875,10 @@ impl Ide {
                 for (path, stamp) in changed {
                     if self.head.as_ref().is_some_and(|(head, _)| *head == path) {
                         jobs.push(Job::Branch(self.root.clone()));
+                        // A new commit, or another branch: the files are compared with it.
+                        for buffer in &mut self.buffers {
+                            buffer.committed = Committed::Unknown;
+                        }
                     }
                     if self.dir_stamps.contains_key(&path) {
                         jobs.push(Job::List(path.clone()));
@@ -825,15 +905,7 @@ impl Ide {
             let editor = text
                 .and_then(|t| TextBuffer::new(&t).ok())
                 .map(EditorController::new);
-            self.buffers.push(Buffer {
-                path,
-                editor,
-                stamp,
-                stale: false,
-                reloading: false,
-                error: None,
-                loading: false,
-            });
+            self.buffers.push(Buffer::new(path, editor, stamp, false));
             self.active = Some(self.buffers.len() - 1);
             self.apply_goto();
             return;
@@ -1258,6 +1330,10 @@ fn editor(ide: &Ide, width: f32, height: f32) -> Element {
                 .vim_mode_label(false)
                 .syntax_colors(syntax_colors())
                 .context_actions(context_actions(ide.prefs.vim))
+                .change_marks(
+                    editor.snapshot().map_or(0, |s| s.document_id()),
+                    change_marks(&buffer.changes),
+                )
                 .search_matches(
                     matches.map_or(0, |r| r.revision),
                     matches.map(|r| r.matches.clone()).unwrap_or_default(),
@@ -1282,6 +1358,22 @@ fn editor(ide: &Ide, width: f32, height: f32) -> Element {
     }
     column.push(footer(ide, width));
     Element::column(column)
+}
+
+/// The gutter's marks, as editors draw them: added rows in quill's added green, changed rows
+/// in its cursor blue, removed lines in its removed red.
+fn change_marks(changes: &[(std::ops::Range<usize>, Change)]) -> Vec<limn::CodeChangeMark> {
+    changes
+        .iter()
+        .map(|(rows, change)| limn::CodeChangeMark {
+            rows: rows.clone(),
+            color: match change {
+                Change::Added => look::added(),
+                Change::Changed => look::cursor(),
+                Change::Removed => look::removed(),
+            },
+        })
+        .collect()
 }
 
 /// What the editor's context menu offers after cutting, copying and pasting: finding, and the
@@ -1777,6 +1869,37 @@ mod tests {
         assert_eq!(editor.snapshot().unwrap().selection().head, 4);
         assert_eq!(ide.focus.as_deref(), Some("editor:/r/src/b.rs"));
         assert!(ide.reveal);
+    }
+
+    #[test]
+    fn the_gutter_compares_each_file_with_its_commit_once_a_revision() {
+        let mut ide = with_files();
+        read(&mut ide, "/r/a.rs", "a\nb\n");
+        assert_eq!(ide.marks_due(), vec![Job::Committed("/r/a.rs".into())]);
+        assert!(ide.marks_due().is_empty(), "asked once");
+        ide.loaded(Loaded::Committed("/r/a.rs".into(), Some("a\n".into())));
+        let jobs = ide.marks_due();
+        assert!(
+            matches!(&jobs[..], [Job::Changes(p, c, _)] if p == Path::new("/r/a.rs") && &**c == "a\n")
+        );
+        assert!(ide.marks_due().is_empty(), "one at a time");
+        let revision = ide.buffers[0]
+            .editor
+            .as_ref()
+            .unwrap()
+            .snapshot()
+            .unwrap()
+            .revision();
+        let added = vec![(1..2, Change::Added)];
+        ide.loaded(Loaded::Changes("/r/a.rs".into(), revision, added.clone()));
+        assert_eq!(ide.buffers[0].changes, added);
+        assert!(ide.marks_due().is_empty(), "nothing new to compare");
+        type_in(&ide.buffers[0], 0, "x");
+        assert_eq!(ide.marks_due().len(), 1, "an edit is compared again");
+        // A new commit: the file is read from it again.
+        ide.head = Some(("/r/.git/HEAD".into(), None));
+        ide.loaded(Loaded::Changed(vec![("/r/.git/HEAD".into(), stamp(9))]));
+        assert!(ide.marks_due().contains(&Job::Committed("/r/a.rs".into())));
     }
 
     #[test]
