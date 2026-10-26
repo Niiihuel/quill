@@ -2623,6 +2623,8 @@ fn editor(ide: &Ide, width: f32, height: f32) -> Element {
                 .minimap(ide.prefs.minimap)
                 .vim_mode_label(false)
                 .syntax_colors(syntax_colors())
+                // quill's rail, arrows and thumb, as every other scroll surface here.
+                .scrollbar_appearance(limn::ScrollbarAppearance::default())
                 .context_actions(context_actions(ide.prefs.vim))
                 .change_marks(
                     editor.snapshot().map_or(0, |s| s.document_id()),
@@ -2649,8 +2651,9 @@ fn editor(ide: &Ide, width: f32, height: f32) -> Element {
                 (true, DocView::Preview) => markdown_preview(ide, &text(), width, height),
                 (true, DocView::Split) => {
                     let half = ((width - 1.0) / 2.0).floor();
+                    // In a row the editor would take its longest line's width: give it its half.
                     Element::row(vec![
-                        Element::row(vec![code]).size(Some(half), Some(height)),
+                        code.size(Some(half), Some(height)),
                         vline(height),
                         markdown_preview(ide, &text(), width - half - 1.0, height),
                     ])
