@@ -47,8 +47,11 @@ impl Store {
             | Event::FileRead { .. }
             | Event::FileWriteFailed { .. }
             | Event::Settings { .. }
-            | Event::Storage { .. }
-            | Event::Browser { .. } => false,
+            | Event::Storage { .. } => false,
+            // What a session's browser shows is the moment's; its tabs' addresses are kept.
+            Event::Browser { update, .. } => {
+                matches!(update, quill_model::BrowserUpdate::Kept(_))
+            }
             Event::Agent { event, .. } => !matches!(
                 event,
                 AgentEvent::TextDelta { .. }
@@ -189,5 +192,21 @@ mod tests {
             loaded.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
             vec![2]
         );
+    }
+
+    #[test]
+    fn of_a_browser_only_its_tabs_addresses_are_kept() {
+        use quill_model::BrowserUpdate;
+        let browser = |update| Event::Browser { session: 1, update };
+        assert!(Store::keeps(&browser(BrowserUpdate::Kept(vec![
+            "http://localhost:3000/".into()
+        ]))));
+        assert!(!Store::keeps(&browser(BrowserUpdate::Cursor(
+            "pointer".into()
+        ))));
+        assert!(!Store::keeps(&browser(BrowserUpdate::Tabs {
+            tabs: vec![],
+            active: None
+        })));
     }
 }

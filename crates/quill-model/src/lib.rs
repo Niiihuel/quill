@@ -79,6 +79,9 @@ pub struct Settings {
     /// Sites the agents may use in the built-in browser without asking; local addresses
     /// never ask (docs/browser.md §5).
     pub browser_sites: Vec<String>,
+    /// The Chromium the built-in browser runs; `None` takes `QUILL_CHROME` or the first on
+    /// `PATH`.
+    pub browser_program: Option<String>,
     /// Each agent's own, by its id.
     pub agents: std::collections::BTreeMap<String, AgentSettings>,
 }
@@ -98,6 +101,7 @@ impl Default for Settings {
             pr_draft: false,
             open_at_login: false,
             browser_sites: vec![],
+            browser_program: None,
             agents: Default::default(),
         }
     }
@@ -324,6 +328,12 @@ pub enum BrowserOp {
     Copy {
         tab: u32,
     },
+    /// Draw the page at `size` as a phone or a tablet would, or at the pane's size again
+    /// (Desktop's Viewport menu: Responsive, Mobile, Tablet).
+    Viewport {
+        tab: u32,
+        size: Option<(u32, u32)>,
+    },
     /// Pick an element of the page to tell the agent about, or stop picking (Desktop's
     /// "Select element"): the pick comes back as `BrowserUpdate::Selected`.
     Select {
@@ -411,6 +421,9 @@ pub struct BrowserTab {
     pub loading: bool,
     pub back: bool,
     pub forward: bool,
+    /// The viewport set for it, by the person or the agent, instead of the pane's size.
+    #[serde(default)]
+    pub emulated: Option<(u32, u32)>,
 }
 
 /// What changed in a session's browser.
@@ -432,6 +445,9 @@ pub enum BrowserUpdate {
     Selecting(bool),
     /// The element the person picked, as words for the message being written.
     Selected(String),
+    /// The addresses of the session's tabs changed: kept, so they open again after a restart
+    /// (the only browser update that is stored).
+    Kept(Vec<String>),
     /// The page asks for files: the host shows the desktop's file dialog and answers with
     /// `BrowserOp::Files`.
     ChooseFiles { tab: u32, node: i64, multiple: bool },

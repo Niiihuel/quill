@@ -268,7 +268,7 @@ impl Router {
             })
         };
         let browser = {
-            let ui = ui.clone();
+            let (ui, sink) = (ui.clone(), sink.clone());
             let home = std::env::var_os("HOME")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| ".".into());
@@ -282,8 +282,17 @@ impl Router {
                     frames: config.frames.clone(),
                     permit,
                 },
-                // What the browser shows is the UI's only: never stored.
-                Arc::new(move |session, update| ui(Event::Browser { session, update })),
+                // What the browser shows is the UI's only, but its tabs' addresses, which
+                // are kept to open again.
+                Arc::new(move |session, update| {
+                    let keep = matches!(update, quill_model::BrowserUpdate::Kept(_));
+                    let event = Event::Browser { session, update };
+                    if keep {
+                        sink(event)
+                    } else {
+                        ui(event)
+                    }
+                }),
             )
         };
         Self {
@@ -315,6 +324,8 @@ impl Router {
     fn announce_settings(&self) {
         self.browser
             .allow_sites(self.settings.browser_sites.clone());
+        self.browser
+            .use_program(self.settings.browser_program.clone().map(PathBuf::from));
         let agents = AGENTS
             .iter()
             .filter_map(|id| adapter(id))
@@ -385,6 +396,8 @@ impl Router {
             if let Some(title) = restored.title.clone() {
                 self.titles.insert(session, title);
             }
+            self.browser
+                .remember(session, restored.browser_tabs.clone());
             for proposal in restored.proposals.clone() {
                 self.proposals
                     .insert((session, proposal.id.clone()), proposal);
@@ -1136,6 +1149,8 @@ struct Restored {
     proposals: Vec<quill_model::Proposal>,
     /// The session it was forked from, and the message the fork starts after.
     forked: Option<(SessionId, Option<String>)>,
+    /// Its browser's tabs when quill last ran.
+    browser_tabs: Vec<String>,
 }
 
 impl Restored {
@@ -1153,6 +1168,7 @@ impl Restored {
         let mut resume = None;
         let mut before = HashMap::new();
         let (mut parent, mut title, mut proposals, mut forked) = (None, None, vec![], None);
+        let mut browser_tabs = vec![];
         for event in events {
             match event {
                 Event::Linked {
@@ -1175,6 +1191,10 @@ impl Restored {
                 Event::Changes {
                     request, snapshot, ..
                 } => drop(before.insert(request.clone(), snapshot.clone())),
+                Event::Browser {
+                    update: quill_model::BrowserUpdate::Kept(urls),
+                    ..
+                } => browser_tabs = urls.clone(),
                 _ => {}
             }
         }
@@ -1186,6 +1206,7 @@ impl Restored {
             title,
             proposals,
             forked,
+            browser_tabs,
         })
     }
 }

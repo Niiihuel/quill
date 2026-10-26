@@ -87,6 +87,10 @@ struct Inner {
     ops: tokio::sync::mpsc::UnboundedSender<(Owner, BrowserOp)>,
     /// Sites the agent may use without asking, from Settings and "Always allow".
     allowed: Mutex<Vec<String>>,
+    /// The Chromium Settings names, for the next launch.
+    program: Mutex<Option<PathBuf>>,
+    /// Each session's tabs from when quill last ran, opened again with its browser.
+    remembered: Mutex<HashMap<Owner, Vec<String>>>,
     /// Since when no session has a tab open, while Chromium runs.
     idle_since: Mutex<Option<Instant>>,
 }
@@ -117,6 +121,8 @@ pub(crate) struct Owned {
     next: u32,
     /// What closed tabs showed, newest last, for Ctrl+Shift+T.
     closed: Vec<String>,
+    /// The tabs' addresses as last told to be kept.
+    kept: Vec<String>,
 }
 
 pub(crate) struct Tab {
@@ -166,6 +172,7 @@ impl Tab {
             loading: self.loading,
             back: self.back,
             forward: self.forward,
+            emulated: self.agent_view,
         }
     }
 
@@ -184,6 +191,7 @@ impl Browser {
     /// it keeps a task carrying out what the person does, in order.
     pub fn new(options: Options, updates: Updates) -> Self {
         let (ops, mut queue) = tokio::sync::mpsc::unbounded_channel();
+        let program = Mutex::new(options.program.clone());
         let browser = Self {
             inner: Arc::new(Inner {
                 options,
@@ -192,6 +200,8 @@ impl Browser {
                 launching: tokio::sync::Mutex::new(()),
                 ops,
                 allowed: Mutex::default(),
+                program,
+                remembered: Mutex::default(),
                 idle_since: Mutex::default(),
             }),
         };
@@ -238,6 +248,19 @@ impl Browser {
             }
         });
         browser
+    }
+
+    /// `owner`'s tabs from when quill last ran: they open again the first time its browser
+    /// does without an address.
+    pub fn remember(&self, owner: Owner, urls: Vec<String>) {
+        if !urls.is_empty() {
+            self.inner.remembered.lock().unwrap().insert(owner, urls);
+        }
+    }
+
+    /// The Chromium Settings names; it runs from the next launch.
+    pub fn use_program(&self, program: Option<PathBuf>) {
+        *self.inner.program.lock().unwrap() = program;
     }
 
     /// The sites the agent may use without asking, as Settings has them.
@@ -316,7 +339,8 @@ impl Browser {
             return Ok(run);
         }
         let options = &self.inner.options;
-        let program = chromium::find(options.program.as_deref()).ok_or_else(|| {
+        let configured = self.inner.program.lock().unwrap().clone();
+        let program = chromium::find(configured.as_deref()).ok_or_else(|| {
             "No Chromium found. Install chromium or google-chrome, or set its path in Settings."
                 .to_owned()
         })?;
@@ -399,7 +423,17 @@ impl Browser {
                     (Some(url), Some(Some(tab))) => self.navigate(&run, owner, tab, &url).await?,
                     (Some(url), _) => drop(self.new_tab(&run, owner, Some(&url)).await?),
                     (None, Some(_)) => {}
-                    (None, None) => drop(self.new_tab(&run, owner, None).await?),
+                    (None, None) => {
+                        // A session's tabs from before quill restarted come back.
+                        let before = self.inner.remembered.lock().unwrap().remove(&owner);
+                        let urls = before.unwrap_or_default();
+                        if urls.is_empty() {
+                            self.new_tab(&run, owner, None).await?;
+                        }
+                        for url in urls.iter().take(MAX_TABS) {
+                            self.new_tab(&run, owner, Some(url)).await?;
+                        }
+                    }
                 }
             }
             BrowserOp::NewTab { url } => drop(self.new_tab(&run, owner, url.as_deref()).await?),
@@ -442,6 +476,10 @@ impl Browser {
                         self.tell(owner, BrowserUpdate::Copied(text));
                     }
                 }
+            }
+            BrowserOp::Viewport { tab, size } => {
+                self.emulate(&run, owner, tab, size).await?;
+                self.publish(&run, owner);
             }
             BrowserOp::Files { tab, node, paths } => {
                 let Some(session) = run.session(owner, tab) else {
@@ -635,6 +673,7 @@ impl Browser {
                 active: None,
                 next: 0,
                 closed: Vec::new(),
+                kept: Vec::new(),
             },
         );
         Ok(context)
@@ -817,6 +856,33 @@ impl Browser {
         }
     }
 
+    /// Draw `tab` at `size`, or at the pane's size again. A phone's width is emulated as a
+    /// phone, so the page's viewport meta applies.
+    pub(crate) async fn emulate(
+        &self,
+        run: &Arc<Run>,
+        owner: Owner,
+        tab: u32,
+        size: Option<(u32, u32)>,
+    ) -> Result<(u32, u32), String> {
+        let (session, shown) = {
+            let mut state = run.state.lock().unwrap();
+            let page = state.tab_mut(owner, tab).ok_or("That tab is closed.")?;
+            page.agent_view = size.filter(|(w, h)| *w > 0 && *h > 0);
+            (page.session.clone(), page.size())
+        };
+        let mobile = size.is_some_and(|(w, _)| w <= 480);
+        run.cdp
+            .call(
+                "Emulation.setDeviceMetricsOverride",
+                json!({ "width": shown.0, "height": shown.1, "deviceScaleFactor": 0, "mobile": mobile }),
+                Some(&session),
+            )
+            .await
+            .map_err(|e| e.0)?;
+        Ok(shown)
+    }
+
     /// The value of `expression` in one of `owner`'s tabs.
     pub async fn evaluate(
         &self,
@@ -869,8 +935,21 @@ impl Browser {
     }
 
     pub(crate) fn publish(&self, run: &Arc<Run>, owner: Owner) {
-        let update = {
-            let state = run.state.lock().unwrap();
+        let (update, kept) = {
+            let mut state = run.state.lock().unwrap();
+            // The addresses are kept when they change, to open again after a restart.
+            let kept = state.owners.get_mut(&owner).and_then(|owned| {
+                let urls: Vec<String> = owned
+                    .tabs
+                    .iter()
+                    .map(|t| t.url.clone())
+                    .filter(|u| u != "about:blank" && !u.is_empty())
+                    .collect();
+                (urls != owned.kept).then(|| {
+                    owned.kept = urls.clone();
+                    urls
+                })
+            });
             let open = state.owners.values().any(|o| !o.tabs.is_empty());
             let mut idle = self.inner.idle_since.lock().unwrap();
             *idle = if open {
@@ -881,12 +960,16 @@ impl Browser {
             let Some(owned) = state.owners.get(&owner) else {
                 return;
             };
-            BrowserUpdate::Tabs {
+            let update = BrowserUpdate::Tabs {
                 tabs: owned.tabs.iter().map(Tab::info).collect(),
                 active: owned.active,
-            }
+            };
+            (update, kept)
         };
         self.tell(owner, update);
+        if let Some(urls) = kept {
+            self.tell(owner, BrowserUpdate::Kept(urls));
+        }
     }
 }
 

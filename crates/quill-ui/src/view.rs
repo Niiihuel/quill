@@ -195,6 +195,15 @@ pub const BROWSER_FORWARD: &str = "browser:forward";
 pub const BROWSER_RELOAD: &str = "browser:reload";
 pub const BROWSER_STOP: &str = "browser:stop";
 pub const BROWSER_SELECT: &str = "browser:select";
+pub const BROWSER_VIEWPORT: &str = "browser:viewport";
+/// Settings › Browser's "Choose…": the host asks for the Chromium to run.
+pub const BROWSER_PROGRAM_CHOOSE: &str = "settings:browser:program";
+/// Desktop's Viewport presets: Responsive is the pane's own size.
+pub const VIEWPORTS: [(&str, Option<(u32, u32)>); 3] = [
+    ("Responsive", None),
+    ("Mobile", Some((375, 812))),
+    ("Tablet", Some((768, 1024))),
+];
 pub const BROWSER_NOTICE_CLOSE: &str = "browser:notice:close";
 
 /// The surface a session's tab is drawn on; the host presents its frames there.
@@ -809,7 +818,7 @@ fn browser_pane(
         palette,
     )
     .size(ControlSize::Compact)
-    .width((width - 166.0).max(80.0))
+    .width((width - 198.0).max(80.0))
     .render()
     .border(look::card_border(), 1.0)
     .focus_border(look::handle(), 1.0)
@@ -832,6 +841,7 @@ fn browser_pane(
             ),
             reload,
             address,
+            viewport_menu(tab, ui),
             // Desktop's "Select element" / "Exit selection mode".
             toggle(
                 BROWSER_SELECT,
@@ -2948,6 +2958,55 @@ fn browser_step(tool: &str, input: &Value, done: bool) -> (String, String) {
         ),
         _ => (pick("Used the browser", "Using the browser"), none),
     }
+}
+
+/// Desktop's Viewport menu: the page at the pane's size, or as a phone or a
+/// tablet draws it; "Set by the agent" when resize_window chose a size of its own.
+fn viewport_menu(tab: Option<&quill_model::BrowserTab>, ui: &Ui) -> Element {
+    let emulated = tab.and_then(|t| t.emulated);
+    let open = ui.open_menu == Some(BROWSER_VIEWPORT);
+    let anchor = toggle(
+        BROWSER_VIEWPORT,
+        icons::of(icons::MONITOR),
+        "Viewport",
+        open || emulated.is_some(),
+        None,
+    );
+    let mut entries: Vec<limn::DropdownMenuEntry> = VIEWPORTS
+        .iter()
+        .map(|(name, size)| {
+            let label = match size {
+                Some((w, h)) => format!("{name} \u{b7} {w} \u{d7} {h}"),
+                None => (*name).to_owned(),
+            };
+            let id = match size {
+                Some((w, h)) => format!("{BROWSER_VIEWPORT}:{w}x{h}"),
+                None => format!("{BROWSER_VIEWPORT}:responsive"),
+            };
+            limn::DropdownMenuItem::new(id, label)
+                .selected(emulated == *size)
+                .into()
+        })
+        .collect();
+    if let Some((w, h)) = emulated.filter(|e| !VIEWPORTS.iter().any(|(_, s)| *s == Some(*e))) {
+        entries.push(
+            limn::DropdownMenuItem::new(
+                format!("{BROWSER_VIEWPORT}:{w}x{h}"),
+                format!("{w} \u{d7} {h}"),
+            )
+            .description("Set by the agent")
+            .selected(true)
+            .into(),
+        );
+    }
+    menu(
+        anchor,
+        entries,
+        open,
+        BROWSER_VIEWPORT,
+        220.0,
+        limn::PopoverPlacement::BottomEnd,
+    )
 }
 
 /// The tab a browser tool opened, from the line its answer leads with.
@@ -6773,11 +6832,30 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
             })
             .collect()
     };
+    let program = match &s.browser_program {
+        Some(path) => setting(
+            "Chromium",
+            path,
+            Element::row(vec![
+                setting_button("set:browser_program=", "Use PATH"),
+                setting_button(BROWSER_PROGRAM_CHOOSE, "Choose\u{2026}"),
+            ])
+            .gap(8.0),
+        ),
+        None => setting(
+            "Chromium",
+            "QUILL_CHROME, else the first chromium or google-chrome on PATH. A new choice runs from the browser's next start.",
+            setting_button(BROWSER_PROGRAM_CHOOSE, "Choose\u{2026}"),
+        ),
+    };
     pages.push(SettingsPage {
         key: "browser".into(),
         title: "Browser".into(),
         icon: icons::GLOBE,
-        groups: vec![("Allowed sites".into(), sites)],
+        groups: vec![
+            ("Chromium".into(), vec![program]),
+            ("Allowed sites".into(), sites),
+        ],
     });
     for agent in &ui.agents {
         pages.push(agent_page(store, ui, agent, palette));
@@ -7057,7 +7135,7 @@ fn settings_dialog(
             row
         }
     };
-    let mut groups = vec![("Preferences", vec!["general", "sessions"])];
+    let mut groups = vec![("Preferences", vec!["general", "sessions", "browser"])];
     let agents: Vec<&str> = pages
         .iter()
         .filter(|p| p.key.starts_with("agent:"))

@@ -1134,6 +1134,7 @@ impl SessionBrowser {
             BrowserUpdate::Notice(_)
             | BrowserUpdate::Copied(_)
             | BrowserUpdate::Selected(_)
+            | BrowserUpdate::Kept(_)
             | BrowserUpdate::ChooseFiles { .. } => {}
         }
     }
@@ -1946,6 +1947,19 @@ fn browser_clicked(store: &Store, ui: &mut Ui, id: &str) -> Option<Vec<Intent>> 
         .and_then(|t| t.parse().ok())
     {
         BrowserOp::CloseTab { tab }
+    } else if id == view::BROWSER_VIEWPORT {
+        ui.open_menu =
+            (ui.open_menu != Some(view::BROWSER_VIEWPORT)).then_some(view::BROWSER_VIEWPORT);
+        return Some(vec![]);
+    } else if let Some(choice) = id.strip_prefix("browser:viewport:") {
+        ui.open_menu = None;
+        if choice == "dismiss" {
+            return Some(vec![]);
+        }
+        let size = choice
+            .split_once('x')
+            .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)));
+        BrowserOp::Viewport { tab: tab?, size }
     } else if id == view::BROWSER_SELECT {
         BrowserOp::Select {
             tab: tab?,
@@ -2635,6 +2649,9 @@ fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
             ("motion", "full") => settings.motion = Motion::Full,
             ("pr_kind", value) => settings.pr_draft = value == "draft",
             ("browser_site_remove", site) => settings.browser_sites.retain(|s| s != site),
+            ("browser_program", program) => {
+                settings.browser_program = (!program.is_empty()).then(|| program.to_owned())
+            }
             (name, value) => {
                 let (agent, field) = name.strip_prefix("agent:")?.rsplit_once(':')?;
                 let entry = settings.agents.entry(agent.to_owned()).or_default();

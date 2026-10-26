@@ -410,3 +410,41 @@ async fn a_pages_file_field_asks_for_files_and_takes_the_ones_chosen() {
     browser.shutdown().await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sessions_tabs_from_before_open_again_with_its_browser() {
+    let dir = std::env::temp_dir().join(format!("quill-browser-kept-{}", std::process::id()));
+    let heard: Arc<Mutex<Vec<(u64, BrowserUpdate)>>> = Arc::default();
+    let log = heard.clone();
+    let browser = Browser::new(
+        Options {
+            program: None,
+            profile: dir.join("profile"),
+            downloads: dir.join("downloads"),
+            frames: Frames::default(),
+            permit: allow_once(),
+        },
+        Arc::new(move |owner, update| log.lock().unwrap().push((owner, update))),
+    );
+    let url = format!("http://localhost:{}/", serve());
+    browser.remember(4, vec![url.clone()]);
+    browser.apply(4, BrowserOp::Open { url: None }).await;
+    if heard
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(_, u)| matches!(u, BrowserUpdate::Failed(e) if e.starts_with("No Chromium")))
+    {
+        eprintln!("no Chromium here: skipped");
+        return;
+    }
+    until("the tab from before", || {
+        heard.lock().unwrap().iter().find_map(|(_, u)| match u {
+            BrowserUpdate::Kept(urls) if urls == &vec![url.clone()] => Some(()),
+            _ => None,
+        })
+    })
+    .await;
+    browser.shutdown().await;
+    let _ = std::fs::remove_dir_all(dir);
+}

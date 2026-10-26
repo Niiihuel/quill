@@ -233,7 +233,7 @@ impl Browser {
                     "javascript_tool" => javascript(&run, &session, input).await,
                     "read_console_messages" => console(&run, owner, tab, input),
                     "read_network_requests" => network(&run, owner, tab, input),
-                    "resize_window" => self.resize(&run, owner, tab, &session, input).await,
+                    "resize_window" => self.resize(&run, owner, tab, input).await,
                     _ => Err(format!("There is no browser tool {name}.")),
                 }?;
                 Ok(with_context(answer, &run, owner, tab))
@@ -443,40 +443,22 @@ impl Browser {
         }
     }
 
-    async fn resize(
-        &self,
-        run: &Arc<Run>,
-        owner: Owner,
-        tab: u32,
-        session: &str,
-        input: &Value,
-    ) -> Answer {
+    async fn resize(&self, run: &Arc<Run>, owner: Owner, tab: u32, input: &Value) -> Answer {
         let (width, height) = (
-            input["width"].as_u64().unwrap_or(0),
-            input["height"].as_u64().unwrap_or(0),
+            input["width"].as_u64().unwrap_or(0) as u32,
+            input["height"].as_u64().unwrap_or(0) as u32,
         );
-        let size = {
-            let mut state = run.state.lock().unwrap();
-            let page = state.tab_mut(owner, tab).ok_or("That tab is closed.")?;
-            page.agent_view = (width > 0 && height > 0).then_some((width as u32, height as u32));
-            page.size()
-        };
-        run.cdp
-            .call(
-                "Emulation.setDeviceMetricsOverride",
-                json!({ "width": size.0, "height": size.1, "deviceScaleFactor": 0, "mobile": false }),
-                Some(session),
-            )
-            .await
-            .map_err(|e| e.0)?;
-        if width == 0 {
+        let size = (width > 0 && height > 0).then_some((width, height));
+        let shown = self.emulate(run, owner, tab, size).await?;
+        self.publish(run, owner);
+        if size.is_none() {
             self.tell(
                 owner,
                 BrowserUpdate::Notice("The page has the pane's size again.".into()),
             );
             return Ok(ToolContent::text(format!(
                 "The viewport follows the pane again: {}x{}.",
-                size.0, size.1
+                shown.0, shown.1
             )));
         }
         self.tell(

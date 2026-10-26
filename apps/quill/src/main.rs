@@ -21,6 +21,8 @@ struct App {
     inbox: Arc<Mutex<Vec<Event>>>,
     /// The folder the person chose in the platform's dialog, picked up on the next frame.
     picked: Arc<Mutex<Option<PathBuf>>>,
+    /// The Chromium chosen in Settings › Browser, kept on the next frame.
+    chromium: Arc<Mutex<Option<PathBuf>>>,
     /// Files chosen for a page's file field, sent on the next frame.
     chosen: Arc<Mutex<Option<(SessionId, quill_model::BrowserOp)>>>,
     /// Files or a folder chosen from "+", to go into the message as @-mentions.
@@ -531,6 +533,12 @@ impl eframe::App for App {
         if let Some((session, op)) = self.chosen.lock().unwrap().take() {
             self.engine.send(Intent::Browser { session, op });
         }
+        let chromium = self.chromium.lock().unwrap().take();
+        if let Some(program) = chromium {
+            let mut settings = self.ui.settings.clone();
+            settings.browser_program = Some(program.display().to_string());
+            self.dispatch(vec![Intent::SaveSettings(settings)]);
+        }
         limn_egui::normalize_keyboard_input(&ctx);
         let area = ui.max_rect();
         let window = Size::new(area.width(), area.height());
@@ -710,6 +718,16 @@ impl eframe::App for App {
                     let _ = std::process::Command::new("xdg-open")
                         .arg(&session.cwd)
                         .spawn();
+                }
+                // Settings › Browser: the Chromium to run, from the platform's dialog.
+                if id == quill_ui::view::BROWSER_PROGRAM_CHOOSE {
+                    let (chromium, ctx) = (self.chromium.clone(), ctx.clone());
+                    std::thread::spawn(move || {
+                        if let Some(path) = rfd::FileDialog::new().pick_file() {
+                            *chromium.lock().unwrap() = Some(path);
+                            ctx.request_repaint();
+                        }
+                    });
                 }
                 // Settings' data folder shows in the desktop's own file manager.
                 if id == quill_ui::view::SETTINGS_STORAGE_OPEN {
@@ -1001,6 +1019,7 @@ fn main() -> eframe::Result {
                 inbox,
                 picked: Arc::default(),
                 chosen: Arc::default(),
+                chromium: Arc::default(),
                 attached: Arc::default(),
                 terminals: HashMap::new(),
                 transcript: None,
