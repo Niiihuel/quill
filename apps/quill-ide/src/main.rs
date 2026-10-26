@@ -3,6 +3,7 @@
 //! directory without one.
 
 mod disk;
+mod files;
 mod find;
 mod grep;
 mod ide;
@@ -274,6 +275,9 @@ impl eframe::App for App {
                         "j" => Some(ide::TreeKey::Down),
                         "h" => Some(ide::TreeKey::Left),
                         "l" => Some(ide::TreeKey::Right),
+                        "a" => Some(ide::TreeKey::New),
+                        "r" => Some(ide::TreeKey::Rename),
+                        "d" => Some(ide::TreeKey::Trash),
                         _ => None,
                     },
                     _ => None,
@@ -387,15 +391,16 @@ impl eframe::App for App {
                 self.focus_waits = 0;
             }
             if focused {
-                // The field opened with `:` in it takes what is typed after it.
-                if id == quick::QUICK_FIELD {
-                    let query = self
-                        .ide
-                        .quick
-                        .as_ref()
-                        .map_or(String::new(), |(q, _)| q.clone());
-                    self.tree.set_input_value(&id, query.clone());
-                    self.tree.set_input_cursor(&id, query.chars().count());
+                // A field opened with words in it (`:`, a name to rename) takes what is typed
+                // after them.
+                let typed = match id.as_str() {
+                    quick::QUICK_FIELD => self.ide.quick.as_ref().map(|(q, _)| q.clone()),
+                    ide::NAME_FIELD => self.ide.naming.as_ref().map(|n| n.value.clone()),
+                    _ => None,
+                };
+                if let Some(typed) = typed {
+                    self.tree.set_input_value(&id, typed.clone());
+                    self.tree.set_input_cursor(&id, typed.chars().count());
                 }
                 frame = self.tree.layout(window);
             }

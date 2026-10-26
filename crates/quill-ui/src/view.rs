@@ -9,8 +9,8 @@ use limn::{
     TextShimmer,
 };
 use quill_components::pieces::{
-    hgap, hline, icon_tool, keyed_button, menu, muted, pane_header, text, toggle, tool_surface,
-    vline,
+    confirm, hgap, hline, icon_tool, keyed_button, menu, muted, pane_header, text, toggle,
+    tool_surface, vline,
 };
 use quill_components::settings::{
     self, choices, setting, setting_button, setting_switch, Setting, SettingsPage,
@@ -462,7 +462,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     //, less its vendor's servers: quill forgets only its own record.
     let tabs = &ui.terminal.tabs;
     let deleting = ui.deleting.and_then(|id| store.session(id));
-    let (title, description, confirm) = match (ui.terminal.closing, deleting) {
+    let (title, description, label) = match (ui.terminal.closing, deleting) {
         (_, Some(session)) => (
             "Delete session?",
             format!(
@@ -504,40 +504,15 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     } else {
         (TERMINAL_CLOSE_CONFIRM, TERMINAL_CLOSE_CANCEL)
     };
-    limn::AlertDialog::new(
+    confirm(
         root,
         ui.terminal.closing.is_some() || deleting.is_some(),
         title,
-        description,
+        &description,
+        label,
         confirm_id,
         cancel_id,
-        // Cancel is filled with `raised`: Desktop's light gray.
-        ComponentPalette {
-            raised: look::cancel(),
-            ..palette
-        },
     )
-    .width(400.0)
-    .confirm_label(confirm)
-    .soft_destructive(
-        look::danger_fill(),
-        look::danger_border(),
-        look::danger_ink(),
-    )
-    .cancel_variant(ButtonVariant::Secondary)
-    .description_size(BODY)
-    .description_line_height(20.0)
-    .closable(false)
-    // Desktop's backdrop is lighter, its title closer, its buttons 30 px with 14 px labels.
-    .scrim(look::scrim())
-    .title_gap(1.0)
-    .button_sizing(limn::ButtonSizing {
-        height: 30.0,
-        font_size: BODY,
-        horizontal_padding: 12.0,
-        ..ControlSize::Compact.button_sizing()
-    })
-    .render()
 }
 
 /// Expand and close, the tools every pane carries.

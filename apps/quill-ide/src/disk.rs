@@ -49,6 +49,10 @@ pub fn run(job: Job) -> Loaded {
         }
         Job::FindFonts => Loaded::Fonts(monospaced()),
         Job::FindFiles(root) => Loaded::Files(files(&root)),
+        Job::File(root, op) => {
+            let done = crate::files::run(&root, &op, crate::files::system_trash);
+            Loaded::File(op, done)
+        }
         Job::Analyze(path, save) => {
             let structure = crate::structure::analyze(&save.0, &path);
             Loaded::Analyzed(path, structure)

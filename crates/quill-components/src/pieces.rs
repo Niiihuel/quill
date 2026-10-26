@@ -219,3 +219,50 @@ pub fn pane_header(lead: Element, tools: Vec<Element>, width: f32) -> Element {
         hline(width, look::pane_border()),
     ])
 }
+
+/// A question before something that cannot be taken back, as Desktop asks it: its
+/// title and words, Cancel and the soft red `confirm`, over `base` while `open`.
+pub fn confirm(
+    base: Element,
+    open: bool,
+    title: &str,
+    description: &str,
+    confirm: &str,
+    confirm_id: &str,
+    cancel_id: &str,
+) -> Element {
+    limn::AlertDialog::new(
+        base,
+        open,
+        title,
+        description,
+        confirm_id,
+        cancel_id,
+        // Cancel is filled with `raised`: Desktop's light gray.
+        ComponentPalette {
+            raised: look::cancel(),
+            ..look::palette()
+        },
+    )
+    .width(400.0)
+    .confirm_label(confirm)
+    .soft_destructive(
+        look::danger_fill(),
+        look::danger_border(),
+        look::danger_ink(),
+    )
+    .cancel_variant(limn::ButtonVariant::Secondary)
+    .description_size(BODY)
+    .description_line_height(20.0)
+    .closable(false)
+    // Desktop's backdrop is lighter, its title closer, its buttons 30 px with 14 px labels.
+    .scrim(look::scrim())
+    .title_gap(1.0)
+    .button_sizing(limn::ButtonSizing {
+        height: 30.0,
+        font_size: BODY,
+        horizontal_padding: 12.0,
+        ..limn::ControlSize::Compact.button_sizing()
+    })
+    .render()
+}

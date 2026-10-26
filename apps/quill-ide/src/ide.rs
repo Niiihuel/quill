@@ -1,6 +1,7 @@
 //! quill-ide's state, what the person's clicks and keys ask of it, and the window (`view`).
 //! The disk is the host's: `update` returns `Job`s, and what they find comes back to `loaded`.
 
+use crate::files::Op;
 use crate::find::{Find, FIND, FIND_OPEN, FIND_QUERY};
 use crate::grep::{Hit, GREP_CLOSE, GREP_FIELD, GREP_OPEN};
 use crate::marks::Change;
@@ -29,6 +30,11 @@ pub const TERMINAL: &str = "terminal";
 pub const TERMINAL_SCROLL: &str = "terminal:scroll";
 pub const TERMINAL_TOGGLE: &str = "terminal:toggle";
 const TERMINAL_NEW: &str = "terminal:new";
+pub const NAME_FIELD: &str = "name:field";
+const NAME_CLOSE: &str = "name:close";
+const TRASH_CONFIRM: &str = "trash:confirm";
+const TRASH_CANCEL: &str = "trash:cancel";
+const FILE_ERROR_DISMISS: &str = "file-error:dismiss";
 /// The terminal's share of the window under the editor, its type and its insets, as quill's.
 const TERMINAL_HEIGHT: f32 = 0.36;
 pub const TERMINAL_FONT: f32 = 12.0;
@@ -41,6 +47,21 @@ const ROW: f32 = 26.0;
 const NOTICE: f32 = 40.0;
 /// The line under the editor: mode, file, caret, language and branch.
 const FOOTER: f32 = 26.0;
+
+/// A name being typed for the tree: of something new in a folder (ending in `/`, a folder),
+/// or of a file or folder renamed. Its words, and why the last try failed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Naming {
+    pub target: NameFor,
+    pub value: String,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum NameFor {
+    NewIn(PathBuf),
+    Rename(PathBuf),
+}
 
 /// What the person asked of the shells, for the host, which runs them.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -69,6 +90,10 @@ pub enum TreeKey {
     Left,
     Right,
     Escape,
+    /// nvim-tree's `a`, `r` and `d`: something new, a rename, the trash.
+    New,
+    Rename,
+    Trash,
 }
 
 /// When a file or folder last changed on the disk; `None` when it is not there.
@@ -104,6 +129,8 @@ pub enum Job {
     Changes(PathBuf, std::sync::Arc<str>, Save),
     /// The buffer's folds, scopes and declarations, by tree-sitter.
     Analyze(PathBuf, Save),
+    /// Make, rename or trash a file of the folder.
+    File(PathBuf, Op),
 }
 
 /// A family's regular and bold faces, for the editor.
@@ -150,6 +177,8 @@ pub enum Loaded {
     /// A file's changes since its commit, at the buffer's revision.
     Changes(PathBuf, u64, Vec<(std::ops::Range<usize>, Change)>),
     Analyzed(PathBuf, Structure),
+    /// What a file operation made or moved to, from the folder, or why it did not.
+    File(Op, Result<Option<PathBuf>, String>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -283,6 +312,11 @@ pub struct Ide {
     /// A file's row to take the caret to once it is read.
     pub pending_goto: Option<(PathBuf, usize)>,
     pub terminal: TerminalPane,
+    /// The tree's file operations: a name being typed, what waits to go to the trash, and
+    /// why the last one failed.
+    pub naming: Option<Naming>,
+    pub trashing: Option<PathBuf>,
+    pub file_error: Option<String>,
 }
 
 #[derive(Default)]
@@ -360,6 +394,9 @@ impl Ide {
             grep_count: 0,
             pending_goto: None,
             terminal: TerminalPane::default(),
+            naming: None,
+            trashing: None,
+            file_error: None,
         };
         (ide, jobs)
     }
@@ -414,6 +451,11 @@ impl Ide {
                 self.quick = Some((value.clone(), 0));
             } else if id == GREP_FIELD {
                 return self.grep_for(value);
+            } else if id == NAME_FIELD {
+                if let Some(naming) = self.naming.as_mut() {
+                    naming.value = value.clone();
+                    naming.error = None;
+                }
             } else if id == FIND_QUERY {
                 self.find_with(|find, editor| {
                     find.query = value.clone();
@@ -430,6 +472,9 @@ impl Ide {
             if id == GREP_FIELD {
                 let chosen = self.grep.as_ref().map_or(0, |g| g.chosen);
                 return self.grep_open(chosen);
+            }
+            if id == NAME_FIELD {
+                return self.name_done();
             }
             if id == FIND_QUERY {
                 self.find_with(|find, editor| find.step(editor, 1));
@@ -469,6 +514,9 @@ impl Ide {
             return jobs;
         }
         if let Some(jobs) = self.terminal_clicked(id) {
+            return jobs;
+        }
+        if let Some(jobs) = self.file_clicked(id) {
             return jobs;
         }
         if id == TREE_TOGGLE {
@@ -803,6 +851,181 @@ impl Ide {
         jobs
     }
 
+    /// The tree's file operations: from its rows' menus and keys, the naming dialog and the
+    /// trash's question. `None` when `id` is none of them.
+    fn file_clicked(&mut self, id: &str) -> Option<Vec<Job>> {
+        let path = |prefix: &str| id.strip_prefix(prefix).map(PathBuf::from);
+        if let Some(dir) = path("tree:new:") {
+            self.naming = Some(Naming {
+                target: NameFor::NewIn(dir),
+                value: String::new(),
+                error: None,
+            });
+            self.focus = Some(NAME_FIELD.into());
+        } else if let Some(at) = path("tree:rename:") {
+            self.naming = Some(Naming {
+                value: name(&at),
+                target: NameFor::Rename(at),
+                error: None,
+            });
+            self.focus = Some(NAME_FIELD.into());
+        } else if let Some(at) = path("tree:trash:") {
+            // A file with changes not saved is not trashed under them.
+            let unsaved = self
+                .buffers
+                .iter()
+                .any(|b| b.path.starts_with(&at) && b.dirty());
+            if unsaved {
+                self.file_error = Some(format!(
+                    "{} has changes not saved: save or close them first.",
+                    name(&at)
+                ));
+            } else {
+                self.trashing = Some(at);
+            }
+        } else if let Some(at) = path("tree:copy:") {
+            let relative = at.strip_prefix(&self.root).unwrap_or(&at);
+            self.copy = Some(relative.display().to_string());
+        } else if id == NAME_CLOSE {
+            self.naming = None;
+        } else if id == "name:go" {
+            return Some(self.name_done());
+        } else if id == TRASH_CANCEL {
+            self.trashing = None;
+        } else if id == TRASH_CONFIRM {
+            let at = self.trashing.take()?;
+            return Some(vec![Job::File(
+                self.root.clone(),
+                Op::Trash {
+                    path: self.relative(&at),
+                },
+            )]);
+        } else if id == FILE_ERROR_DISMISS {
+            self.file_error = None;
+        } else {
+            return None;
+        }
+        Some(vec![])
+    }
+
+    fn relative(&self, path: &Path) -> PathBuf {
+        path.strip_prefix(&self.root).unwrap_or(path).to_path_buf()
+    }
+
+    /// The name typed, made into its operation: a trailing `/` asks for a folder.
+    fn name_done(&mut self) -> Vec<Job> {
+        let Some(naming) = self.naming.as_mut() else {
+            return vec![];
+        };
+        let value = naming.value.trim();
+        let op = match &naming.target {
+            NameFor::NewIn(dir) => {
+                let parent = dir.strip_prefix(&self.root).unwrap_or(dir).to_path_buf();
+                match value.strip_suffix('/') {
+                    Some(folder) => Op::CreateDir {
+                        parent,
+                        name: folder.into(),
+                    },
+                    None => Op::CreateFile {
+                        parent,
+                        name: value.into(),
+                    },
+                }
+            }
+            NameFor::Rename(at) => {
+                if name(at) == value {
+                    self.naming = None;
+                    return vec![];
+                }
+                let path = at.strip_prefix(&self.root).unwrap_or(at).to_path_buf();
+                Op::Rename {
+                    path,
+                    name: value.into(),
+                }
+            }
+        };
+        if let Err(error) = crate::files::valid_name(match &op {
+            Op::CreateFile { name, .. } | Op::CreateDir { name, .. } | Op::Rename { name, .. } => {
+                name
+            }
+            Op::Trash { .. } => "",
+        }) {
+            naming.error = Some(error);
+            return vec![];
+        }
+        vec![Job::File(self.root.clone(), op)]
+    }
+
+    /// A file operation done: the tree listed again, and the open files where they are now.
+    fn file_done(&mut self, op: Op, done: Result<Option<PathBuf>, String>) -> Vec<Job> {
+        let made = match done {
+            Ok(made) => made.map(|m| self.root.join(m)),
+            Err(error) => {
+                match self.naming.as_mut() {
+                    Some(naming) => naming.error = Some(error),
+                    None => self.file_error = Some(error),
+                }
+                return vec![];
+            }
+        };
+        self.naming = None;
+        let mut jobs = vec![];
+        let list = |path: &Path| Job::List(path.parent().unwrap_or(path).to_path_buf());
+        match op {
+            Op::CreateFile { .. } => {
+                if let Some(file) = made {
+                    jobs.push(list(&file));
+                    jobs.extend(self.open(file));
+                }
+            }
+            Op::CreateDir { .. } => {
+                if let Some(dir) = made {
+                    jobs.push(list(&dir));
+                    self.expanded.insert(dir.clone());
+                    jobs.push(Job::List(dir));
+                }
+            }
+            Op::Rename { path, .. } => {
+                let old = self.root.join(path);
+                let new = made.unwrap_or_else(|| old.clone());
+                for buffer in &mut self.buffers {
+                    if let Some(Some(moved)) = crate::files::moved(&buffer.path, &old, Some(&new)) {
+                        buffer.path = moved;
+                    }
+                }
+                self.expanded = std::mem::take(&mut self.expanded)
+                    .into_iter()
+                    .map(|dir| match crate::files::moved(&dir, &old, Some(&new)) {
+                        Some(Some(moved)) => moved,
+                        _ => dir,
+                    })
+                    .collect();
+                self.listed.retain(|dir, _| !dir.starts_with(&old));
+                self.dir_stamps.retain(|dir, _| !dir.starts_with(&old));
+                jobs.push(list(&new));
+                jobs.extend(
+                    self.expanded
+                        .iter()
+                        .filter(|d| d.starts_with(&new))
+                        .cloned()
+                        .map(Job::List),
+                );
+            }
+            Op::Trash { path } => {
+                let gone = self.root.join(path);
+                while let Some(at) = self.buffers.iter().position(|b| b.path.starts_with(&gone)) {
+                    self.closing = Some(self.buffers[at].path.clone());
+                    self.close(at);
+                }
+                self.expanded.retain(|dir| !dir.starts_with(&gone));
+                self.listed.retain(|dir, _| !dir.starts_with(&gone));
+                self.dir_stamps.retain(|dir, _| !dir.starts_with(&gone));
+                jobs.push(list(&gone));
+            }
+        }
+        jobs
+    }
+
     /// The terminal's toggle, its tabs, its new and its closes. `None` when `id` is none of
     /// them.
     fn terminal_clicked(&mut self, id: &str) -> Option<Vec<Job>> {
@@ -904,6 +1127,29 @@ impl Ide {
                 .filter(|dir| *dir != self.root)
                 .map(|dir| format!("dir:{}", dir.display())),
             TreeKey::Escape => self.editor_id(),
+            TreeKey::New => {
+                // In the folder on the row, or in the file's own folder.
+                let dir = if focused.starts_with("dir:") {
+                    path.clone()
+                } else {
+                    path.parent().map_or(self.root.clone(), Path::to_path_buf)
+                };
+                let id = format!("tree:new:{}", dir.display());
+                jobs = self.update(&UiAction::Clicked { id });
+                None
+            }
+            TreeKey::Rename => {
+                jobs = self.update(&UiAction::Clicked {
+                    id: format!("tree:rename:{}", path.display()),
+                });
+                None
+            }
+            TreeKey::Trash => {
+                jobs = self.update(&UiAction::Clicked {
+                    id: format!("tree:trash:{}", path.display()),
+                });
+                None
+            }
         };
         if next.is_some() {
             self.reveal_row.clone_from(&next);
@@ -1024,6 +1270,7 @@ impl Ide {
                     buffer.changes.clear();
                 }
             }
+            Loaded::File(op, done) => return self.file_done(op, done),
             Loaded::Analyzed(path, structure) => {
                 if let Some(buffer) = self.buffers.iter_mut().find(|b| b.path == path) {
                     buffer.structure = Some(structure);
@@ -1337,6 +1584,25 @@ pub fn view(ide: &Ide, window: Size) -> Element {
         }
         None => root,
     };
+    let root = match &ide.naming {
+        Some(naming) => name_dialog(ide, naming, root),
+        None => root,
+    };
+    let root = match &ide.trashing {
+        Some(at) => confirm(
+            root,
+            true,
+            "Move to the trash?",
+            &format!(
+                "\u{201c}{}\u{201d} goes to the desktop's trash, where it can be put back.",
+                ide.relative(at).display()
+            ),
+            "Move to trash",
+            TRASH_CONFIRM,
+            TRASH_CANCEL,
+        ),
+        None => root,
+    };
     match &ide.settings_page {
         Some(page) => settings::dialog(
             root,
@@ -1455,7 +1721,18 @@ fn tree(ide: &Ide, height: f32) -> Element {
     // The muted ink at about a third: the divider's gray is lost on the sidebar's fill.
     let muted = look::muted();
     let guide = limn::Color::rgba(muted.r, muted.g, muted.b, 80);
-    let mut rows = vec![Element::row(header).size(None, Some(ROW))];
+    let header = Element::row(header).size(None, Some(ROW));
+    let mut rows = vec![limn::ContextMenu::new(
+        "tree:menu:root",
+        header,
+        vec![menu_item(
+            &format!("tree:new:{}", ide.root.display()),
+            "New file or folder\u{2026}",
+            "a",
+        )],
+        look::menu_palette(),
+    )
+    .render()];
     for ((entry, _), guides) in visible.iter().zip(limn::guides_for_depths(&depths)) {
         let open = entry.dir && ide.expanded.contains(&entry.path);
         let (icon, ink) = ide.pack.icon(&entry.path, entry.dir, open);
@@ -1471,12 +1748,63 @@ fn tree(ide: &Ide, height: f32) -> Element {
             .width(width)
             .guide_color(guide)
             .selected(shown == Some(entry.path.as_path()));
-        rows.push(row.render().radius(6.0));
+        let row = row.render().radius(6.0);
+        rows.push(row_menu(ide, &entry.path, entry.dir, row));
     }
     Element::scroll("tree:scroll", Element::column(rows).padding(6.0))
         .size(Some(look::SIDEBAR_WIDTH), Some(height))
         .background(look::sidebar())
         .clip_children()
+}
+
+fn menu_item(id: &str, label: &str, keys: &str) -> limn::ContextMenuEntry {
+    let item = limn::ContextMenuItem::new(id, label);
+    limn::ContextMenuEntry::Item(if keys.is_empty() {
+        item
+    } else {
+        item.shortcut(keys)
+    })
+}
+
+/// A tree row with its menu: something new in its folder, a rename, its path, the trash; the
+/// keys nvim-tree gives them.
+fn row_menu(ide: &Ide, path: &Path, dir: bool, row: Element) -> Element {
+    let folder = if dir {
+        path.to_path_buf()
+    } else {
+        path.parent().map_or(ide.root.clone(), Path::to_path_buf)
+    };
+    let entries = vec![
+        menu_item(
+            &format!("tree:new:{}", folder.display()),
+            "New file or folder\u{2026}",
+            "a",
+        ),
+        menu_item(
+            &format!("tree:rename:{}", path.display()),
+            "Rename\u{2026}",
+            "r",
+        ),
+        limn::ContextMenuEntry::Separator,
+        menu_item(
+            &format!("tree:copy:{}", path.display()),
+            "Copy relative path",
+            "",
+        ),
+        limn::ContextMenuEntry::Separator,
+        menu_item(
+            &format!("tree:trash:{}", path.display()),
+            "Move to trash",
+            "d",
+        ),
+    ];
+    limn::ContextMenu::new(
+        format!("tree:menu:{}", path.display()),
+        row,
+        entries,
+        look::menu_palette(),
+    )
+    .render()
 }
 
 /// The rows on show, depth first, with their depths.
@@ -1513,6 +1841,10 @@ fn notices(ide: &Ide, width: f32) -> Vec<Element> {
         };
         let words = format!("{files} unsaved changes: close the window again to discard them.");
         shown.push(notice(words, look::palette().text, None, width));
+    }
+    if let Some(error) = &ide.file_error {
+        let ok = keyed_button(FILE_ERROR_DISMISS, "OK", "", false, true, look::palette());
+        shown.push(notice(error.clone(), look::failed(), Some(ok), width));
     }
     let Some((i, buffer)) = ide.active.zip(ide.active_buffer()) else {
         return shown;
@@ -1620,6 +1952,51 @@ fn editor(ide: &Ide, width: f32, height: f32) -> Element {
     }
     column.push(footer(ide, width));
     Element::column(column)
+}
+
+/// The name for something new, or for a rename, in quill's search: its field, then what Enter
+/// does or why it can't.
+fn name_dialog(ide: &Ide, naming: &Naming, base: Element) -> Element {
+    let value = naming.value.trim();
+    let (title, placeholder, action) = match &naming.target {
+        NameFor::NewIn(dir) => {
+            let at = ide.relative(dir);
+            let at = if at.as_os_str().is_empty() {
+                name(&ide.root)
+            } else {
+                at.display().to_string()
+            };
+            let what = if value.ends_with('/') {
+                "folder"
+            } else {
+                "file"
+            };
+            (
+                format!("New in {at}"),
+                "A name; ending in / makes a folder",
+                format!("Make the {what} {}", value.trim_end_matches('/')),
+            )
+        }
+        NameFor::Rename(at) => (
+            format!("Rename {}", ide.relative(at).display()),
+            "Its new name",
+            format!("Rename it {value}"),
+        ),
+    };
+    let row = match &naming.error {
+        Some(error) => Found::new("name:go", error.clone()),
+        None if value.is_empty() => Found::new("name:go", "Type a name"),
+        None => Found::new("name:go", action),
+    };
+    search::dialog(
+        base,
+        NAME_FIELD,
+        NAME_CLOSE,
+        &naming.value,
+        placeholder,
+        vec![(title, vec![row])],
+        0,
+    )
 }
 
 fn terminal_height(window: Size) -> f32 {
@@ -2420,6 +2797,72 @@ mod tests {
         assert!(shell.rect.y > 500.0, "under the editor");
         click(&mut ide, TERMINAL_TOGGLE);
         assert!(!ide.terminal.open);
+    }
+
+    #[test]
+    fn the_tree_makes_renames_and_trashes_files_and_the_open_ones_follow() {
+        let mut ide = with_files();
+        let (_, jobs) = ide.tree_key("file:/r/a.rs", TreeKey::New);
+        assert!(jobs.is_empty());
+        assert_eq!(ide.focus.take().as_deref(), Some(NAME_FIELD));
+        let input = |ide: &mut Ide, value: &str| {
+            ide.update(&UiAction::InputChanged {
+                id: NAME_FIELD.into(),
+                value: value.into(),
+            });
+            ide.update(&UiAction::Submitted {
+                id: NAME_FIELD.into(),
+                value: value.into(),
+            })
+        };
+        assert!(input(&mut ide, "a/b").is_empty());
+        assert_eq!(
+            ide.naming.as_ref().unwrap().error.as_deref(),
+            Some("A name has no slashes")
+        );
+        let jobs = input(&mut ide, "lib/");
+        let made = Op::CreateDir {
+            parent: "".into(),
+            name: "lib".into(),
+        };
+        assert_eq!(jobs, vec![Job::File("/r".into(), made.clone())]);
+        let jobs = ide.loaded(Loaded::File(made, Ok(Some("lib".into()))));
+        assert!(ide.naming.is_none() && ide.expanded.contains(Path::new("/r/lib")));
+        assert_eq!(
+            jobs,
+            vec![Job::List("/r".into()), Job::List("/r/lib".into())]
+        );
+        // A rename moves the open file with it.
+        read(&mut ide, "/r/a.rs", "a");
+        click(&mut ide, "tree:rename:/r/a.rs");
+        assert_eq!(ide.naming.as_ref().unwrap().value, "a.rs");
+        let rename = Op::Rename {
+            path: "a.rs".into(),
+            name: "b.rs".into(),
+        };
+        assert_eq!(
+            input(&mut ide, "b.rs"),
+            vec![Job::File("/r".into(), rename.clone())]
+        );
+        ide.loaded(Loaded::File(rename, Ok(Some("b.rs".into()))));
+        assert_eq!(ide.buffers[0].path, Path::new("/r/b.rs"));
+        // Unsaved changes keep it out of the trash; saved, it goes and its tab closes.
+        type_in(&ide.buffers[0], 0, "x");
+        click(&mut ide, "tree:trash:/r/b.rs");
+        assert!(ide.trashing.is_none() && ide.file_error.is_some());
+        click(&mut ide, FILE_ERROR_DISMISS);
+        let shared = ide.buffers[0].editor.as_ref().unwrap().shared_buffer();
+        shared.lock().unwrap().mark_saved();
+        click(&mut ide, "tree:trash:/r/b.rs");
+        let trash = Op::Trash {
+            path: "b.rs".into(),
+        };
+        assert_eq!(
+            click(&mut ide, TRASH_CONFIRM),
+            vec![Job::File("/r".into(), trash.clone())]
+        );
+        ide.loaded(Loaded::File(trash, Ok(None)));
+        assert!(ide.buffers.is_empty());
     }
 
     #[test]
