@@ -2,17 +2,16 @@
 //! The disk is the host's: `update` returns `Job`s, and what they find comes back to `loaded`.
 
 use crate::complete::{self, Offer};
-use crate::find::{Find, FIND, FIND_OPEN, FIND_QUERY};
 use crate::grep::{Hit, GREP_CLOSE, GREP_FIELD, GREP_OPEN};
 use crate::marks::Change;
 use crate::prefs::{self, Prefs};
 use crate::quick::{self, QUICK_CLOSE, QUICK_FIELD, QUICK_LINE, QUICK_OPEN};
 use crate::session::Session;
 use crate::structure::{self as tree_sitter, Structure};
-use limn::{
-    CodeEditor, Component, ComponentPalette, EditorController, Element, Key, Point, Size, UiAction,
-};
+use limn::{Component, ComponentPalette, EditorController, Element, Key, Point, Size, UiAction};
 use limn_editor::{BufferSnapshot, EditKind, Selection, TextBuffer};
+use quill_components::code;
+use quill_components::find::{self, Find, FIND_OPEN, FIND_QUERY};
 use quill_components::look::{self, SMALL};
 use quill_components::packs::{self, Offered, Pack, Theme};
 use quill_components::search::{self, Found};
@@ -617,12 +616,11 @@ impl Ide {
             } else if id == SYMBOL_FIELD {
                 self.renaming_symbol = Some(value.clone());
             } else if self.tree.typed(id, value) {
-            } else if id == FIND_QUERY {
-                self.find_with(|find, editor| {
-                    find.query = value.clone();
-                    find.search(editor);
-                    find.select(editor);
-                });
+            } else {
+                let editor = self.active_buffer().and_then(|b| b.editor.clone());
+                if find::typed(&mut self.find, id, value, editor.as_ref()) {
+                    self.reveal = true;
+                }
             }
             return vec![];
         }
@@ -644,8 +642,9 @@ impl Ide {
                 let chosen = self.references.as_ref().map_or(0, |(_, c)| *c);
                 return self.reference_open(chosen);
             }
-            if id == FIND_QUERY {
-                self.find_with(|find, editor| find.step(editor, 1));
+            let editor = self.active_buffer().and_then(|b| b.editor.clone());
+            if find::submitted(&mut self.find, id, editor.as_ref()) {
+                self.reveal = true;
             }
             return vec![];
         }
@@ -920,62 +919,16 @@ impl Ide {
         self.open(path)
     }
 
-    /// `apply` to the open bar and the editor on screen.
-    fn find_with(&mut self, apply: impl FnOnce(&mut Find, &EditorController)) {
-        let editor = self.active_buffer().and_then(|b| b.editor.clone());
-        if let (Some(find), Some(editor)) = (self.find.as_mut(), editor) {
-            apply(find, &editor);
-            self.reveal = true;
-        }
-    }
-
     /// The find bar's own clicks: open it, close it, its options and its arrows. False when
     /// `id` is none of them.
     fn find_clicked(&mut self, id: &str) -> bool {
-        let Some(part) = id.strip_prefix("find:") else {
-            return false;
-        };
-        if part == "open" {
-            let editor = self.active_buffer().and_then(|b| b.editor.clone());
-            let Some(editor) = editor else {
-                return true;
-            };
-            // What is selected is what to find, as editors do; else the last query.
-            let selected = editor.snapshot().ok().and_then(|s| {
-                let range = s.selection().range();
-                (!range.is_empty() && range.len() < 200)
-                    .then(|| s.text_range(range).ok())
-                    .flatten()
-            });
-            let mut find = self.find.take().unwrap_or_default();
-            if let Some(selected) = selected.filter(|s| !s.contains('\n')) {
-                find.query = selected;
-            }
-            find.search(&editor);
-            self.find = Some(find);
-            self.focus = Some(FIND_QUERY.into());
-            return true;
+        let editor = self.active_buffer().and_then(|b| b.editor.clone());
+        match find::clicked(&mut self.find, id, editor.as_ref()) {
+            None => return false,
+            Some(find::Asked::Query) => self.focus = Some(FIND_QUERY.into()),
+            Some(find::Asked::Editor) => self.focus = self.editor_id(),
+            Some(find::Asked::Reveal) => self.reveal = true,
         }
-        if part == "dismiss" {
-            self.find = None;
-            self.focus = self.editor_id();
-            return true;
-        }
-        self.find_with(|find, editor| match part {
-            "next" => find.step(editor, 1),
-            "previous" => find.step(editor, -1),
-            "case" | "word" | "regex" => {
-                let options = &mut find.options;
-                match part {
-                    "case" => options.case = !options.case,
-                    "word" => options.word = !options.word,
-                    _ => options.regex = !options.regex,
-                }
-                find.search(editor);
-                find.select(editor);
-            }
-            _ => {}
-        });
         true
     }
 
@@ -2343,7 +2296,6 @@ fn editor(ide: &Ide, width: f32, height: f32) -> Element {
                 ..
             },
         ) => {
-            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             let snapshot = editor.snapshot().ok();
             let (document, revision) = snapshot
                 .as_ref()
@@ -2353,9 +2305,7 @@ fn editor(ide: &Ide, width: f32, height: f32) -> Element {
             let (folds, scopes) = structure_controls(buffer, revision);
             // An editor per file keeps each one's caret and scroll while another is on screen.
             // With Vim keys, a file opens in Normal mode: reading, until `i`.
-            let code = CodeEditor::new(buffer.editor_id(), editor.clone())
-                .palette(look::palette())
-                .language(limn::CodeLanguage::from_code_fence(ext))
+            let code = code::editor(buffer.editor_id(), editor, path)
                 .font_size(ide.prefs.font_size as f32)
                 .tab_width(ide.prefs.tab_width as usize)
                 .indent_style(indent_style(&ide.prefs))
@@ -2363,9 +2313,6 @@ fn editor(ide: &Ide, width: f32, height: f32) -> Element {
                 .soft_wrap(ide.prefs.wrap)
                 .minimap(ide.prefs.minimap)
                 .vim_mode_label(false)
-                .syntax_colors(syntax_colors())
-                // quill's rail, arrows and thumb, as every other scroll surface here.
-                .scrollbar_appearance(limn::ScrollbarAppearance::default())
                 .context_actions(context_actions(ide.prefs.vim))
                 .change_marks(
                     editor.snapshot().map_or(0, |s| s.document_id()),
@@ -2437,18 +2384,9 @@ fn editor(ide: &Ide, width: f32, height: f32) -> Element {
         column.insert(top, hover);
     }
     // The find bar floats under the end of the line over the editor.
-    if let Some(find) = &ide.find {
-        let bar = limn::FindBar::new(FIND, find.query.as_str(), look::palette())
-            .surface(look::menu_palette())
-            .options(find.options)
-            .count_label(find.count_label())
-            .has_matches(find.results.as_ref().is_some_and(|r| !r.matches.is_empty()))
-            .has_current(find.current.is_some())
-            .no_matches(find.results.as_ref().is_some_and(|r| r.matches.is_empty()))
-            .error(find.error.as_deref())
-            .width((width - 24.0).min(520.0));
+    if let Some(bar) = &ide.find {
         let anchor = Element::spacer().size(Some(width - 12.0), Some(0.0));
-        column.insert(top, bar.attach(anchor));
+        column.insert(top, find::bar(bar, width, anchor));
     }
     column.push(footer(ide, width));
     Element::column(column)
@@ -2502,10 +2440,7 @@ fn completion_list(
 }
 
 fn markdown(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|e| e.to_str()),
-        Some("md" | "markdown" | "mdx")
-    )
+    code::is_markdown(path)
 }
 
 /// The bar over the editor, as openADE's: the file's path, its folders leading to the tree and
@@ -2635,28 +2570,13 @@ fn crumb_bar(ide: &Ide, buffer: &Buffer, width: f32) -> Element {
 /// A Markdown file rendered, in a reading column, as quill renders its conversation: code in
 /// its inks, diagrams drawn, links that open.
 fn markdown_preview(ide: &Ide, text: &str, width: f32, height: f32) -> Element {
-    let column = (width - 64.0).clamp(240.0, 820.0);
-    let rendered = limn::Markdown::new(text, look::palette())
-        .id("preview")
-        .width(column)
-        .font_size(15.0)
-        .code_font_size(look::SMALL)
-        .code_syntax_colors(syntax_colors())
-        .link_action_prefix(MD_LINK)
-        .diagram_action_prefix(MD_DIAGRAM)
-        .diagram_sources(&ide.diagram_sources)
-        .render()
-        .element;
-    let page = Element::row(vec![
-        Element::spacer().flex(1.0),
-        // In a row the column would take its widest line's width, and a quote, which fills
-        // what it is given, would never wrap: it gets the reading column.
-        Element::column(vec![rendered])
-            .padding(24.0)
-            .size(Some(column + 48.0), None),
-        Element::spacer().flex(1.0),
-    ]);
-    Element::scroll("preview:scroll", page).size(Some(width), Some(height))
+    let ids = code::PreviewIds {
+        id: "preview",
+        scroll: "preview:scroll",
+        link: MD_LINK,
+        diagram: MD_DIAGRAM,
+    };
+    code::markdown_preview(text, ids, &ide.diagram_sources, [width, height])
 }
 
 fn terminal_height(window: Size) -> f32 {
@@ -2955,18 +2875,6 @@ pub fn indent_style(prefs: &Prefs) -> limn_editor::IndentStyle {
 /// Code in quill's inks, as its conversation's code blocks: keywords orange, strings the
 /// added green, functions the cursor's blue, interpolations the removed red;
 /// types in quill's violet and properties in its mention blue, inferred.
-fn syntax_colors() -> limn::CodeSyntaxColors {
-    limn::CodeSyntaxColors {
-        text: look::palette().text,
-        string: look::added(),
-        keyword: look::keyword(),
-        function: Some(look::cursor()),
-        interpolation: Some(look::removed()),
-        types: Some(look::pro()),
-        properties: Some(look::mention()),
-        ..limn::CodeSyntaxColors::for_palette(look::palette())
-    }
-}
 
 /// The line under the editor, quiet as quill's pane headers: the Vim mode, the file and
 /// whether it is saved, then the caret, the language, the line ending and the branch.

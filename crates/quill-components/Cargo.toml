@@ -8,8 +8,11 @@ description = "quill's look, shared by its apps: tokens, icons and the system's 
 publish = false
 
 [dependencies]
-# Fonts::bundled, under the system faces fontconfig finds.
-limn = { workspace = true, features = ["bundled-fonts"] }
+# Fonts::bundled, under the system faces fontconfig finds; tree-sitter highlighting
+# (syntax), as the editor in both apps colors code.
+limn = { workspace = true, features = ["bundled-fonts", "syntax"] }
+# The editor's buffer, which the find bar searches.
+limn-editor.workspace = true
 quill-model = { path = "../quill-model" }
 # The tree's entries and file operations, which the host runs on the disk.
 quill-files = { path = "../quill-files" }

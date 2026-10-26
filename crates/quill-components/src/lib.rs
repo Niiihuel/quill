@@ -1,5 +1,7 @@
 //! What quill's apps share so they look the same: the tokens, the icons and the faces.
 
+pub mod code;
+pub mod find;
 pub mod icons;
 pub mod look;
 pub mod packs;

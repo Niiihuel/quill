@@ -4,7 +4,6 @@
 
 mod complete;
 mod disk;
-mod find;
 mod grep;
 mod ide;
 mod lsp;
@@ -510,7 +509,7 @@ impl eframe::App for App {
                 && focused == editor
             {
                 actions.push(limn::UiAction::Clicked {
-                    id: find::FIND_OPEN.into(),
+                    id: quill_components::find::FIND_OPEN.into(),
                 });
                 continue;
             }
