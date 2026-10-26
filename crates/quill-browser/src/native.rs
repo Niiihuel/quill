@@ -315,11 +315,13 @@ impl Native {
     /// with `None`, put its last frame in its place because something covers it: the page
     /// stays up until a fresh frame is in, or for `HOLD` at most, unless `now`, when it goes at
     /// once and the frame taken last stands in.
-    pub fn place(&self, at: Option<[i32; 4]>, now: bool) {
+    /// Returns whether the page is still up waiting for its frame: the host paints again
+    /// within `HOLD` then, as nothing else may wake it.
+    pub fn place(&self, at: Option<[i32; 4]>, now: bool) -> bool {
         let shared = &self.shared;
         let mut view = shared.view.lock().unwrap();
         let Some(target) = view.target.clone() else {
-            return;
+            return false;
         };
         let Some(xid) = shared
             .pages
@@ -329,7 +331,7 @@ impl Native {
             .get(&target)
             .map(|p| p.xid)
         else {
-            return;
+            return false;
         };
         match at {
             Some(rect) => {
@@ -340,6 +342,7 @@ impl Native {
                     view.mapped = true;
                     view.placed = Some(rect);
                 }
+                false
             }
             None if view.mapped => {
                 let since = match view.covered_since {
@@ -357,8 +360,9 @@ impl Native {
                     shared.x.lock().unwrap().hide(xid);
                     view.mapped = false;
                 }
+                view.mapped
             }
-            None => {}
+            None => false,
         }
     }
 
@@ -835,20 +839,19 @@ impl Shared {
     }
 
     /// A page's last frame is in: shown in its surface, and the page may go.
+    /// A page's last frame is in, or could not be taken: either way the page may go now.
     fn frozen(self: &Arc<Self>, surface: String, message: &Value) {
         use base64::Engine;
-        let Some(data) = message["result"]["data"].as_str() else {
-            return;
-        };
-        let Ok(jpeg) = base64::engine::general_purpose::STANDARD.decode(data) else {
-            return;
-        };
+        let jpeg = message["result"]["data"]
+            .as_str()
+            .and_then(|data| base64::engine::general_purpose::STANDARD.decode(data).ok());
         let shared = self.clone();
         std::thread::spawn(move || {
-            if let Some(frame) = decode(&jpeg, shared.scale) {
+            if let Some(frame) = jpeg.and_then(|jpeg| decode(&jpeg, shared.scale)) {
                 shared.frames.publish(surface, frame);
             }
             shared.view.lock().unwrap().frozen = true;
+            shared.frames.wake();
         });
     }
 

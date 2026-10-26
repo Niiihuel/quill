@@ -352,7 +352,9 @@ impl App {
                 ]
             });
             // A boundary's drag would reach the tab at its first move: it goes at once.
-            native.place(at, resizing);
+            if native.place(at, resizing) {
+                ctx.request_repaint_after(std::time::Duration::from_millis(260));
+            }
             // The pointer back over quill's own, from the tab, which takes it while over it:
             // the tab's frame is taken now, while it is fresh.
             let away = ctx.input(|i| i.pointer.hover_pos()).is_none();
