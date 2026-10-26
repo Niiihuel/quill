@@ -28,21 +28,10 @@ pub const DIFF_TOGGLE: &str = "diff:toggle";
 /// "open-file:<line>:<path>": a file the agent changed, to show in the editor at that line;
 /// a path from the session's folder or absolute.
 pub const OPEN_FILE: &str = "open-file:";
-/// The editors files open in, as Settings offers them: each one's command and name.
-pub const EDITORS: &[(&str, &str)] = &[
-    ("quill-ide", "quill-ide"),
-    ("code", "VS Code"),
-    ("cursor", "Cursor"),
-    ("zed", "Zed"),
-];
-
-/// The name of the editor `key`, as Settings and "Open in" say it.
-pub fn editor_name(key: &str) -> &str {
-    EDITORS
-        .iter()
-        .find(|(k, _)| *k == key)
-        .map_or(key, |(_, name)| name)
-}
+/// The top bar's "Open in" menu, of the folder on screen.
+pub const OPEN_IN_MENU: &str = "open-in-menu";
+/// quill's own editor, offered whatever else is installed.
+pub const QUILL_IDE: &str = "quill-ide";
 pub const DIFF_CLOSE: &str = "pane:diff:close";
 pub const PANEL_TOGGLE: &str = "panel:toggle";
 /// Asks the host for the platform folder picker; the host sets `Ui::cwd` with the answer.
@@ -919,16 +908,44 @@ fn sidebar_toggle(ui: &Ui) -> Element {
     )
 }
 
-/// "Open in ›": of Desktop's places, those quill has: the editor chosen
-/// in Settings, and the desktop's file manager, showing the session's folder.
-fn open_in(session: quill_model::SessionId, editor: &str) -> limn::DropdownMenuEntry {
+/// "Open in" as Desktop lists it (2.9939.4, inferred from its code): quill-ide, then the
+/// editors installed, by name, each with its own icon; then the desktop's default app and its
+/// file manager. Each row is "open-in:<editor | default | files>:<target>", `target` a session
+/// or "here", the folder on screen.
+fn open_in_entries(target: &str, ui: &Ui) -> Vec<limn::DropdownMenuEntry> {
+    let mut entries = vec![
+        limn::DropdownMenuEntry::Heading("Open in".into()),
+        limn::DropdownMenuItem::new(format!("open-in:{QUILL_IDE}:{target}"), "quill-ide")
+            .icon(icons::of(icons::CODE))
+            .into(),
+    ];
+    let mut editors: Vec<&crate::Editor> = ui.editors.iter().collect();
+    editors.sort_by(|a, b| a.name.cmp(&b.name));
+    for editor in editors {
+        let item = limn::DropdownMenuItem::new(
+            format!("open-in:{}:{target}", editor.key),
+            editor.name.clone(),
+        );
+        entries.push(
+            match &editor.picture {
+                Some(picture) => item.picture(picture.clone()),
+                None => item.icon(icons::of(icons::CODE)),
+            }
+            .into(),
+        );
+    }
+    entries.extend([
+        limn::DropdownMenuEntry::Separator,
+        limn::DropdownMenuItem::new(format!("open-in:default:{target}"), "Default app").into(),
+        limn::DropdownMenuItem::new(format!("open-in:files:{target}"), "File manager").into(),
+    ]);
+    entries
+}
+
+/// "Open in ›" in a session's menu.
+fn open_in(session: quill_model::SessionId, ui: &Ui) -> limn::DropdownMenuEntry {
     limn::DropdownMenuItem::new(format!("open-in:{session}"), "Open in")
-        .submenu(vec![
-            limn::DropdownMenuEntry::Heading("Open in".into()),
-            limn::DropdownMenuItem::new(format!("open-in:editor:{session}"), editor_name(editor))
-                .into(),
-            limn::DropdownMenuItem::new(format!("open-in:files:{session}"), "File manager").into(),
-        ])
+        .submenu(open_in_entries(&session.to_string(), ui))
         .into()
 }
 
@@ -957,7 +974,7 @@ fn lettered(id: String, label: &str, key: &str) -> limn::DropdownMenuItem {
 }
 
 /// The width of the top bar's toggles at its end, with their margin.
-const TOP_TOOLS: f32 = 148.0;
+const TOP_TOOLS: f32 = 178.0;
 
 /// The session's title, Stop while it works, and the toggles of the panel and the panes
 ///. The title's chevron opens its menu, and Rename turns it into a field
@@ -992,10 +1009,7 @@ fn top_bar(session: Option<&Session>, ui: &Ui, main: f32, beside: f32) -> Elemen
                 look::tool_hover(),
                 None,
             );
-            let mut entries = vec![
-                open_in(s.id, &ui.settings.editor),
-                limn::DropdownMenuEntry::Separator,
-            ];
+            let mut entries = vec![open_in(s.id, ui), limn::DropdownMenuEntry::Separator];
             entries.extend([
                 lettered(format!("rename:{}", s.id), "Rename", "R").into(),
                 lettered(format!("fork:{}", s.id), "Fork", "F").into(),
@@ -1030,6 +1044,30 @@ fn top_bar(session: Option<&Session>, ui: &Ui, main: f32, beside: f32) -> Elemen
         (None, _) => heading.push(muted("New session").centered_y()),
     }
     row.push(Element::spacer().flex(1.0));
+    // Desktop's "Open in" by the panes' toggles: the folder on screen in an editor.
+    if session.is_some() {
+        let open = ui.open_menu == Some(OPEN_IN_MENU);
+        let anchor = tool_surface(
+            OPEN_IN_MENU,
+            icons::of(icons::FOLDER_OPEN),
+            "Open in",
+            26.0,
+            open.then(look::active),
+            look::tool_hover(),
+            None,
+        );
+        row.push(
+            menu(
+                anchor,
+                open_in_entries("here", ui),
+                open,
+                OPEN_IN_MENU,
+                200.0,
+                limn::PopoverPlacement::BottomEnd,
+            )
+            .centered_y(),
+        );
+    }
     // Stop lives in the composer, as in Desktop.
     if session.is_some() {
         let shown = ui.panel_open && ui.panes.is_empty();
@@ -1491,7 +1529,7 @@ fn session_row(session: &Session, depth: usize, ui: &Ui, palette: ComponentPalet
         None,
     );
     let mut entries = vec![
-        open_in(session.id, &ui.settings.editor),
+        open_in(session.id, ui),
         limn::DropdownMenuEntry::Separator,
         lettered(
             format!("pin:{}", session.id),
@@ -5119,7 +5157,7 @@ fn diff_pane(
         .size(Some(width), Some(height))
 }
 
-/// The editor's button for a file the agent changed, at `line`.
+/// The button for a file the agent changed, at `line`, in the editor last chosen in Open in.
 fn open_file(path: &str, line: u32, palette: ComponentPalette) -> Element {
     icon_tool(
         &format!("{OPEN_FILE}{line}:{path}"),
@@ -6593,14 +6631,6 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
                             setting_switch("attention", s.attention, palette),
                         ),
                     ],
-                ),
-                (
-                    "Files".into(),
-                    vec![setting(
-                        "Open files in",
-                        "Where Open in, the changes panel and the tool cards open files. quill-ide reuses its window of that folder.",
-                        setting_select(ui, "editor", &choices(EDITORS), &s.editor, palette),
-                    )],
                 ),
                 (
                     "Pull requests".into(),

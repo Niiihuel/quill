@@ -1,6 +1,7 @@
 //! quill's window: limn paints quill-ui's view; quill-engine runs the agents.
 //! `quill [folder]` opens new sessions in `folder` (the current directory without one).
 
+mod editors;
 mod page;
 
 use eframe::egui;
@@ -52,6 +53,10 @@ struct App {
     /// listens on it.
     linked: Arc<Mutex<Vec<quill_link::Message>>>,
     _link: Option<quill_link::Listener>,
+    /// The editors installed, once they are looked for off the window's thread, and the
+    /// command each runs a link with, by scheme.
+    editors: Arc<Mutex<Option<Vec<editors::Found>>>>,
+    handlers: HashMap<String, Vec<String>>,
 }
 
 impl App {
@@ -582,6 +587,13 @@ impl eframe::App for App {
             .set_context_menu_palette(quill_ui::look::menu_palette());
         self.tree
             .set_context_menu_sizing(quill_components::pieces::menu_sizing(240.0));
+        if let Some(found) = self.editors.lock().unwrap().take() {
+            for found in found {
+                self.handlers
+                    .insert(found.editor.key.clone(), found.command);
+                self.ui.editors.push(found.editor);
+            }
+        }
         let linked = std::mem::take(&mut *self.linked.lock().unwrap());
         for message in linked {
             if let quill_link::Message::Ask {
@@ -802,23 +814,32 @@ impl eframe::App for App {
                 if let Some(code) = id.strip_prefix(quill_ui::view::COPY_CODE) {
                     ctx.copy_text(code.to_owned());
                 }
-                // "Open in › File manager" shows the session's folder in the desktop's own.
-                if let Some(session) = id
-                    .strip_prefix("open-in:files:")
-                    .and_then(|s| s.parse().ok())
-                    .and_then(|s| self.store.session(s))
+                // "Open in": a session's folder, or the one on screen ("here"), in an editor,
+                // the desktop's default app or its file manager.
+                if let Some((place, target)) = id
+                    .strip_prefix("open-in:")
+                    .and_then(|rest| rest.split_once(':'))
                 {
-                    let _ = std::process::Command::new("xdg-open")
-                        .arg(&session.cwd)
-                        .spawn();
-                }
-                // "Open in › <editor>" shows the session's folder in the editor of Settings.
-                if let Some(session) = id
-                    .strip_prefix("open-in:editor:")
-                    .and_then(|s| s.parse().ok())
-                    .and_then(|s| self.store.session(s))
-                {
-                    open_in_editor(&self.ui.settings.editor, &session.cwd, None, None);
+                    let folder = target
+                        .parse()
+                        .ok()
+                        .and_then(|s| self.store.session(s))
+                        .map_or_else(
+                            || quill_ui::folder(&self.store, &self.ui),
+                            |s| s.cwd.clone(),
+                        );
+                    match place {
+                        // The desktop's answer is waited for beside the window.
+                        "files" => {
+                            std::thread::spawn(move || show_in_file_manager(&folder));
+                        }
+                        "default" => {
+                            let _ = std::process::Command::new("xdg-open").arg(&folder).spawn();
+                        }
+                        editor => {
+                            open_in_editor(editor, self.handlers.get(editor), &folder, None, None)
+                        }
+                    }
                 }
                 // A changed file's button: that file at its first changed line.
                 if let Some((line, path)) = id
@@ -827,8 +848,10 @@ impl eframe::App for App {
                 {
                     let root = quill_ui::folder(&self.store, &self.ui);
                     let path = root.join(path);
+                    let editor = self.ui.settings.editor.clone();
                     open_in_editor(
-                        &self.ui.settings.editor,
+                        &editor,
+                        self.handlers.get(&editor),
                         &root,
                         Some(&path),
                         line.parse().ok(),
@@ -1018,56 +1041,87 @@ fn open_url(url: &str) -> bool {
             .is_ok_and(|status| status.success())
 }
 
-/// Show `path` of the folder `root`, or the folder, in the editor `editor` of Settings, at
-/// `line` when given: quill-ide in its window of that folder when one is open, else a new one;
-/// the others by their own command line.
+/// Show `path` of the folder `root`, or the folder, in `editor` at `line` when given: quill-ide
+/// in its window of that folder when one is open, else a new one; the others by their URL
+/// link, as Desktop opens them (2.9939.4): `vscode://file/<path>:<line>`.
 fn open_in_editor(
     editor: &str,
+    handler: Option<&Vec<String>>,
     root: &std::path::Path,
     path: Option<&std::path::Path>,
     line: Option<u32>,
 ) {
-    let at = path.map(|p| match line {
-        Some(line) => format!("{}:{line}", p.display()),
-        None => p.display().to_string(),
-    });
-    let mut command = match editor {
-        "code" | "cursor" => {
-            let mut command = std::process::Command::new(editor);
-            command.arg(root);
-            if let Some(at) = &at {
-                command.arg("--goto").arg(at);
-            }
-            command
+    let target = path.unwrap_or(root);
+    if editor != quill_ui::view::QUILL_IDE {
+        let shown = target.display().to_string();
+        // As Desktop: a path the URL would have to escape is not sent at all.
+        if shown.contains(['%', '#', '?', '\\']) || shown.chars().any(char::is_whitespace) {
+            eprintln!("quill: {shown} cannot go to {editor} as a link");
+            return;
         }
-        "zed" => {
-            let mut command = std::process::Command::new("zed");
-            command.arg(at.as_deref().map_or(root.as_os_str(), std::ffi::OsStr::new));
-            command
+        let at = line.map_or(String::new(), |line| format!(":{line}"));
+        let url = format!("{editor}://file{shown}{at}");
+        // The command the editor's own `.desktop` file runs for its links, which needs no
+        // default handler set; without one, the desktop's.
+        let command = handler
+            .map(|exec| editors::command(exec, &url))
+            .filter(|c| !c.is_empty())
+            .unwrap_or_else(|| vec!["xdg-open".into(), url]);
+        if let Err(error) = std::process::Command::new(&command[0])
+            .args(&command[1..])
+            .spawn()
+        {
+            eprintln!("quill: {editor} did not open: {error}");
         }
-        _ => {
-            let open = quill_link::Message::Open {
-                root: root.to_path_buf(),
-                path: path.unwrap_or(root).to_path_buf(),
-                line,
-                column: None,
-            };
-            if quill_link::send(&quill_link::ide_socket(root), &open).is_ok() {
-                return;
-            }
-            // Beside quill when they were built together, else the one on PATH.
-            let program = std::env::current_exe()
-                .ok()
-                .and_then(|exe| Some(exe.parent()?.join("quill-ide")))
-                .filter(|p| p.is_file())
-                .unwrap_or_else(|| "quill-ide".into());
-            let mut command = std::process::Command::new(program);
-            command.arg(root).args(at);
-            command
-        }
+        return;
+    }
+    let open = quill_link::Message::Open {
+        root: root.to_path_buf(),
+        path: target.to_path_buf(),
+        line,
+        column: None,
     };
+    if quill_link::send(&quill_link::ide_socket(root), &open).is_ok() {
+        return;
+    }
+    // Beside quill when they were built together, else the one on PATH.
+    let program = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join("quill-ide")))
+        .filter(|p| p.is_file())
+        .unwrap_or_else(|| "quill-ide".into());
+    let mut command = std::process::Command::new(program);
+    command.arg(root);
+    if let Some(path) = path {
+        command.arg(match line {
+            Some(line) => format!("{}:{line}", path.display()),
+            None => path.display().to_string(),
+        });
+    }
     if let Err(error) = command.spawn() {
-        eprintln!("quill: {editor} did not start: {error}");
+        eprintln!("quill: quill-ide did not start: {error}");
+    }
+}
+
+/// The folder shown, picked, in the desktop's file manager, through its common interface;
+/// without one, the folder it is in.
+fn show_in_file_manager(folder: &std::path::Path) {
+    let shown = std::process::Command::new("dbus-send")
+        .args([
+            "--session",
+            "--dest=org.freedesktop.FileManager1",
+            "--type=method_call",
+            "/org/freedesktop/FileManager1",
+            "org.freedesktop.FileManager1.ShowItems",
+        ])
+        .arg(format!("array:string:file://{}", folder.display()))
+        .arg("string:")
+        .status()
+        .is_ok_and(|s| s.success());
+    if !shown {
+        let _ = std::process::Command::new("xdg-open")
+            .arg(folder.parent().unwrap_or(folder))
+            .spawn();
     }
 }
 
@@ -1176,7 +1230,18 @@ fn main() -> eframe::Result {
                 })
                 .ok()
             };
+            // Which editors are installed is read from disk once, beside the window.
+            let editors: Arc<Mutex<Option<Vec<editors::Found>>>> = Arc::default();
+            {
+                let (editors, ctx) = (editors.clone(), creation.egui_ctx.clone());
+                std::thread::spawn(move || {
+                    *editors.lock().unwrap() = Some(editors::find());
+                    ctx.request_repaint();
+                });
+            }
             Ok(Box::new(App {
+                editors,
+                handlers: HashMap::new(),
                 linked,
                 _link: link,
                 tree: UiTree::new(Element::spacer()),

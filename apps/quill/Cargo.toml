@@ -23,3 +23,7 @@ bytemuck = { version = "1", features = ["extern_crate_alloc"] }
 serde_json.workspace = true
 # Files open in quill-ide's window of their folder, and code from it comes as a message.
 quill-link = { path = "../../crates/quill-link" }
+# An installed editor's icon becomes a limn picture: its digest and its bytes in base64 (both
+# already in the tree).
+sha2 = "0.10"
+base64 = "0.22"

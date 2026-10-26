@@ -730,6 +730,15 @@ fn longest_run(text: &str, c: char) -> usize {
     text.split(|x| x != c).map(str::len).max().unwrap_or(0)
 }
 
+/// An editor found on the computer, as "Open in" offers it: its key (its URL scheme), its
+/// name, and its own icon when the desktop has one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Editor {
+    pub key: String,
+    pub name: String,
+    pub picture: Option<limn::RasterImage>,
+}
+
 /// What the person is doing, apart from what the engine knows.
 pub struct Ui {
     pub selected: Option<SessionId>,
@@ -742,6 +751,8 @@ pub struct Ui {
     /// The effort new sessions start with and the selected one runs at.
     pub effort: Option<String>,
     pub open_menu: Option<&'static str>,
+    /// The editors found on the computer, for Open in.
+    pub editors: Vec<Editor>,
     pub expanded: Vec<String>,
     /// A message written before its session existed, sent once it does.
     pub waiting: Option<String>,
@@ -932,6 +943,20 @@ fn session_clicked(store: &Store, ui: &mut Ui, id: &str) -> Option<Vec<Intent>> 
         ui.open_menu = (ui.open_menu != Some(view::TITLE_MENU)).then_some(view::TITLE_MENU);
     } else if id == format!("{}:dismiss", view::TITLE_MENU) {
         ui.open_menu = None;
+    } else if id == view::OPEN_IN_MENU {
+        ui.open_menu = (ui.open_menu != Some(view::OPEN_IN_MENU)).then_some(view::OPEN_IN_MENU);
+    } else if id == format!("{}:dismiss", view::OPEN_IN_MENU) {
+        ui.open_menu = None;
+    } else if let Some((place, _)) = id.strip_prefix("open-in:").and_then(|r| r.split_once(':')) {
+        // The host opens it; an editor chosen is the one the files' buttons use next, as
+        // Desktop keeps the last one.
+        ui.open_menu = None;
+        if !matches!(place, "default" | "files") && place != ui.settings.editor {
+            return Some(vec![Intent::SaveSettings(quill_model::Settings {
+                editor: place.to_owned(),
+                ..ui.settings.clone()
+            })]);
+        }
     } else if id == view::PR_MENU {
         ui.open_menu = (ui.open_menu != Some(view::PR_MENU)).then_some(view::PR_MENU);
     } else if id == format!("{}:dismiss", view::PR_MENU) {
@@ -1310,6 +1335,7 @@ impl Ui {
             model: None,
             effort: None,
             open_menu: None,
+            editors: vec![],
             expanded: vec![],
             waiting: None,
             diff: None,
@@ -2682,9 +2708,6 @@ fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
             ("motion", "reduced") => settings.motion = Motion::Reduced,
             ("motion", "full") => settings.motion = Motion::Full,
             ("pr_kind", value) => settings.pr_draft = value == "draft",
-            ("editor", value) if view::EDITORS.iter().any(|(key, _)| *key == value) => {
-                settings.editor = value.to_owned()
-            }
             ("browser_site_remove", site) => settings.browser_sites.retain(|s| s != site),
             ("browser_program", program) => {
                 settings.browser_program = (!program.is_empty()).then(|| program.to_owned())
