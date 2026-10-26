@@ -753,6 +753,9 @@ pub struct Ui {
     pub peek_left: Option<std::time::Instant>,
     pub peek_shown: limn::ScalarSpring,
     pub panel_shown: limn::ScalarSpring,
+    /// Whether the peek waits for the pointer to leave the sidebar's button, after a click
+    /// on it hid the sidebar.
+    pub peek_suppressed: bool,
     /// The session whose sidebar row has its "···" menu open.
     pub row_menu: Option<SessionId>,
     /// The selected session's title while the person renames it in the top bar.
@@ -881,6 +884,9 @@ fn session_clicked(store: &Store, ui: &mut Ui, id: &str) -> Option<Vec<Intent>> 
             ui.peek = false;
             ui.peek_shown.snap_to(0.0, now);
         }
+        // Hidden by a click, it does not peek again under the pointer still on its button
+        // until the pointer has left (3.6556.2 `shared-21` holds it, `shared-16` lets go).
+        ui.peek_suppressed = !ui.sidebar_open;
     } else if id == view::SEARCH {
         ui.search = Some(String::new());
     } else if id == view::SEARCH_CLOSE {
@@ -1302,6 +1308,7 @@ impl Ui {
             peek_left: None,
             peek_shown: limn::ScalarSpring::new(0.0, std::time::Instant::now()),
             panel_shown: limn::ScalarSpring::new(look::PANEL_WIDTH, std::time::Instant::now()),
+            peek_suppressed: false,
             row_menu: None,
             title_edit: None,
             deleting: None,
@@ -1349,11 +1356,18 @@ impl Ui {
             self.peek = false;
         } else if !self.peek {
             let at_edge = x.is_some_and(|x| x <= 16.0);
-            self.peek_edge = at_edge.then(|| self.peek_edge.unwrap_or(now));
+            // Held by where the pointer is, not what is under it: the sidebar slides away
+            // from under it before its button in the bar comes back.
+            let at_button = self
+                .pointer
+                .is_some_and(|p| p.x <= 48.0 && p.y <= look::TOP_BAR);
+            self.peek_suppressed &= at_button || at_edge;
+            self.peek_edge =
+                (at_edge && !self.peek_suppressed).then(|| self.peek_edge.unwrap_or(now));
             let dwelt = self
                 .peek_edge
                 .is_some_and(|since| now.duration_since(since) >= Duration::from_millis(100));
-            self.peek = on_button || dwelt;
+            self.peek = !self.peek_suppressed && (on_button || dwelt);
         } else {
             let on =
                 on_button || self.open_menu.is_some() || x.is_some_and(|x| x < look::SIDEBAR_WIDTH);

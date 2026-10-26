@@ -1712,6 +1712,27 @@ fn a_passed_on_message_says_so_on_both_sides_and_new_work_is_marked() {
     assert_eq!(ui.new_from.get(&2), Some(&2));
 }
 
+#[test]
+fn hidden_by_a_click_the_sidebar_peeks_again_only_once_the_pointer_left_its_button() {
+    let (store, mut ui) = store_with_session();
+    ui.hovered = Some(view::SIDEBAR_TOGGLE.into());
+    ui.pointer = Some(limn::Point::new(20.0, 18.0));
+    click(&store, &mut ui, view::SIDEBAR_TOGGLE);
+    assert!(!ui.sidebar_open);
+    ui.tick(&store);
+    assert!(!ui.peek);
+    // Over the sidebar sliding away from under it, the pointer has not left yet.
+    ui.hovered = None;
+    ui.tick(&store);
+    assert!(!ui.peek);
+    ui.pointer = Some(limn::Point::new(700.0, 300.0));
+    ui.tick(&store);
+    ui.hovered = Some(view::SIDEBAR_TOGGLE.into());
+    ui.pointer = Some(limn::Point::new(20.0, 18.0));
+    ui.tick(&store);
+    assert!(ui.peek);
+}
+
 fn agent_in(store: &mut Store, session: SessionId, text: &str) {
     store.apply(Event::Agent {
         session,
