@@ -1611,83 +1611,37 @@ fn search_section(session: &Session) -> usize {
 
 /// Desktop's search, Ctrl+K: a field, the sessions under "Needs
 /// attention", "Active" and "Recents", and "New session"; Enter opens the first, marked ↵.
-fn search_dialog(store: &Store, ui: &Ui, base: Element, palette: ComponentPalette) -> Element {
+fn search_dialog(store: &Store, ui: &Ui, base: Element, _palette: ComponentPalette) -> Element {
+    use quill_components::search::{self, Found};
     let Some(query) = &ui.search else {
         return base;
     };
-    let field = limn::TextField::new(SEARCH_FIELD, query.as_str(), "Search", palette)
-        .render()
-        .size(None, Some(36.0));
-    let mut body = vec![field, Element::spacer().size(None, Some(6.0))];
-    let heading = |label: &str| {
-        pad(muted(label).font_size(SMALL), 12.0, 0.0)
-            .centered_y()
-            .size(None, Some(28.0))
-    };
-    let row = |id: String, label: String, first: bool| {
-        let mut items = vec![
-            hgap(12.0),
-            text(label).centered_y(),
-            Element::spacer().flex(1.0),
-        ];
-        if first {
-            items.push(
-                Element::icon(icons::of(icons::RETURN))
-                    .foreground(look::muted())
-                    .size(Some(14.0), Some(14.0))
-                    .centered_y(),
-            );
-        }
-        items.push(hgap(12.0));
-        let row = ComponentPalette {
-            hover: look::row_hover(),
-            ..palette
-        }
-        .interactive_surface(Element::clickable(
-            id,
-            Element::row(items).gap(8.0).size(None, Some(36.0)),
-        ))
-        .radius(8.0);
-        if first {
-            row.background(look::selected())
-        } else {
-            row
-        }
-    };
-    let found = found(store, query);
-    let mut section = None;
-    for (i, id) in found.iter().enumerate() {
-        let Some(session) = store.session(*id) else {
+    let mut sections: Vec<(String, Vec<Found>)> = vec![];
+    for id in found(store, query) {
+        let Some(session) = store.session(id) else {
             continue;
         };
-        let at = search_section(session);
-        if section != Some(at) {
-            section = Some(at);
-            body.push(heading(
-                ["Needs attention", "Active", "Recents", "Archived"][at],
-            ));
+        let title = ["Needs attention", "Active", "Recents", "Archived"][search_section(session)];
+        if sections.last().is_none_or(|(t, _)| t != title) {
+            sections.push((title.into(), vec![]));
         }
-        body.push(row(format!("search:{id}"), session_title(session), i == 0));
+        let row = Found::new(format!("search:{id}"), session_title(session));
+        sections.last_mut().expect("just pushed").1.push(row);
     }
-    body.push(heading("Actions"));
-    body.push(row(
-        SEARCH_NEW.into(),
-        "New session".into(),
-        found.is_empty(),
+    // With nothing found, the first row is "New session", which Enter starts.
+    sections.push((
+        "Actions".into(),
+        vec![Found::new(SEARCH_NEW, "New session")],
     ));
-    let footer = Element::row(vec![
-        muted("Close").font_size(SMALL).centered_y(),
-        limn::Kbd::new("Esc", palette).render().centered_y(),
-    ])
-    .gap(6.0);
-    limn::Modal::new(base, true, "", "", SEARCH_CLOSE, palette)
-        .width(672.0)
-        .body(Element::column(body).gap(2.0))
-        .footer(footer)
-        .initial_focus(SEARCH_FIELD)
-        .backdrop_dismiss(true)
-        .scrim(look::scrim())
-        .render()
+    search::dialog(
+        base,
+        SEARCH_FIELD,
+        SEARCH_CLOSE,
+        query,
+        "Search",
+        sections,
+        0,
+    )
 }
 
 /// A sidebar row: 32 px tall, 10 px in, rounded, filled while selected.

@@ -3,6 +3,7 @@
 pub mod icons;
 pub mod look;
 pub mod pieces;
+pub mod search;
 pub mod settings;
 pub mod sidebar;
 

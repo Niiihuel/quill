@@ -48,6 +48,14 @@ pub fn run(job: Job) -> Loaded {
             )
         }
         Job::FindFonts => Loaded::Fonts(monospaced()),
+        Job::FindFiles(root) => Loaded::Files(files(&root)),
+        Job::SaveSession(root, session) => {
+            // shortcut: a session that fails to save is only said on stderr, as Settings.
+            if let Err(error) = crate::session::save(&root, &session) {
+                eprintln!("quill-ide: the open files not kept: {error}");
+            }
+            Loaded::SessionSaved
+        }
         Job::LoadFont(family) => {
             let faces = faces(&family);
             Loaded::Font(family, faces)
@@ -87,6 +95,25 @@ fn branch_in(head: &Path) -> Option<String> {
         Some(branch) => Some(branch.to_owned()),
         None => Some(head.get(..7)?.to_owned()),
     }
+}
+
+/// Every file under `root` git sees, as paths from it, sorted.
+///
+/// shortcut: at most 100 000, all walked again each time; worth an index kept up to date
+/// for larger trees.
+fn files(root: &Path) -> Vec<std::path::PathBuf> {
+    let mut files: Vec<std::path::PathBuf> = ignore::WalkBuilder::new(root)
+        .hidden(false)
+        .require_git(false)
+        .filter_entry(|e| e.file_name() != ".git")
+        .build()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
+        .filter_map(|e| e.path().strip_prefix(root).ok().map(Path::to_path_buf))
+        .take(100_000)
+        .collect();
+    files.sort();
+    files
 }
 
 /// The monospaced families fontconfig knows, each by its first name, sorted.

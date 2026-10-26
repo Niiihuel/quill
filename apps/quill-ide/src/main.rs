@@ -3,9 +3,12 @@
 //! directory without one.
 
 mod disk;
+mod find;
 mod ide;
 mod packs;
 mod prefs;
+mod quick;
+mod session;
 
 use eframe::egui;
 use limn::{Element, Size, UiTree};
@@ -26,6 +29,8 @@ struct App {
     polled: std::time::Instant,
     /// A folder of icon themes chosen in the platform's dialog, picked up on the next frame.
     picked: Arc<Mutex<Option<PathBuf>>>,
+    /// What was open when it was last kept.
+    kept: session::Session,
 }
 
 impl App {
@@ -117,7 +122,47 @@ impl eframe::App for App {
                 id: quill_components::settings::SETTINGS_OPEN.into(),
             });
         }
+        let focused = self.tree.focused_id().map(str::to_owned);
         for event in limn_egui::events(&ctx, area.min) {
+            // Opening by name: the arrows move the row Enter opens.
+            if self.ide.quick.is_some() {
+                if let limn::UiEvent::Key {
+                    key: key @ (limn::Key::ArrowUp | limn::Key::ArrowDown),
+                    ..
+                } = &event
+                {
+                    self.ide
+                        .quick_step(if *key == limn::Key::ArrowUp { -1 } else { 1 });
+                    continue;
+                }
+            }
+            // In the find bar, Escape closes it, as its own close does.
+            if focused.as_deref().is_some_and(|f| f.starts_with("find:"))
+                && matches!(
+                    &event,
+                    limn::UiEvent::Key {
+                        key: limn::Key::Escape,
+                        ..
+                    }
+                )
+            {
+                actions.push(limn::UiAction::Clicked {
+                    id: "find:dismiss".into(),
+                });
+                continue;
+            }
+            // `/` in Vim's Normal mode finds, as in Vim.
+            let editor = self.ide.editor_id();
+            if matches!(&event, limn::UiEvent::Text(typed) if typed == "/")
+                && self.ide.vim_mode == Some(limn::VimMode::Normal)
+                && focused.is_some()
+                && focused == editor
+            {
+                actions.push(limn::UiAction::Clicked {
+                    id: find::FIND_OPEN.into(),
+                });
+                continue;
+            }
             if let limn::UiEvent::Key {
                 key,
                 ctrl: true,
@@ -151,7 +196,26 @@ impl eframe::App for App {
         }
         self.ide.tick();
         self.tree.set_root(ide::view(&self.ide, window));
-        let frame = self.tree.layout(window);
+        let mut frame = self.tree.layout(window);
+        // What the IDE asked of the tree: a control to take the keys, the caret in view.
+        if let Some(id) = self.ide.focus.take() {
+            if self.tree.focus(&id) {
+                frame = self.tree.layout(window);
+            }
+        }
+        if std::mem::take(&mut self.ide.reveal) {
+            if let Some(id) = self.ide.editor_id() {
+                if self.tree.reveal_code_caret(&id) {
+                    frame = self.tree.layout(window);
+                }
+            }
+        }
+        // What is open is kept as it changes, to open again next time.
+        let session = self.ide.session();
+        if session != self.kept && self.ide.buffers.iter().all(|b| !b.loading) {
+            self.kept = session.clone();
+            self.run(vec![ide::Job::SaveSession(self.ide.root.clone(), session)]);
+        }
         limn_egui::paint_at(ui, &frame, area.min);
         limn_egui::set_cursor(&ctx, self.tree.cursor());
         if let Some(after) = self.tree.animation_repaint_after() {
@@ -211,7 +275,8 @@ fn main() -> eframe::Result {
                 egui::Theme::Light
             });
             look::set_dark(dark);
-            let (mut ide, mut jobs) = ide::Ide::new(root, prefs::load());
+            let kept = session::load(&root);
+            let (mut ide, mut jobs) = ide::Ide::new(root, prefs::load(), kept.clone());
             jobs.extend(file.map_or(vec![], |f| ide.open(f)));
             let app = App {
                 tree: UiTree::new(Element::spacer()),
@@ -222,6 +287,7 @@ fn main() -> eframe::Result {
                 pinned_theme: std::env::var_os("QUILL_THEME").is_some(),
                 polled: std::time::Instant::now(),
                 picked: Arc::default(),
+                kept,
             };
             app.run(jobs);
             Ok(Box::new(app))

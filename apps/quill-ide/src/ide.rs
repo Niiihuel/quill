@@ -1,14 +1,18 @@
 //! quill-ide's state, what the person's clicks and keys ask of it, and the window (`view`).
 //! The disk is the host's: `update` returns `Job`s, and what they find comes back to `loaded`.
 
+use crate::find::{Find, FIND, FIND_OPEN, FIND_QUERY};
 use crate::packs::{self, Offered, Pack, Theme};
 use crate::prefs::{self, Prefs};
+use crate::quick::{self, QUICK_CLOSE, QUICK_FIELD, QUICK_OPEN};
+use crate::session::Session;
 use limn::{
     CodeEditor, Component, ComponentPalette, EditorController, Element, Key, Point, Size, TreeRow,
     UiAction,
 };
 use limn_editor::{BufferSnapshot, EditKind, Selection, TextBuffer};
 use quill_components::look::{self, SMALL};
+use quill_components::search::{self, Found};
 use quill_components::settings::{self, SETTINGS_CLOSE, SETTINGS_OPEN, SETTINGS_SEARCH};
 use quill_components::sidebar::Sidebar;
 use quill_components::{icons, pieces::*};
@@ -45,6 +49,9 @@ pub enum Job {
     FindFonts,
     /// The faces of this family, or of the system's monospace when empty.
     LoadFont(String),
+    /// Every file of the folder git sees, for opening by name.
+    FindFiles(PathBuf),
+    SaveSession(PathBuf, Session),
 }
 
 /// A family's regular and bold faces, for the editor.
@@ -83,6 +90,9 @@ pub enum Loaded {
     Branch(Option<String>, Option<(PathBuf, Stamp)>),
     Fonts(Vec<String>),
     Font(String, Result<Faces, String>),
+    /// The folder's files, from the folder.
+    Files(Vec<PathBuf>),
+    SessionSaved,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -102,6 +112,8 @@ pub struct Buffer {
     pub reloading: bool,
     /// Why the last save failed.
     pub error: Option<String>,
+    /// Reopened from the last session and not read yet.
+    pub loading: bool,
 }
 
 impl Buffer {
@@ -155,10 +167,20 @@ pub struct Ide {
     pub fonts: Vec<String>,
     /// The faces to lay code out in from the next frame, which the host installs.
     pub fonts_due: Option<limn::Fonts>,
+    /// Finding in the file on screen, while its bar is open.
+    pub find: Option<Find>,
+    /// Opening a file by its name: what is typed and the row Enter opens.
+    pub quick: Option<(String, usize)>,
+    /// The folder's files, once listed for opening by name.
+    pub files: Vec<PathBuf>,
+    /// What the host is to do in the tree after this frame: focus a control, and bring the
+    /// caret into view.
+    pub focus: Option<String>,
+    pub reveal: bool,
 }
 
 impl Ide {
-    pub fn new(root: PathBuf, prefs: Prefs) -> (Self, Vec<Job>) {
+    pub fn new(root: PathBuf, prefs: Prefs, session: Session) -> (Self, Vec<Job>) {
         let mut jobs = vec![
             Job::List(root.clone()),
             Job::Branch(root.clone()),
@@ -178,14 +200,31 @@ impl Ide {
                 Pack::Material
             }
         };
+        // What was open last time opens again, in its order, each read as it comes.
+        jobs.extend(session.expanded.iter().cloned().map(Job::List));
+        jobs.extend(session.open.iter().cloned().map(Job::Read));
+        let buffers: Vec<Buffer> = session
+            .open
+            .iter()
+            .map(|path| Buffer {
+                path: path.clone(),
+                editor: None,
+                stamp: None,
+                stale: false,
+                reloading: false,
+                error: None,
+                loading: true,
+            })
+            .collect();
+        let active = session.active.filter(|a| *a < buffers.len());
         let ide = Self {
             root,
             sidebar: Sidebar::new(look::SIDEBAR_WIDTH),
-            expanded: HashSet::new(),
+            expanded: session.expanded.into_iter().collect(),
             listed: HashMap::new(),
             dir_stamps: HashMap::new(),
-            buffers: vec![],
-            active: None,
+            buffers,
+            active,
             polling: false,
             closing: None,
             quitting: false,
@@ -204,6 +243,11 @@ impl Ide {
             head: None,
             fonts: vec![],
             fonts_due: None,
+            find: None,
+            quick: None,
+            files: vec![],
+            focus: None,
+            reveal: false,
         };
         (ide, jobs)
     }
@@ -254,6 +298,23 @@ impl Ide {
         if let UiAction::InputChanged { id, value } = action {
             if id == SETTINGS_SEARCH {
                 self.settings_query = value.clone();
+            } else if id == QUICK_FIELD {
+                self.quick = Some((value.clone(), 0));
+            } else if id == FIND_QUERY {
+                self.find_with(|find, editor| {
+                    find.query = value.clone();
+                    find.search(editor);
+                    find.select(editor);
+                });
+            }
+            return vec![];
+        }
+        if let UiAction::Submitted { id, .. } = action {
+            if id == QUICK_FIELD {
+                return self.quick_chosen();
+            }
+            if id == FIND_QUERY {
+                self.find_with(|find, editor| find.step(editor, 1));
             }
             return vec![];
         }
@@ -265,6 +326,12 @@ impl Ide {
         }
         if let Some(jobs) = self.settings_clicked(id) {
             return jobs;
+        }
+        if let Some(jobs) = self.quick_clicked(id) {
+            return jobs;
+        }
+        if self.find_clicked(id) {
+            return vec![];
         }
         if id == TREE_TOGGLE {
             self.sidebar.toggle();
@@ -363,6 +430,114 @@ impl Ide {
         ]
     }
 
+    /// Opening by name: open it, close it, or a row picked. `None` when `id` is none of them.
+    fn quick_clicked(&mut self, id: &str) -> Option<Vec<Job>> {
+        if id == QUICK_OPEN {
+            self.quick = Some((String::new(), 0));
+            return Some(vec![Job::FindFiles(self.root.clone())]);
+        }
+        if id == QUICK_CLOSE {
+            self.quick = None;
+            return Some(vec![]);
+        }
+        let path = id.strip_prefix("quick:file:")?;
+        self.quick = None;
+        Some(self.open(path.into()))
+    }
+
+    /// The files opening by name lists now, as paths from the folder.
+    pub fn quick_found(&self) -> Vec<&PathBuf> {
+        let query = self.quick.as_ref().map_or("", |(q, _)| q.as_str());
+        quick::best(query, &self.files)
+    }
+
+    /// Move the row Enter opens by `by`, within the rows.
+    pub fn quick_step(&mut self, by: isize) {
+        let count = self.quick_found().len() as isize;
+        if let Some((_, chosen)) = self.quick.as_mut() {
+            *chosen = (*chosen as isize + by).clamp(0, (count - 1).max(0)) as usize;
+        }
+    }
+
+    fn quick_chosen(&mut self) -> Vec<Job> {
+        let chosen = self.quick.as_ref().map_or(0, |(_, c)| *c);
+        let Some(path) = self.quick_found().get(chosen).map(|p| self.root.join(p)) else {
+            return vec![];
+        };
+        self.quick = None;
+        self.open(path)
+    }
+
+    /// `apply` to the open bar and the editor on screen.
+    fn find_with(&mut self, apply: impl FnOnce(&mut Find, &EditorController)) {
+        let editor = self.active_buffer().and_then(|b| b.editor.clone());
+        if let (Some(find), Some(editor)) = (self.find.as_mut(), editor) {
+            apply(find, &editor);
+            self.reveal = true;
+        }
+    }
+
+    /// The find bar's own clicks: open it, close it, its options and its arrows. False when
+    /// `id` is none of them.
+    fn find_clicked(&mut self, id: &str) -> bool {
+        let Some(part) = id.strip_prefix("find:") else {
+            return false;
+        };
+        if part == "open" {
+            let editor = self.active_buffer().and_then(|b| b.editor.clone());
+            let Some(editor) = editor else {
+                return true;
+            };
+            // What is selected is what to find, as editors do; else the last query.
+            let selected = editor.snapshot().ok().and_then(|s| {
+                let range = s.selection().range();
+                (!range.is_empty() && range.len() < 200)
+                    .then(|| s.text_range(range).ok())
+                    .flatten()
+            });
+            let mut find = self.find.take().unwrap_or_default();
+            if let Some(selected) = selected.filter(|s| !s.contains('\n')) {
+                find.query = selected;
+            }
+            find.search(&editor);
+            self.find = Some(find);
+            self.focus = Some(FIND_QUERY.into());
+            return true;
+        }
+        if part == "dismiss" {
+            self.find = None;
+            self.focus = self.editor_id();
+            return true;
+        }
+        self.find_with(|find, editor| match part {
+            "next" => find.step(editor, 1),
+            "previous" => find.step(editor, -1),
+            "case" | "word" | "regex" => {
+                let options = &mut find.options;
+                match part {
+                    "case" => options.case = !options.case,
+                    "word" => options.word = !options.word,
+                    _ => options.regex = !options.regex,
+                }
+                find.search(editor);
+                find.select(editor);
+            }
+            _ => {}
+        });
+        true
+    }
+
+    /// What is open now, to open again next time.
+    pub fn session(&self) -> Session {
+        let mut expanded: Vec<PathBuf> = self.expanded.iter().cloned().collect();
+        expanded.sort();
+        Session {
+            open: self.buffers.iter().map(|b| b.path.clone()).collect(),
+            active: self.active,
+            expanded,
+        }
+    }
+
     /// Move what moves on its own: the tree's springs and its peek.
     pub fn tick(&mut self) {
         let now = std::time::Instant::now();
@@ -378,6 +553,14 @@ impl Ide {
         };
         self.sidebar
             .tick(&pointer, motion, self.reduced_motion, now);
+        // Matches found in an older text are found again in this one.
+        let editor = self.active_buffer().and_then(|b| b.editor.clone());
+        if let (Some(find), Some(editor)) = (self.find.as_mut(), editor) {
+            let revision = editor.snapshot().map(|s| s.revision()).ok();
+            if find.results.as_ref().map(|r| r.revision) != revision && !find.query.is_empty() {
+                find.search(&editor);
+            }
+        }
     }
 
     pub fn animating(&self) -> bool {
@@ -410,6 +593,8 @@ impl Ide {
             Loaded::Packs(offered) => self.offered = offered,
             Loaded::PrefsSaved => {}
             Loaded::Fonts(fonts) => self.fonts = fonts,
+            Loaded::Files(files) => self.files = files,
+            Loaded::SessionSaved => {}
             // Only the family still chosen is put in use; one that fails keeps the faces.
             Loaded::Font(family, Ok(Faces(regular, bold))) => {
                 if family == self.prefs.editor_font {
@@ -490,10 +675,12 @@ impl Ide {
                 stale: false,
                 reloading: false,
                 error: None,
+                loading: false,
             });
             self.active = Some(self.buffers.len() - 1);
             return;
         };
+        buffer.loading = false;
         let keep_theirs = buffer.dirty() && !buffer.reloading;
         match (&buffer.editor, text) {
             (Some(editor), Some(text)) if !keep_theirs => buffer.stale = !reload(editor, &text),
@@ -509,8 +696,8 @@ impl Ide {
         buffer.reloading = false;
     }
 
-    /// The control a Ctrl shortcut clicks. Vim's own Ctrl keys (B, F, U, D, J, N, P, R) stay
-    /// the editor's.
+    /// The control a Ctrl shortcut clicks. Vim's own Ctrl keys (B, F, U, D, J, N, R) stay
+    /// the editor's; Ctrl+P opens a file by its name.
     pub fn shortcut(&self, key: Key, shift: bool) -> Option<String> {
         let step = |by: isize| {
             let n = self.buffers.len() as isize;
@@ -522,6 +709,10 @@ impl Ide {
             (Key::W, false) => self.active.map(|a| format!("close:{a}")),
             (Key::PageDown, false) => step(1),
             (Key::PageUp, false) => step(-1),
+            // Over Vim's Ctrl+P, a line up as `k` is.
+            (Key::P, false) => Some(QUICK_OPEN.into()),
+            // With Vim keys Ctrl+F is a page down, and `/` finds.
+            (Key::F, false) if !self.prefs.vim => Some(FIND_OPEN.into()),
             _ => None,
         }
     }
@@ -602,6 +793,33 @@ pub fn view(ide: &Ide, window: Size) -> Element {
     ])
     .size(Some(window.width), Some(window.height))
     .background(look::palette().surface);
+    let root = match &ide.quick {
+        Some((query, chosen)) => {
+            let rows = ide
+                .quick_found()
+                .into_iter()
+                .map(|path| {
+                    let full = ide.root.join(path);
+                    let mut row = Found::new(format!("quick:file:{}", full.display()), name(path));
+                    let dir = path.parent().map(|d| d.display().to_string());
+                    row.detail = dir.filter(|d| !d.is_empty());
+                    row.icon = Some(ide.pack.icon(&full, false, false));
+                    row
+                })
+                .collect();
+            let title = if query.is_empty() { "Files" } else { "Found" };
+            search::dialog(
+                root,
+                QUICK_FIELD,
+                QUICK_CLOSE,
+                query,
+                "Open a file by its name",
+                vec![(title.into(), rows)],
+                *chosen,
+            )
+        }
+        None => root,
+    };
     match &ide.settings_page {
         Some(page) => settings::dialog(
             root,
@@ -821,8 +1039,10 @@ fn editor(ide: &Ide, width: f32, height: f32) -> Element {
     };
     let mut column = notices(ide, width);
     let height = height - column.len() as f32 * NOTICE - FOOTER;
+    let matches = ide.find.as_ref().and_then(|f| f.results.as_ref());
     column.push(match ide.active_buffer() {
         None => note("Pick a file to read it"),
+        Some(Buffer { loading: true, .. }) => note(""),
         Some(Buffer { editor: None, .. }) => note("This file can't be shown as text."),
         Some(
             buffer @ Buffer {
@@ -843,10 +1063,28 @@ fn editor(ide: &Ide, width: f32, height: f32) -> Element {
                 .minimap(ide.prefs.minimap)
                 .vim_mode_label(false)
                 .syntax_colors(syntax_colors())
+                .search_matches(
+                    matches.map_or(0, |r| r.revision),
+                    matches.map(|r| r.matches.clone()).unwrap_or_default(),
+                )
                 .height(height)
                 .render()
         }
     });
+    // The find bar floats under the end of the line over the editor.
+    if let Some(find) = &ide.find {
+        let bar = limn::FindBar::new(FIND, find.query.as_str(), look::palette())
+            .surface(look::menu_palette())
+            .options(find.options)
+            .count_label(find.count_label())
+            .has_matches(find.results.as_ref().is_some_and(|r| !r.matches.is_empty()))
+            .has_current(find.current.is_some())
+            .no_matches(find.results.as_ref().is_some_and(|r| r.matches.is_empty()))
+            .error(find.error.as_deref())
+            .width((width - 24.0).min(520.0));
+        let anchor = Element::spacer().size(Some(width - 12.0), Some(0.0));
+        column.insert(0, bar.attach(anchor));
+    }
     column.push(footer(ide, width));
     Element::column(column)
 }
@@ -962,7 +1200,7 @@ mod tests {
     }
 
     fn with_files() -> Ide {
-        let (mut ide, jobs) = Ide::new("/r".into(), Prefs::default());
+        let (mut ide, jobs) = Ide::new("/r".into(), Prefs::default(), Session::default());
         assert_eq!(jobs[0], Job::List("/r".into()));
         ide.reduced_motion = true;
         let entry = |p: &str, dir| Entry {
@@ -1193,6 +1431,80 @@ mod tests {
             due.face_of(limn::FontFamily::Monospace).unwrap().id(),
             face.id()
         );
+    }
+
+    #[test]
+    fn find_marks_the_matches_and_takes_the_caret_from_one_to_the_next() {
+        let mut ide = with_files();
+        read(&mut ide, "/r/a.rs", "let a = 1;\nlet b = a;\n");
+        click(&mut ide, FIND_OPEN);
+        assert_eq!(ide.focus.as_deref(), Some(FIND_QUERY));
+        ide.update(&UiAction::InputChanged {
+            id: FIND_QUERY.into(),
+            value: "let".into(),
+        });
+        let selection = |ide: &Ide| {
+            let editor = ide.buffers[0].editor.as_ref().unwrap();
+            editor.snapshot().unwrap().selection().range()
+        };
+        assert_eq!(ide.find.as_ref().unwrap().count_label(), "1 of 2");
+        assert_eq!(selection(&ide), 0..3);
+        ide.update(&UiAction::Submitted {
+            id: FIND_QUERY.into(),
+            value: "let".into(),
+        });
+        assert_eq!(selection(&ide), 11..14);
+        click(&mut ide, "find:next");
+        assert_eq!(selection(&ide), 0..3, "round the end");
+        click(&mut ide, "find:dismiss");
+        assert!(ide.find.is_none());
+        assert_eq!(ide.focus.as_deref(), Some("editor:/r/a.rs"));
+    }
+
+    #[test]
+    fn a_file_opens_by_its_name() {
+        let mut ide = with_files();
+        assert_eq!(
+            click(&mut ide, QUICK_OPEN),
+            vec![Job::FindFiles("/r".into())]
+        );
+        ide.loaded(Loaded::Files(
+            ["src/ide.rs", "src/main.rs", "README.md"]
+                .map(PathBuf::from)
+                .into(),
+        ));
+        ide.update(&UiAction::InputChanged {
+            id: QUICK_FIELD.into(),
+            value: "rs".into(),
+        });
+        ide.quick_step(1);
+        ide.quick_step(5);
+        let jobs = ide.update(&UiAction::Submitted {
+            id: QUICK_FIELD.into(),
+            value: "rs".into(),
+        });
+        assert_eq!(ide.quick, None);
+        assert_eq!(jobs.len(), 1);
+        assert!(matches!(&jobs[0], Job::Read(p) if p.starts_with("/r/src")));
+    }
+
+    #[test]
+    fn what_was_open_opens_again_in_its_order() {
+        let session = Session {
+            open: vec!["/r/b.rs".into(), "/r/a.rs".into()],
+            active: Some(1),
+            expanded: vec!["/r/src".into()],
+        };
+        let (mut ide, jobs) = Ide::new("/r".into(), Prefs::default(), session.clone());
+        assert!(jobs.contains(&Job::List("/r/src".into())));
+        assert!(jobs.contains(&Job::Read("/r/a.rs".into())));
+        assert!(ide.buffers.iter().all(|b| b.loading));
+        // They come back in any order, and keep theirs.
+        read(&mut ide, "/r/a.rs", "a");
+        read(&mut ide, "/r/b.rs", "b");
+        assert_eq!(ide.active, Some(1));
+        assert!(ide.buffers.iter().all(|b| !b.loading && b.editor.is_some()));
+        assert_eq!(ide.session(), session);
     }
 
     #[test]
