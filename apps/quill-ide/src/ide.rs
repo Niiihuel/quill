@@ -1,6 +1,7 @@
 //! quill-ide's state, what the person's clicks and keys ask of it, and the window (`view`).
 //! The disk is the host's: `update` returns `Job`s, and what they find comes back to `loaded`.
 
+use crate::complete::{self, Offer};
 use crate::files::Op;
 use crate::find::{Find, FIND, FIND_OPEN, FIND_QUERY};
 use crate::grep::{Hit, GREP_CLOSE, GREP_FIELD, GREP_OPEN};
@@ -228,11 +229,24 @@ pub struct Ask {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum AskKind {
+    Completion,
     Hover,
     Definition,
     References,
     Rename(String),
     Format,
+}
+
+/// Completing the word at the caret: its file, where the word starts, what the server
+/// offers (none while it is asked), the row Enter takes, and where the caret was drawn when
+/// it began, for the list to open under.
+#[derive(Clone, Debug)]
+pub struct Completion {
+    pub path: PathBuf,
+    pub start: usize,
+    pub offers: Vec<Offer>,
+    pub chosen: usize,
+    pub at: limn::Rect,
 }
 
 /// A server's diagnostic, in the characters of the revision it came for.
@@ -471,6 +485,10 @@ pub struct Ide {
     pub more_open: bool,
     pub diagram_sources: Vec<u64>,
     pub open_url: Option<String>,
+    /// Completing the word at the caret, and where the caret was last drawn, which the host
+    /// reads from limn while no popover hides it.
+    pub completion: Option<Completion>,
+    pub caret: Option<limn::Rect>,
 }
 
 #[derive(Default)]
@@ -561,6 +579,8 @@ impl Ide {
             more_open: false,
             diagram_sources: vec![],
             open_url: None,
+            completion: None,
+            caret: None,
         };
         (ide, jobs)
     }
@@ -1265,6 +1285,128 @@ impl Ide {
         jobs
     }
 
+    /// What was typed in the editor on screen: the word at the caret is completed once it has
+    /// a letter, or right after `.` or `::`; anything else ends a completion.
+    pub fn typed(&mut self) {
+        let Some(buffer) = self.active_buffer() else {
+            return;
+        };
+        let Some(snapshot) = buffer.editor.as_ref().and_then(|e| e.snapshot().ok()) else {
+            return;
+        };
+        let caret = snapshot.selection().head;
+        let from = caret.saturating_sub(64);
+        let before: Vec<char> = snapshot
+            .text_range(from..caret)
+            .unwrap_or_default()
+            .chars()
+            .collect();
+        let word = before
+            .iter()
+            .rev()
+            .take_while(|c| complete::word(**c))
+            .count();
+        let start = caret - word;
+        let lead: String = before[..before.len() - word].iter().rev().take(2).collect();
+        let after_member = lead.starts_with('.') || lead == "::";
+        if word == 0 && !after_member {
+            self.completion = None;
+            return;
+        }
+        let path = buffer.path.clone();
+        let same = self
+            .completion
+            .as_ref()
+            .filter(|c| c.path == path && c.start == start);
+        // The same word goes on narrowing what came; while nothing has, it is asked again for
+        // this text, as the server drops answers for one that changed under them.
+        match same {
+            Some(completion) if !completion.offers.is_empty() => return,
+            Some(_) => {
+                self.lsp_asks.push(Ask {
+                    path,
+                    offset: caret,
+                    kind: AskKind::Completion,
+                });
+                return;
+            }
+            None => {}
+        }
+        let Some(at) = self.caret else {
+            return;
+        };
+        self.completion = Some(Completion {
+            path: path.clone(),
+            start,
+            offers: vec![],
+            chosen: 0,
+            at,
+        });
+        self.lsp_asks.push(Ask {
+            path,
+            offset: caret,
+            kind: AskKind::Completion,
+        });
+    }
+
+    /// What the word at the caret holds so far, while completing.
+    fn completion_typed(&self) -> Option<String> {
+        let completion = self.completion.as_ref()?;
+        let buffer = self.active_buffer().filter(|b| b.path == completion.path)?;
+        let snapshot = buffer.editor.as_ref()?.snapshot().ok()?;
+        let caret = snapshot.selection().head;
+        let typed = snapshot.text_range(completion.start..caret).ok()?;
+        typed.chars().all(complete::word).then_some(typed)
+    }
+
+    /// The offers shown now, narrowed by what was typed; empty while none match.
+    pub fn completion_shown(&self) -> Vec<(usize, &Offer)> {
+        match (&self.completion, self.completion_typed()) {
+            (Some(completion), Some(typed)) => complete::narrowed(&completion.offers, &typed),
+            _ => vec![],
+        }
+    }
+
+    /// Move the row Enter takes by `by`, within those shown.
+    pub fn completion_step(&mut self, by: isize) {
+        let count = self.completion_shown().len();
+        if let Some(completion) = self.completion.as_mut() {
+            let last = count.saturating_sub(1) as isize;
+            completion.chosen = (completion.chosen as isize + by).clamp(0, last) as usize;
+        }
+    }
+
+    /// Write the `row`-th offer shown (the chosen one without it) over the typed word.
+    pub fn accept_completion(&mut self, row: Option<usize>) {
+        let shown = self.completion_shown();
+        let row = row.unwrap_or_else(|| self.completion.as_ref().map_or(0, |c| c.chosen));
+        let Some((_, offer)) = shown.get(row).map(|(at, o)| (*at, (*o).clone())) else {
+            self.completion = None;
+            return;
+        };
+        let Some(completion) = self.completion.take() else {
+            return;
+        };
+        let Some(editor) = self.active_buffer().and_then(|b| b.editor.clone()) else {
+            return;
+        };
+        let caret = editor
+            .snapshot()
+            .map_or(completion.start, |s| s.selection().head);
+        let word = Selection {
+            anchor: completion.start,
+            head: caret,
+        };
+        let _ = editor.execute(limn_editor::EditorCommand::SetSelection(word));
+        let command = if offer.snippet {
+            limn_editor::EditorCommand::InsertSnippet(offer.text)
+        } else {
+            limn_editor::EditorCommand::InsertText(offer.text)
+        };
+        let _ = editor.execute(command);
+        self.reveal = true;
+    }
+
     /// The bar over the editor: its path and symbols, its menu, the Markdown views and the
     /// preview's links. `None` when `id` is none of them.
     fn bar_clicked(&mut self, id: &str) -> Option<Vec<Job>> {
@@ -1379,8 +1521,13 @@ impl Ide {
             "symbol:go" => self.rename_symbol(),
             SYMBOL_CLOSE => self.renaming_symbol = None,
             HOVER_DISMISS => self.hover = None,
+            "complete:dismiss" => self.completion = None,
             REFS_CLOSE => self.references = None,
             _ => {
+                if let Some(row) = id.strip_prefix("complete:").and_then(|r| r.parse().ok()) {
+                    self.accept_completion(Some(row));
+                    return Some(vec![]);
+                }
                 let at = id.strip_prefix("refs:at:")?.parse().ok()?;
                 return Some(self.reference_open(at));
             }
@@ -1681,6 +1828,10 @@ impl Ide {
         };
         self.sidebar
             .tick(&pointer, motion, self.reduced_motion, now);
+        // A completion ends once the caret leaves the word it began on.
+        if self.completion.is_some() && self.completion_typed().is_none() {
+            self.completion = None;
+        }
         // Diagnostics of an older text follow the edits until the server answers again.
         for buffer in &self.buffers {
             let Some(snapshot) = buffer.editor.as_ref().and_then(|e| e.snapshot().ok()) else {
@@ -2068,6 +2219,12 @@ pub fn view(ide: &Ide, window: Size) -> Element {
     let root = match &ide.naming {
         Some(naming) => name_dialog(ide, naming, root),
         None => root,
+    };
+    let root = match (&ide.completion, ide.completion_shown()) {
+        (Some(completion), shown) if !shown.is_empty() => {
+            completion_list(completion, &shown, root, window)
+        }
+        _ => root,
     };
     let root = match &ide.renaming_symbol {
         Some(value) => {
@@ -2596,6 +2753,51 @@ fn name_dialog(ide: &Ide, naming: &Naming, base: Element) -> Element {
         vec![(title, vec![row])],
         0,
     )
+}
+
+/// The offers under the word being completed, at the caret as it was drawn when it began.
+fn completion_list(
+    completion: &Completion,
+    shown: &[(usize, &Offer)],
+    base: Element,
+    window: Size,
+) -> Element {
+    let items = shown
+        .iter()
+        .enumerate()
+        .map(|(row, (_, offer))| {
+            let item = limn::SuggestionItem::new(format!("complete:{row}"), offer.label.clone());
+            if offer.detail.is_empty() {
+                item
+            } else {
+                item.detail(offer.detail.clone())
+            }
+        })
+        .collect();
+    let at = completion.at;
+    let anchor = Element::spacer().size(Some(1.0), Some(at.height));
+    let list = limn::SuggestionList::new(
+        anchor,
+        "complete",
+        items,
+        completion.chosen,
+        true,
+        "complete:dismiss",
+        look::menu_palette(),
+    )
+    .placement(limn::PopoverPlacement::BottomStart)
+    .width(420.0)
+    .animation_ms(0, 0)
+    .render();
+    // The anchor is placed where the caret was, over the page.
+    let layer = Element::column(vec![
+        Element::spacer().size(None, Some(at.y.max(0.0))),
+        Element::row(vec![
+            Element::spacer().size(Some(at.x.max(0.0)), None),
+            list,
+        ]),
+    ]);
+    Element::stack(vec![base, layer]).size(Some(window.width), Some(window.height))
 }
 
 fn markdown(path: &Path) -> bool {
@@ -3830,6 +4032,59 @@ mod tests {
         ide.loaded(Loaded::File(cut, Ok(vec!["src/a.rs".into()])));
         assert_eq!(ide.buffers[0].path, Path::new("/r/src/a.rs"));
         assert!(ide.tree_clipboard.is_none());
+    }
+
+    #[test]
+    fn a_word_typed_is_completed_from_the_servers_offers() {
+        let mut ide = with_files();
+        read(&mut ide, "/r/a.rs", "v.");
+        ide.caret = Some(limn::Rect::new(100.0, 40.0, 2.0, 20.0));
+        let shared = ide.buffers[0].editor.as_ref().unwrap().shared_buffer();
+        shared
+            .lock()
+            .unwrap()
+            .set_selection(Selection::caret(2))
+            .unwrap();
+        // Right after `.`, the server is asked.
+        ide.typed();
+        let ask = Ask {
+            path: "/r/a.rs".into(),
+            offset: 2,
+            kind: AskKind::Completion,
+        };
+        assert_eq!(ide.lsp_asks, vec![ask]);
+        let offer = |label: &str, text: &str, snippet| Offer {
+            label: label.into(),
+            detail: String::new(),
+            text: text.into(),
+            snippet,
+            filter: label.into(),
+            sort: label.into(),
+        };
+        ide.completion.as_mut().unwrap().offers = vec![
+            offer("len", "len", false),
+            offer("push", "push(${1:value})", true),
+        ];
+        type_in(&ide.buffers[0], 2, "p");
+        ide.typed();
+        assert_eq!(
+            ide.lsp_asks.len(),
+            1,
+            "with offers in, the same word is not asked again"
+        );
+        let shown: Vec<&str> = ide
+            .completion_shown()
+            .iter()
+            .map(|(_, o)| o.label.as_str())
+            .collect();
+        assert_eq!(shown, ["push"]);
+        ide.accept_completion(None);
+        assert_eq!(text_of(&ide.buffers[0]), "v.push(value)");
+        assert!(ide.completion.is_none());
+        // A space ends a word, and with it a completion.
+        type_in(&ide.buffers[0], 13, " ");
+        ide.typed();
+        assert!(ide.completion.is_none());
     }
 
     #[test]

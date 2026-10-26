@@ -131,6 +131,7 @@ impl Lsp {
             return;
         };
         let request = match &ask.kind {
+            AskKind::Completion => Request::Completion(position),
             AskKind::Hover => Request::Hover(position),
             AskKind::Definition => Request::Definition(position),
             AskKind::References => Request::References {
@@ -240,6 +241,13 @@ fn snapshot_at(ide: &Ide, path: &Path, revision: u64) -> Option<BufferSnapshot> 
 /// A server's answer, where the IDE shows it.
 fn answered(ide: &mut Ide, path: &Path, revision: u64, kind: AskKind, value: &Value) -> Vec<Job> {
     match kind {
+        AskKind::Completion => {
+            let offers = crate::complete::offers(value);
+            match ide.completion.as_mut().filter(|c| c.path == path) {
+                Some(completion) if !offers.is_empty() => completion.offers = offers,
+                _ => ide.completion = None,
+            }
+        }
         AskKind::Hover => {
             ide.hover = Some(hover_text(value).unwrap_or_else(|| "Nothing to say here.".into()));
         }

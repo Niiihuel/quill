@@ -2,6 +2,7 @@
 //! `quill-ide [folder | file]` opens the folder (a file's own, and the file), the current
 //! directory without one.
 
+mod complete;
 mod disk;
 mod files;
 mod find;
@@ -263,8 +264,45 @@ impl eframe::App for App {
                 }
             }
         }
+        // Where the caret is drawn, for a completion to open under; limn says it while no
+        // popover is open.
+        if let Some((_, caret)) = self.tree.editor_ime_rects() {
+            self.ide.caret = Some(caret);
+        }
         let focused = self.tree.focused_id().map(str::to_owned);
         for event in limn_egui::events(&ctx, area.min) {
+            // While offers show, the arrows choose, Enter and Tab write one, Escape ends it.
+            if !self.ide.completion_shown().is_empty() {
+                match &event {
+                    limn::UiEvent::Key {
+                        key: limn::Key::ArrowUp,
+                        ..
+                    } => {
+                        self.ide.completion_step(-1);
+                        continue;
+                    }
+                    limn::UiEvent::Key {
+                        key: limn::Key::ArrowDown,
+                        ..
+                    } => {
+                        self.ide.completion_step(1);
+                        continue;
+                    }
+                    limn::UiEvent::Key {
+                        key: limn::Key::Enter | limn::Key::Tab,
+                        ctrl: false,
+                        shift: false,
+                    } => {
+                        self.ide.accept_completion(None);
+                        continue;
+                    }
+                    limn::UiEvent::Key {
+                        key: limn::Key::Escape,
+                        ..
+                    } => self.ide.completion = None,
+                    _ => {}
+                }
+            }
             if self.typed_into_terminal(focused.as_deref(), &event) {
                 continue;
             }
@@ -447,6 +485,13 @@ impl eframe::App for App {
                         ctx.request_repaint();
                     }
                 });
+            }
+            // Typing in the editor on screen may begin, go on with or end a completion.
+            let writing = !self.ide.prefs.vim || self.ide.vim_mode == Some(limn::VimMode::Insert);
+            if let limn::UiAction::EditorChanged { id, .. } = &action {
+                if writing && Some(id.as_str()) == self.ide.editor_id().as_deref() {
+                    self.ide.typed();
+                }
             }
             let jobs = self.ide.update(&action);
             self.run(jobs);
