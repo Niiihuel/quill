@@ -6585,7 +6585,18 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
         title: "Browser".into(),
         icon: icons::GLOBE,
         groups: vec![
-            ("Chromium".into(), vec![program]),
+            (
+                "Chromium".into(),
+                vec![
+                    program,
+                    setting(
+                        "Native view",
+                        "Pages draw in quill's window as they would in Chromium's, with no delay. \
+                         From quill's next start.",
+                        setting_switch("browser_native", s.browser_native, palette),
+                    ),
+                ],
+            ),
             ("Allowed sites".into(), sites),
         ],
     });

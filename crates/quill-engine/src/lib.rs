@@ -13,7 +13,7 @@ use std::process::Stdio;
 mod bridge;
 mod servers;
 
-pub use quill_browser::{Frame, Frames};
+pub use quill_browser::{native, Frame, Frames, Native, Pixels};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
@@ -80,6 +80,8 @@ pub struct Config {
     pub browser: Option<PathBuf>,
     /// Where the browser leaves its pages' frames for the window to present.
     pub frames: quill_browser::Frames,
+    /// Chromium inside the window, when the host started it (`Native::start`).
+    pub native: Option<quill_browser::Native>,
 }
 
 impl Config {
@@ -313,6 +315,7 @@ impl Router {
                     downloads: home.join("Downloads"),
                     frames: config.frames.clone(),
                     permit,
+                    native: config.native.clone(),
                 },
                 // What the browser shows is the UI's only, but its tabs' addresses, which
                 // are kept to open again.

@@ -237,7 +237,7 @@ fn keys(modifiers: egui::Modifiers) -> Modifiers {
 }
 
 /// The browser's own keys while the page has the focus, Desktop's.
-fn shortcut(key: egui::Key, modifiers: egui::Modifiers) -> Option<Ask> {
+pub fn shortcut(key: egui::Key, modifiers: egui::Modifiers) -> Option<Ask> {
     use egui::Key;
     let ctrl = modifiers.ctrl || modifiers.command;
     Some(match (key, ctrl, modifiers.shift) {

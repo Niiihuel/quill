@@ -2655,6 +2655,7 @@ fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
         "keep_awake" => settings.keep_awake = !settings.keep_awake,
         "attention" => settings.attention = !settings.attention,
         "login" => settings.open_at_login = !settings.open_at_login,
+        "browser_native" => settings.browser_native = !settings.browser_native,
         other => match other
             .strip_prefix("agent:")
             .and_then(|r| r.strip_suffix(":unsafe"))

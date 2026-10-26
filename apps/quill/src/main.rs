@@ -40,6 +40,8 @@ struct App {
     pinned_theme: bool,
     /// Where the browser leaves its pages' frames, presented each frame.
     frames: quill_engine::Frames,
+    /// The texture each surface shows from the GPU, as registered with egui's renderer.
+    textures: HashMap<String, (egui::TextureId, eframe::wgpu::Texture)>,
     /// The page's share of the window's input.
     page: page::Page,
     /// The tab on screen and its size, as last told to the engine.
@@ -344,6 +346,36 @@ impl App {
         }
     }
 
+    /// The id egui's renderer draws `texture` by, for the surface `id`: a texture it already
+    /// has is drawn again as is, as a page's paints are written into it.
+    fn register(
+        &mut self,
+        render: &eframe::egui_wgpu::RenderState,
+        id: &str,
+        texture: eframe::wgpu::Texture,
+    ) -> egui::TextureId {
+        if let Some((known, _)) = self.textures.get(id).filter(|(_, t)| *t == texture) {
+            return *known;
+        }
+        let view = texture.create_view(&Default::default());
+        let filter = eframe::wgpu::FilterMode::Linear;
+        let mut renderer = render.renderer.write();
+        let known = match self.textures.get(id) {
+            Some((known, _)) => {
+                renderer.update_egui_texture_from_wgpu_texture(
+                    &render.device,
+                    &view,
+                    filter,
+                    *known,
+                );
+                *known
+            }
+            None => renderer.register_native_texture(&render.device, &view, filter),
+        };
+        self.textures.insert(id.to_owned(), (known, texture));
+        known
+    }
+
     /// The session on screen, its number of items and the length of a reply being written.
     fn transcript_mark(&self, id: Option<SessionId>) -> Option<(SessionId, usize, usize)> {
         let session = self.store.session(id?)?;
@@ -423,7 +455,7 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, host: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         if !self.fonts_attached {
             limn_egui::attach_fonts(&mut self.tree, &ctx);
@@ -588,9 +620,18 @@ impl eframe::App for App {
         self.frames.set_scale(ctx.pixels_per_point());
         for (id, frame) in self.frames.take() {
             let size = [frame.width, frame.height];
-            if let Some(surface) = limn_egui::SurfaceFrame::from_rgb(size, &frame.rgb, frame.scale)
-            {
-                limn_egui::present_surface(&ctx, &id, surface);
+            match frame.pixels {
+                quill_engine::Pixels::Rgba(rgba) => {
+                    if let Some(surface) = surface_frame(size, rgba, frame.scale) {
+                        limn_egui::present_surface(&ctx, &id, surface);
+                    }
+                }
+                quill_engine::Pixels::Texture(texture) => {
+                    if let Some(render) = host.wgpu_render_state() {
+                        let texture = self.register(render, &id, texture);
+                        limn_egui::present_surface_texture(&ctx, &id, texture, size, frame.scale);
+                    }
+                }
             }
         }
         let (asks, taken) = self.route_page(&ctx, area.min);
@@ -913,6 +954,10 @@ fn open_url(url: &str) -> bool {
 }
 
 fn main() -> eframe::Result {
+    // Chromium's own processes are quill run again; they do their work and leave.
+    if let Some(code) = quill_engine::native::subprocess() {
+        std::process::exit(code);
+    }
     let args: Vec<String> = std::env::args().collect();
     if let [_, flag, url, ..] = args.as_slice() {
         if flag == "--open-url" {
@@ -925,8 +970,15 @@ fn main() -> eframe::Result {
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| ".".into());
     let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
+    let native = native_browser(&saved_settings());
+    let started: Arc<Mutex<Option<quill_engine::Native>>> = Arc::default();
+    let keep = started.clone();
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
+        wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
+            wgpu_setup: wgpu_setup(native),
+            ..Default::default()
+        },
         viewport: egui::ViewportBuilder::default()
             .with_title("quill")
             .with_app_id("quill")
@@ -934,7 +986,7 @@ fn main() -> eframe::Result {
             .with_min_inner_size([720.0, 480.0]),
         ..Default::default()
     };
-    eframe::run_native(
+    let result = eframe::run_native(
         "quill",
         options,
         Box::new(move |creation| {
@@ -967,6 +1019,12 @@ fn main() -> eframe::Result {
             let frames = quill_engine::Frames::default();
             let ctx = creation.egui_ctx.clone();
             frames.on_frame(move || ctx.request_repaint());
+            let gpu = creation
+                .wgpu_render_state
+                .as_ref()
+                .map(|render| (render.device.clone(), render.queue.clone()));
+            let native = native.then(|| start_native(&frames, gpu)).flatten();
+            *keep.lock().unwrap() = native.clone();
             let engine = match std::env::var("QUILL_PROGRAMS") {
                 Ok(programs) => Engine::start_with(
                     sink,
@@ -977,6 +1035,7 @@ fn main() -> eframe::Result {
                             .map(|(agent, program)| (agent.to_owned(), program.to_owned()))
                             .collect(),
                         frames: frames.clone(),
+                        native: native.clone(),
                         ..Default::default()
                     },
                 ),
@@ -984,6 +1043,7 @@ fn main() -> eframe::Result {
                     sink,
                     quill_engine::Config {
                         frames: frames.clone(),
+                        native: native.clone(),
                         ..quill_engine::Config::default_database()
                     },
                 ),
@@ -1010,11 +1070,83 @@ fn main() -> eframe::Result {
                 applied: None,
                 pinned_theme: std::env::var_os("QUILL_THEME").is_some(),
                 frames,
+                textures: HashMap::new(),
                 page: page::Page::default(),
                 browser_shown: None,
                 address: None,
                 fonts_attached: false,
             }))
         }),
-    )
+    );
+    // Chromium stops on the thread it started on, its tabs closed first.
+    if let Some(native) = started.lock().unwrap().take() {
+        native.shutdown();
+    }
+    result
+}
+
+/// A page's frame as egui holds pixels: they are already in its form, so the buffer is
+/// taken as it is rather than converted again on the UI thread.
+fn surface_frame(size: [usize; 2], rgba: Vec<u8>, scale: f32) -> Option<limn_egui::SurfaceFrame> {
+    let pixels: Vec<egui::Color32> = bytemuck::allocation::try_cast_vec(rgba)
+        .unwrap_or_else(|(_, rgba)| bytemuck::cast_slice(&rgba).to_vec());
+    if pixels.len() != size[0] * size[1] {
+        return None;
+    }
+    limn_egui::SurfaceFrame::from_image(egui::ColorImage::new(size, pixels), scale)
+}
+
+/// eframe's device; for native tabs, one that can take in Chromium's GPU buffers (dmabufs),
+/// where the driver can, so their paints never leave the GPU.
+fn wgpu_setup(native: bool) -> eframe::egui_wgpu::WgpuSetup {
+    let mut setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+    if native {
+        let base = setup.device_descriptor.clone();
+        setup.device_descriptor = Arc::new(move |adapter| {
+            let mut descriptor = base(adapter);
+            descriptor.required_features |=
+                adapter.features() & eframe::wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF;
+            descriptor
+        });
+    }
+    eframe::egui_wgpu::WgpuSetup::CreateNew(setup)
+}
+
+/// Whether the browser's pages are drawn by Chromium in quill's own process, rather than by
+/// a headless one's screencast: when Settings asks. `QUILL_BROWSER=native` or `headless`
+/// decides instead.
+fn native_browser(settings: &quill_model::Settings) -> bool {
+    match std::env::var("QUILL_BROWSER").as_deref() {
+        Ok("native") => true,
+        Ok("headless") => false,
+        _ => settings.browser_native,
+    }
+}
+
+/// The person's settings as the engine keeps them, read before the window opens.
+fn saved_settings() -> quill_model::Settings {
+    quill_engine::Config::default_database()
+        .settings
+        .and_then(|path| std::fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+/// Start Chromium in quill's process, for native tabs, its paints copied on the window's
+/// `gpu` where it can; `None` keeps the headless one.
+fn start_native(
+    frames: &quill_engine::Frames,
+    gpu: Option<(eframe::wgpu::Device, eframe::wgpu::Queue)>,
+) -> Option<quill_engine::Native> {
+    let data = quill_engine::Config::default_database()
+        .database
+        .and_then(|db| db.parent().map(|dir| dir.join("chromium")))
+        .unwrap_or_else(|| std::env::temp_dir().join("quill-chromium"));
+    match quill_engine::Native::start(&data, frames.clone(), gpu) {
+        Ok(native) => Some(native),
+        Err(error) => {
+            eprintln!("quill: the browser draws without native tabs: {error}");
+            None
+        }
+    }
 }

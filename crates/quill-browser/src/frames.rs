@@ -6,13 +6,23 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// A page's pixels, RGB rows top to bottom, rendered for `scale` device pixels per CSS pixel.
+/// A page's pixels, `width` by `height`, rendered for `scale` device pixels per CSS pixel.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Frame {
     pub width: usize,
     pub height: usize,
     pub scale: f32,
-    pub rgb: Vec<u8>,
+    pub pixels: Pixels,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Pixels {
+    /// Premultiplied RGBA rows top to bottom: egui's own form, so the window takes them
+    /// without converting.
+    Rgba(Vec<u8>),
+    /// A texture of the window's own device, BGRA, that a native tab's paints are copied
+    /// into on the GPU: the window draws it as it is. It is written again by the next paint.
+    Texture(wgpu::Texture),
 }
 
 type Wake = Arc<dyn Fn() + Send + Sync>;
@@ -66,20 +76,20 @@ impl Frames {
     }
 }
 
-/// A screencast frame's JPEG as RGB.
+/// A screencast frame's JPEG as opaque RGBA.
 pub fn decode(jpeg: &[u8], scale: f32) -> Option<Frame> {
     use zune_core::bytestream::ZCursor;
     use zune_core::colorspace::ColorSpace;
     use zune_core::options::DecoderOptions;
-    let options = DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::RGB);
+    let options = DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::RGBA);
     let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(jpeg), options);
-    let rgb = decoder.decode().ok()?;
+    let rgba = decoder.decode().ok()?;
     let info = decoder.info()?;
     let (width, height) = (info.width as usize, info.height as usize);
-    (rgb.len() == width * height * 3).then_some(Frame {
+    (rgba.len() == width * height * 4).then_some(Frame {
         width,
         height,
         scale,
-        rgb,
+        pixels: Pixels::Rgba(rgba),
     })
 }
