@@ -33,6 +33,8 @@ pub struct Page {
     held: Option<egui::PointerButton>,
     /// The last press, to count double and triple clicks.
     last: Option<(Instant, egui::Pos2, egui::PointerButton, u8)>,
+    /// The window saw no pointer last frame: it was over a native tab, or out of the window.
+    pub away: bool,
 }
 
 impl Page {
@@ -237,7 +239,7 @@ fn keys(modifiers: egui::Modifiers) -> Modifiers {
 }
 
 /// The browser's own keys while the page has the focus, Desktop's.
-fn shortcut(key: egui::Key, modifiers: egui::Modifiers) -> Option<Ask> {
+pub fn shortcut(key: egui::Key, modifiers: egui::Modifiers) -> Option<Ask> {
     use egui::Key;
     let ctrl = modifiers.ctrl || modifiers.command;
     Some(match (key, ctrl, modifiers.shift) {
@@ -247,6 +249,42 @@ fn shortcut(key: egui::Key, modifiers: egui::Modifiers) -> Option<Ask> {
         (Key::R, true, false) | (Key::F5, false, false) => Ask::Reload,
         (Key::Tab, true, shift) => Ask::NextTab(!shift),
         (Key::B, true, true) => Ask::ToggleBrowser,
+        _ => return None,
+    })
+}
+
+/// egui's key for a Windows key code, as CEF reports a key a native tab passed on.
+pub fn egui_key(code: i32) -> Option<egui::Key> {
+    use egui::Key;
+    Some(match code {
+        0x08 => Key::Backspace,
+        0x09 => Key::Tab,
+        0x0D => Key::Enter,
+        0x1B => Key::Escape,
+        0x20 => Key::Space,
+        0x21 => Key::PageUp,
+        0x22 => Key::PageDown,
+        0x23 => Key::End,
+        0x24 => Key::Home,
+        0x25 => Key::ArrowLeft,
+        0x26 => Key::ArrowUp,
+        0x27 => Key::ArrowRight,
+        0x28 => Key::ArrowDown,
+        0x2D => Key::Insert,
+        0x2E => Key::Delete,
+        0x30..=0x39 | 0x41..=0x5A => return Key::from_name(&char::from(code as u8).to_string()),
+        0x70..=0x7B => return Key::from_name(&format!("F{}", code - 0x6F)),
+        0xBA => Key::Semicolon,
+        0xBB => Key::Equals,
+        0xBC => Key::Comma,
+        0xBD => Key::Minus,
+        0xBE => Key::Period,
+        0xBF => Key::Slash,
+        0xC0 => Key::Backtick,
+        0xDB => Key::OpenBracket,
+        0xDC => Key::Backslash,
+        0xDD => Key::CloseBracket,
+        0xDE => Key::Quote,
         _ => return None,
     })
 }
@@ -401,5 +439,14 @@ mod tests {
         );
         assert_eq!(asks[1..], [Ask::FocusAddress, Ask::Copy { cut: false }]);
         assert_eq!(taken, [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn a_chord_a_native_tab_passes_on_is_egui_s_key() {
+        assert_eq!(egui_key(0x42), Some(egui::Key::B));
+        assert_eq!(egui_key(0x31), Some(egui::Key::Num1));
+        assert_eq!(egui_key(0xC0), Some(egui::Key::Backtick));
+        assert_eq!(egui_key(0x75), Some(egui::Key::F6));
+        assert_eq!(egui_key(0xFF), None);
     }
 }

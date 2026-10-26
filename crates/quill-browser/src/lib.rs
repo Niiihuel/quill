@@ -7,10 +7,12 @@ mod cdp;
 mod chromium;
 mod frames;
 mod input;
+pub mod native;
 pub mod tools;
 
 pub use cdp::Error;
 pub use frames::{decode, Frame, Frames};
+pub use native::Native;
 
 use cdp::{Cdp, Message};
 use quill_model::{BrowserInput, BrowserOp, BrowserTab, BrowserUpdate, BrowserView, PointerButton};
@@ -70,6 +72,9 @@ pub struct Options {
     pub frames: Frames,
     /// Asks the person before the agent opens or uses a site that is not local nor allowed.
     pub permit: Permit,
+    /// Chromium inside quill's window, when the host started it: tabs are native windows
+    /// the person uses directly, and no Chromium is launched.
+    pub native: Option<Native>,
 }
 
 #[derive(Clone)]
@@ -101,7 +106,9 @@ pub(crate) struct Run {
     /// Closed on purpose: its going is not a failure to report.
     closing: std::sync::atomic::AtomicBool,
     pub(crate) state: Mutex<State>,
-    child: Mutex<std::process::Child>,
+    /// The launched Chromium; none inside quill's window.
+    child: Mutex<Option<std::process::Child>>,
+    native: Option<Native>,
     decode: std::sync::mpsc::Sender<Shot>,
 }
 
@@ -339,17 +346,29 @@ impl Browser {
             return Ok(run);
         }
         let options = &self.inner.options;
-        let configured = self.inner.program.lock().unwrap().clone();
-        let program = chromium::find(configured.as_deref()).ok_or_else(|| {
-            "No Chromium found. Install chromium or google-chrome, or set its path in Settings."
-                .to_owned()
-        })?;
-        std::fs::create_dir_all(&options.profile).map_err(|e| e.to_string())?;
         let scale = options.frames.scale();
-        let process = chromium::launch(&program, &options.profile, scale)
-            .map_err(|e| format!("The built-in browser couldn't start: {e}"))?;
         let (events, heard) = tokio::sync::mpsc::unbounded_channel();
-        let cdp = Cdp::start(process.reader, process.writer, events);
+        // Inside quill's window the same stream is answered by the Chromium already running.
+        let (cdp, child) = match &options.native {
+            Some(native) => {
+                let (reader, writer) = native.pipe();
+                (Cdp::start(reader, writer, events), None)
+            }
+            None => {
+                let configured = self.inner.program.lock().unwrap().clone();
+                let program = chromium::find(configured.as_deref()).ok_or_else(|| {
+                    "No Chromium found. Install chromium or google-chrome, or set its path in Settings."
+                        .to_owned()
+                })?;
+                std::fs::create_dir_all(&options.profile).map_err(|e| e.to_string())?;
+                let process = chromium::launch(&program, &options.profile, scale)
+                    .map_err(|e| format!("The built-in browser couldn't start: {e}"))?;
+                (
+                    Cdp::start(process.reader, process.writer, events),
+                    Some(process.child),
+                )
+            }
+        };
         let (decoder, shots) = std::sync::mpsc::channel::<Shot>();
         let (frames, acks) = (options.frames.clone(), cdp.clone());
         std::thread::Builder::new()
@@ -377,7 +396,8 @@ impl Browser {
             cdp,
             closing: Default::default(),
             state: Mutex::default(),
-            child: Mutex::new(process.child),
+            child: Mutex::new(child),
+            native: options.native.clone(),
             decode: decoder,
         });
         // Titles and addresses as they change, and the tabs pages open.
@@ -584,7 +604,7 @@ impl Browser {
             .as_str()
             .unwrap_or_default()
             .to_owned();
-        for (method, params) in [
+        let mut setup = vec![
             ("Page.enable", json!({})),
             ("Runtime.enable", json!({})),
             ("Network.enable", json!({})),
@@ -593,18 +613,23 @@ impl Browser {
                 "Page.setInterceptFileChooserDialog",
                 json!({ "enabled": true }),
             ),
-            // Headless pages never have the window's focus; a page that thinks it has
-            // shows its caret and :focus styles.
-            (
-                "Emulation.setFocusEmulationEnabled",
-                json!({ "enabled": true }),
-            ),
-            (
-                "Emulation.setDeviceMetricsOverride",
-                json!({ "width": DEFAULT_VIEW.0, "height": DEFAULT_VIEW.1,
-                        "deviceScaleFactor": 0, "mobile": false }),
-            ),
-        ] {
+        ];
+        // A native tab has the window's focus and its own size; a headless one has neither.
+        if run.native.is_none() {
+            setup.extend([
+                // A page that thinks it has the focus shows its caret and :focus styles.
+                (
+                    "Emulation.setFocusEmulationEnabled",
+                    json!({ "enabled": true }),
+                ),
+                (
+                    "Emulation.setDeviceMetricsOverride",
+                    json!({ "width": DEFAULT_VIEW.0, "height": DEFAULT_VIEW.1,
+                            "deviceScaleFactor": 0, "mobile": false }),
+                ),
+            ]);
+        }
+        for (method, params) in setup {
             run.cdp
                 .call(method, params, Some(&session))
                 .await
@@ -795,6 +820,12 @@ impl Browser {
                 .and_then(|(o, t)| state.session(o, t));
             (before, session, size)
         };
+        // A native tab draws itself where the host places it; its last frame is shown in
+        // the surface only while something covers it.
+        if let Some(native) = &run.native {
+            native.show(session.zip(view.map(|v| surface(owner, v.tab))));
+            return;
+        }
         if let Some(before) = before {
             run.cdp
                 .send("Page.stopScreencast", json!({}), Some(&before));
@@ -872,6 +903,18 @@ impl Browser {
             (page.session.clone(), page.size())
         };
         let mobile = size.is_some_and(|(w, _)| w <= 480);
+        // A native tab is drawn at its window's size unless a size was asked for.
+        if run.native.is_some() && size.is_none() {
+            run.cdp
+                .call(
+                    "Emulation.clearDeviceMetricsOverride",
+                    json!({}),
+                    Some(&session),
+                )
+                .await
+                .map_err(|e| e.0)?;
+            return Ok(shown);
+        }
         run.cdp
             .call(
                 "Emulation.setDeviceMetricsOverride",
@@ -930,8 +973,10 @@ impl Browser {
             .call_within("Browser.close", json!({}), None, Duration::from_secs(2))
             .await;
         let mut child = run.child.lock().unwrap();
-        let _ = child.kill();
-        let _ = child.wait();
+        if let Some(child) = child.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 
     pub(crate) fn publish(&self, run: &Arc<Run>, owner: Owner) {
@@ -976,7 +1021,7 @@ impl Browser {
 /// Chromium stops with the browser that launched it.
 impl Drop for Run {
     fn drop(&mut self) {
-        if let Ok(child) = self.child.get_mut() {
+        if let Ok(Some(child)) = self.child.get_mut() {
             let _ = child.kill();
             let _ = child.wait();
         }

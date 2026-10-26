@@ -69,6 +69,7 @@ async fn a_session_opens_a_page_sees_its_frames_and_types_into_it() {
             downloads: dir.join("downloads"),
             frames: frames.clone(),
             permit: allow_once(),
+            native: None,
         },
         Arc::new(move |owner, update| log.lock().unwrap().push((owner, update))),
     );
@@ -241,6 +242,7 @@ async fn the_agent_reads_fills_clicks_and_sees_a_page() {
             downloads: dir.join("downloads"),
             frames: Frames::default(),
             permit: allow_once(),
+            native: None,
         },
         Arc::new(|_, _| {}),
     );
@@ -360,6 +362,7 @@ async fn a_pages_file_field_asks_for_files_and_takes_the_ones_chosen() {
             downloads: dir.join("downloads"),
             frames: Frames::default(),
             permit: allow_once(),
+            native: None,
         },
         Arc::new(move |_, update| log.lock().unwrap().push(update)),
     );
@@ -423,6 +426,7 @@ async fn a_sessions_tabs_from_before_open_again_with_its_browser() {
             downloads: dir.join("downloads"),
             frames: Frames::default(),
             permit: allow_once(),
+            native: None,
         },
         Arc::new(move |owner, update| log.lock().unwrap().push((owner, update))),
     );

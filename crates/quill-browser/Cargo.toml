@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "quill's built-in browser: a Chromium it launches and drives over the DevTools protocol."
+build = "build.rs"
 publish = false
 
 [dependencies]
@@ -19,6 +20,11 @@ zune-jpeg = "0.5"
 zune-core = "0.5"
 # The screencast's frames arrive base64-encoded in the JSON (already in the tree).
 base64 = "0.22"
+# Chromium in quill's own process, its tabs native child windows of quill's (native.rs); the
+# version is nixpkgs' cef-binary's, which shell.nix links.
+cef = { version = "=147.1.0", default-features = false }
+# Moves, shows and hides the tabs' X11 windows, and hands the keyboard back to quill's.
+x11-dl = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }

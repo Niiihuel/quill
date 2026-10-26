@@ -57,6 +57,14 @@ impl Frames {
         }
     }
 
+    /// Wake the window without a frame: something else of the browser's is waiting for it.
+    pub(crate) fn wake(&self) {
+        let wake = self.wake.lock().unwrap().clone();
+        if let Some(wake) = wake {
+            wake();
+        }
+    }
+
     pub(crate) fn publish(&self, surface: String, frame: Frame) {
         self.fresh.lock().unwrap().insert(surface, frame);
         let wake = self.wake.lock().unwrap().clone();

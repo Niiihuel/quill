@@ -46,6 +46,10 @@ struct App {
     browser_shown: Option<(SessionId, quill_model::BrowserView)>,
     /// What the address bar was last set to.
     address: Option<String>,
+    /// Chromium inside the window: its tabs are native windows placed over the pane.
+    native: Option<quill_engine::Native>,
+    /// The browser's own chords a native tab passed on, carried out with the page's.
+    native_asks: Vec<page::Ask>,
 }
 
 impl App {
@@ -300,6 +304,39 @@ impl App {
             self.engine.send(intent);
             self.browser_shown = shown;
         }
+        if let Some(native) = &self.native {
+            // The tab shows where its surface is laid out, unless something of quill's is
+            // drawn over it or the panes move: its last frame stands in then.
+            let surface = self
+                .browser_shown
+                .map(|(session, view)| quill_ui::view::browser_surface(session, view.tab));
+            let covered = self.ui.animating()
+                || surface
+                    .as_deref()
+                    .is_none_or(|surface| frame.drawn_over(surface));
+            let ppp = ctx.pixels_per_point();
+            let at = region.filter(|_| !covered).map(|rect| {
+                [
+                    ((origin.x + rect.x) * ppp).round() as i32,
+                    ((origin.y + rect.y) * ppp).round() as i32,
+                    (rect.width * ppp).round() as i32,
+                    (rect.height * ppp).round() as i32,
+                ]
+            });
+            native.place(at);
+            // The pointer back over quill's own, from the tab, which takes it while over it:
+            // the tab's frame is taken now, while it is fresh.
+            let away = ctx.input(|i| i.pointer.hover_pos()).is_none();
+            if self.page.away && !away {
+                native.warm();
+            }
+            self.page.away = away;
+            // A press quill sees is outside the tab: the keys come back to quill.
+            if ctx.input(|i| i.pointer.any_pressed()) {
+                native.blur();
+            }
+            return;
+        }
         let Some(rect) = region else {
             return;
         };
@@ -341,6 +378,37 @@ impl App {
                     should_interrupt_composition: false,
                 });
             });
+        }
+    }
+
+    /// The browser's chords a native tab passed on while it had the keys, carried out as the
+    /// page's would be; quill's own reach it as if pressed in its window.
+    fn native_keys(&mut self, ctx: &egui::Context) {
+        let Some(native) = &self.native else {
+            return;
+        };
+        for quill_engine::native::Key { code, ctrl, shift } in native.take_keys() {
+            let Some(key) = page::egui_key(code) else {
+                continue;
+            };
+            let modifiers = egui::Modifiers {
+                ctrl,
+                command: ctrl,
+                shift,
+                ..Default::default()
+            };
+            match page::shortcut(key, modifiers) {
+                Some(ask) => self.native_asks.push(ask),
+                None => ctx.input_mut(|i| {
+                    i.events.push(egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers,
+                    })
+                }),
+            }
         }
     }
 
@@ -429,6 +497,7 @@ impl eframe::App for App {
             limn_egui::attach_fonts(&mut self.tree, &ctx);
             self.fonts_attached = true;
         }
+        self.native_keys(&ctx);
         // Desktop opens a session at its end and follows it while the person stays there.
         let at_end = self
             .transcript
@@ -588,7 +657,26 @@ impl eframe::App for App {
                 limn_egui::present_surface(&ctx, &id, surface);
             }
         }
-        let (asks, taken) = self.route_page(&ctx, area.min);
+        // A native tab takes the pointer itself, and the keys while the pointer is over it;
+        // while it has the keys, those quill's window gets are sent to it.
+        let (asks, taken) = if let Some(native) = self.native.clone() {
+            let events = ctx.input(|i| i.events.clone());
+            let (asks, taken) = self
+                .page
+                .route(&events, |_| None, None, native.keys_on_page());
+            let mut passed = std::mem::take(&mut self.native_asks);
+            passed.extend(asks);
+            // The address takes the keys from the page.
+            if passed
+                .iter()
+                .any(|ask| matches!(ask, page::Ask::FocusAddress))
+            {
+                native.blur();
+            }
+            (passed, taken)
+        } else {
+            self.route_page(&ctx, area.min)
+        };
         for ask in asks {
             actions.extend(self.page_asked(ask, window));
         }
@@ -934,6 +1022,10 @@ fn open_url(url: &str) -> bool {
 }
 
 fn main() -> eframe::Result {
+    // Chromium's own processes are quill run again; they do their work and leave.
+    if let Some(code) = quill_engine::native::subprocess() {
+        std::process::exit(code);
+    }
     let args: Vec<String> = std::env::args().collect();
     if let [_, flag, url, ..] = args.as_slice() {
         if flag == "--open-url" {
@@ -946,7 +1038,18 @@ fn main() -> eframe::Result {
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| ".".into());
     let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
+    let native = native_browser(&saved_settings());
+    let started: Arc<Mutex<Option<quill_engine::Native>>> = Arc::default();
+    let keep = started.clone();
     let options = eframe::NativeOptions {
+        // Native tabs are X11 windows, children of quill's: in a Wayland session quill runs
+        // on XWayland for them.
+        event_loop_builder: native.then(|| -> eframe::EventLoopBuilderHook {
+            Box::new(|builder| {
+                use winit::platform::x11::EventLoopBuilderExtX11;
+                builder.with_x11();
+            })
+        }),
         renderer: eframe::Renderer::Wgpu,
         viewport: egui::ViewportBuilder::default()
             .with_title("quill")
@@ -955,7 +1058,7 @@ fn main() -> eframe::Result {
             .with_min_inner_size([720.0, 480.0]),
         ..Default::default()
     };
-    eframe::run_native(
+    let result = eframe::run_native(
         "quill",
         options,
         Box::new(move |creation| {
@@ -988,6 +1091,8 @@ fn main() -> eframe::Result {
             let frames = quill_engine::Frames::default();
             let ctx = creation.egui_ctx.clone();
             frames.on_frame(move || ctx.request_repaint());
+            let native = native.then(|| start_native(creation, &frames)).flatten();
+            *keep.lock().unwrap() = native.clone();
             let engine = match std::env::var("QUILL_PROGRAMS") {
                 Ok(programs) => Engine::start_with(
                     sink,
@@ -998,6 +1103,7 @@ fn main() -> eframe::Result {
                             .map(|(agent, program)| (agent.to_owned(), program.to_owned()))
                             .collect(),
                         frames: frames.clone(),
+                        native: native.clone(),
                         ..Default::default()
                     },
                 ),
@@ -1005,6 +1111,7 @@ fn main() -> eframe::Result {
                     sink,
                     quill_engine::Config {
                         frames: frames.clone(),
+                        native: native.clone(),
                         ..quill_engine::Config::default_database()
                     },
                 ),
@@ -1034,8 +1141,65 @@ fn main() -> eframe::Result {
                 page: page::Page::default(),
                 browser_shown: None,
                 address: None,
+                native,
+                native_asks: Vec::new(),
                 fonts_attached: false,
             }))
         }),
-    )
+    );
+    // Chromium stops on the thread it started on, its tabs closed first.
+    if let Some(native) = started.lock().unwrap().take() {
+        native.shutdown();
+    }
+    result
+}
+
+/// Whether the browser's tabs are native windows inside quill's: on X11, in an X11 session
+/// or, when Settings asks, in a Wayland one through XWayland. `QUILL_BROWSER=native` or
+/// `headless` decides instead.
+fn native_browser(settings: &quill_model::Settings) -> bool {
+    let set = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
+    let x11 = set("DISPLAY");
+    match std::env::var("QUILL_BROWSER").as_deref() {
+        Ok("native") => x11,
+        Ok("headless") => false,
+        _ => x11 && (!set("WAYLAND_DISPLAY") || settings.browser_native),
+    }
+}
+
+/// The person's settings as the engine keeps them, read before the window opens.
+fn saved_settings() -> quill_model::Settings {
+    quill_engine::Config::default_database()
+        .settings
+        .and_then(|path| std::fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+/// Start Chromium inside the window just made, for native tabs; `None` keeps the headless one.
+fn start_native(
+    creation: &eframe::CreationContext,
+    frames: &quill_engine::Frames,
+) -> Option<quill_engine::Native> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let parent = match creation.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Xlib(window) => window.window,
+        RawWindowHandle::Xcb(window) => u64::from(window.window.get()),
+        _ => return None,
+    };
+    let scale = creation
+        .egui_ctx
+        .native_pixels_per_point()
+        .unwrap_or_else(|| creation.egui_ctx.pixels_per_point());
+    let data = quill_engine::Config::default_database()
+        .database
+        .and_then(|db| db.parent().map(|dir| dir.join("chromium")))
+        .unwrap_or_else(|| std::env::temp_dir().join("quill-chromium"));
+    match quill_engine::Native::start(parent, scale, &data, frames.clone()) {
+        Ok(native) => Some(native),
+        Err(error) => {
+            eprintln!("quill: the browser draws without native tabs: {error}");
+            None
+        }
+    }
 }
