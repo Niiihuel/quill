@@ -26,6 +26,8 @@ struct App {
     fonts_attached: bool,
     /// The session on screen and how much its transcript held last frame.
     transcript: Option<(SessionId, usize, usize)>,
+    /// The same of the session beside it, in the side pane.
+    beside: Option<(SessionId, usize, usize)>,
 }
 
 impl App {
@@ -116,8 +118,8 @@ impl App {
     }
 
     /// The session on screen, its number of items and the length of a reply being written.
-    fn transcript_mark(&self) -> Option<(SessionId, usize, usize)> {
-        let session = self.store.session(self.ui.selected?)?;
+    fn transcript_mark(&self, id: Option<SessionId>) -> Option<(SessionId, usize, usize)> {
+        let session = self.store.session(id?)?;
         let tail = match session.items.last() {
             Some(quill_ui::Item::Assistant { text, .. }) => text.len(),
             _ => 0,
@@ -173,6 +175,10 @@ impl eframe::App for App {
             .transcript
             .is_none_or(|(id, ..)| self.tree.is_scroll_at_end(&format!("transcript:{id}"), 8.0));
         self.ui.at_end = at_end;
+        let beside_at_end = self.beside.is_none_or(|(id, ..)| {
+            self.tree
+                .is_scroll_at_end(&format!("side:{id}:scroll"), 8.0)
+        });
         let events = std::mem::take(&mut *self.inbox.lock().unwrap());
         for event in events {
             let intents = self.ui.applied(&event);
@@ -370,9 +376,13 @@ impl eframe::App for App {
                 }
             }
             // The editor keeps its own text; a sent message empties it.
-            if matches!(&action, limn::UiAction::Submitted { id, value } if id == quill_ui::view::COMPOSER && !value.trim().is_empty())
-            {
-                self.tree.set_input_value(quill_ui::view::COMPOSER, "");
+            if let limn::UiAction::Submitted { id, value } = &action {
+                let field = [quill_ui::view::COMPOSER, quill_ui::view::SIDE_FIELD]
+                    .into_iter()
+                    .find(|f| id == f);
+                if let Some(field) = field.filter(|_| !value.trim().is_empty()) {
+                    self.tree.set_input_value(field, "");
+                }
             }
             let opened = !self.ui.pane_open(Pane::Terminal);
             let intents = quill_ui::update(&self.store, &mut self.ui, &action);
@@ -392,12 +402,19 @@ impl eframe::App for App {
         if (follow && changed) || focus_terminal {
             self.tree.scroll_to_end(quill_ui::view::TERMINAL_SCROLL);
         }
-        let mark = self.transcript_mark();
+        let mark = self.transcript_mark(self.ui.selected);
         let opened = mark.map(|m| m.0) != self.transcript.map(|m| m.0);
         if let Some((id, ..)) = mark.filter(|_| opened || (at_end && mark != self.transcript)) {
             self.tree.scroll_to_end(&format!("transcript:{id}"));
         }
         self.transcript = mark;
+        // The session beside opens at its end too, and follows it the same way.
+        let mark = self.transcript_mark(self.ui.side_chat);
+        let opened = mark.map(|m| m.0) != self.beside.map(|m| m.0);
+        if let Some((id, ..)) = mark.filter(|_| opened || (beside_at_end && mark != self.beside)) {
+            self.tree.scroll_to_end(&format!("side:{id}:scroll"));
+        }
+        self.beside = mark;
         self.ui.tick(&self.store);
         self.tree
             .set_root(quill_ui::view(&self.store, &self.ui, window));
@@ -572,6 +589,7 @@ fn main() -> eframe::Result {
                 attached: Arc::default(),
                 terminals: HashMap::new(),
                 transcript: None,
+                beside: None,
                 fonts_attached: false,
             }))
         }),

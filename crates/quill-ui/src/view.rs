@@ -64,6 +64,8 @@ pub const BAR_CLOSE: &str = "branch-bar:close";
 pub const FILTER_RESET: &str = "filter:reset";
 /// The reply field of a side chat's pane.
 pub const SIDE_FIELD: &str = "side:field";
+/// The side pane's tool that shows its session on its own.
+pub const SIDE_OPEN: &str = "side:open";
 /// "Show more" under Completed.
 pub const SHOW_MORE: &str = "sidebar:show-more";
 /// The effort slider, its width, and the way its thumb travels.
@@ -131,7 +133,9 @@ fn layout(store: &Store, ui: &Ui, window: Size) -> Layout {
     let fraction = match panes.first() {
         Some(Pane::Diff) => 0.6,
         // A helper agent and a plan open at a third too.
-        Some(Pane::Terminal | Pane::Agent | Pane::Plan | Pane::Side) => 1.0 / 3.0,
+        Some(Pane::Terminal | Pane::Agent | Pane::Plan) => 1.0 / 3.0,
+        // A session beside reads at about Desktop's thread pane.
+        Some(Pane::Side) => 0.42,
         None => 0.0,
     };
     // Dragging the boundary sets the share, as in Desktop.
@@ -1521,6 +1525,7 @@ fn transcript(
     if busy && !list.is_empty() {
         items.push(task_card(&list, column, palette));
     }
+    items.extend(waiting_cards(store, session, column, palette));
     if let Some(status) = status_line(session, running.as_ref(), ui, column, palette) {
         items.push(status);
     }
@@ -1599,7 +1604,15 @@ fn entries<'a>(
                     result: result.as_ref(),
                     running: result.is_none() || session.task_running(call),
                 };
-                if stands_alone(name) {
+                // A session the person asked for is a card of its own, as Desktop's
+                // threads in the chat.
+                if name.ends_with("sessions__start_session")
+                    && input["initiation"] == "user_asked"
+                    && input.get("proposal_id").is_none()
+                {
+                    flush(&mut steps, &mut items);
+                    items.push(started_card(store, session, input, column));
+                } else if stands_alone(name) {
                     flush(&mut steps, &mut items);
                     if let Some(element) = lone_step(&step, column, palette) {
                         items.push(element);
@@ -1672,6 +1685,220 @@ fn permission_heading(tool: &str, input: &Value) -> String {
         }
         _ => format!("Allow Claude to use {tool}?"),
     }
+}
+
+/// What a session that waits on the person asks of them, in a line: its question, a plan to
+/// review, or the permission its card asks for.
+fn asks(session: &Session) -> Option<String> {
+    session.items.iter().rev().find_map(|item| match item {
+        Item::Permission {
+            tool,
+            input,
+            decided: None,
+            ..
+        } => Some(match tool.as_str() {
+            "AskUserQuestion" => input["questions"][0]["question"]
+                .as_str()
+                .unwrap_or("A question for you")
+                .to_owned(),
+            "ExitPlanMode" => "A plan for you to review".to_owned(),
+            _ => permission_heading(tool, input),
+        }),
+        _ => None,
+    })
+}
+
+/// A session named in the conversation: a blue chip with a dot
+/// that opens it beside, and over it a card with how it is doing, how many replies it gave
+/// and when the last came.
+fn session_chip(store: &Store, id: quill_model::SessionId) -> Element {
+    let Some(session) = store.session(id) else {
+        return Element::spacer().size(Some(0.0), Some(0.0));
+    };
+    let title = session_title(session);
+    let chip = Element::clickable(
+        format!("thread:{id}"),
+        Element::row(vec![
+            hgap(6.0),
+            Element::spacer()
+                .background(look::mention())
+                .radius(2.5)
+                .size(Some(5.0), Some(5.0))
+                .centered_y(),
+            text(title.clone())
+                .foreground(look::mention())
+                .font_size(CHAT)
+                .centered_y(),
+            hgap(6.0),
+        ])
+        .gap(6.0)
+        .size(None, Some(24.0))
+        .background(look::mention_fill())
+        .radius(5.0),
+    )
+    .accessibility_label(format!("Open {title}"));
+    let state = match session.status {
+        SessionStatus::Running | SessionStatus::Starting => "Working",
+        SessionStatus::Awaiting => "Waiting on you",
+        SessionStatus::Failed(_) => "Failed",
+        _ => "Idle",
+    };
+    let replies = session
+        .items
+        .iter()
+        .filter(|i| matches!(i, Item::Assistant { .. }))
+        .count();
+    let last = session.items.iter().rev().find_map(|i| match i {
+        Item::Assistant { at: Some(at), .. } => Some(*at),
+        _ => None,
+    });
+    let mut said = format!(
+        "{replies} {}",
+        if replies == 1 { "reply" } else { "replies" }
+    );
+    if let Some(at) = last {
+        said = format!("{said} \u{b7} {}", ago(at));
+    }
+    let card = Element::column(vec![
+        Element::row(vec![
+            muted(state).font_size(SMALL).centered_y(),
+            Element::spacer().flex(1.0),
+            muted(said).font_size(SMALL).centered_y(),
+        ]),
+        Element::truncated_text(title)
+            .font_family(FontFamily::Sans)
+            .font_size(BODY)
+            .foreground(look::palette().text),
+    ])
+    .gap(6.0)
+    .padding(12.0);
+    // Open as far as the host says: the tree shows it while the chip or the card is hovered.
+    limn::Popover::new(
+        chip,
+        card,
+        true,
+        format!("thread:{id}:card"),
+        look::menu_palette(),
+    )
+    .width(260.0)
+    .placement(limn::PopoverPlacement::BottomStart)
+    .render()
+    .popover_on_hover()
+    .popover_gap(6.0)
+}
+
+/// The session `session` started under `title`, as the agent names it in its tools.
+fn child_named(store: &Store, session: &Session, title: &str) -> Option<quill_model::SessionId> {
+    store
+        .sessions
+        .iter()
+        .find(|s| {
+            s.parent == Some(session.id) && !s.aside && session_title(s).eq_ignore_ascii_case(title)
+        })
+        .map(|s| s.id)
+}
+
+/// A session started at the person's asking, in the conversation that started it [C:video
+/// 2100633571543367691]: a dot, its title and what it does now; it opens beside. Until the
+/// engine has made it, it is "Starting…".
+fn started_card(store: &Store, session: &Session, input: &Value, column: f32) -> Element {
+    let title = input["title"].as_str().unwrap_or_default();
+    let child = child_named(store, session, title).and_then(|id| store.session(id));
+    let doing = match child {
+        Some(child) => activity(child),
+        None => Some("Starting\u{2026}".to_owned()),
+    };
+    let dot = match child.map(|c| &c.status) {
+        Some(SessionStatus::Awaiting) => look::awaiting(),
+        Some(SessionStatus::Running | SessionStatus::Starting) | None => look::mention(),
+        _ => look::muted(),
+    };
+    let mut row = vec![
+        Element::spacer()
+            .background(dot)
+            .radius(2.5)
+            .size(Some(5.0), Some(5.0))
+            .centered_y(),
+        text(title.to_owned()).font_size(CHAT).centered_y(),
+    ];
+    if let Some(doing) = doing {
+        row.push(
+            Element::truncated_text(doing)
+                .font_family(FontFamily::Sans)
+                .font_size(SMALL)
+                .foreground(look::muted())
+                .flex(1.0)
+                .centered_y(),
+        );
+    }
+    let width = column.min(480.0);
+    let card = Element::row(row)
+        .gap(10.0)
+        .padding(12.0)
+        .size(Some(width), Some(40.0))
+        .border(look::card_border(), 1.0)
+        .radius(10.0);
+    match child {
+        Some(child) => ComponentPalette {
+            hover: look::row_hover(),
+            ..look::palette()
+        }
+        .interactive_surface(Element::clickable(format!("thread:{}", child.id), card))
+        .radius(10.0)
+        .size(Some(width), Some(40.0)),
+        None => card,
+    }
+}
+
+/// Under a session, the sessions it started that wait on the person [C:video
+/// 2100633571543367691]: each with what it asks and "View session", which opens it beside.
+fn waiting_cards(
+    store: &Store,
+    session: &Session,
+    column: f32,
+    palette: ComponentPalette,
+) -> Vec<Element> {
+    let width = column.min(480.0);
+    store
+        .sessions
+        .iter()
+        .filter(|s| {
+            s.parent == Some(session.id)
+                && !s.aside
+                && !s.archived
+                && s.status == SessionStatus::Awaiting
+        })
+        .map(|child| {
+            let mut lines = vec![text(session_title(child))];
+            if let Some(asks) = asks(child) {
+                lines.push(
+                    Element::truncated_text(asks)
+                        .font_family(FontFamily::Sans)
+                        .font_size(SMALL)
+                        .foreground(look::muted()),
+                );
+            }
+            lines.push(Element::row(vec![keyed_button(
+                &format!("thread:{}", child.id),
+                "View session",
+                "",
+                false,
+                true,
+                palette,
+            )]));
+            Element::row(vec![
+                Element::icon(icons::of(icons::WARNING))
+                    .foreground(look::awaiting())
+                    .size(Some(16.0), Some(16.0)),
+                Element::column(lines).gap(4.0).flex(1.0),
+            ])
+            .gap(10.0)
+            .padding(14.0)
+            .border(look::card_border(), 1.0)
+            .radius(12.0)
+            .size(Some(width), None)
+        })
+        .collect()
 }
 
 /// How long a copy button shows its check, as Desktop's (3.6556.2 `VA`).
@@ -1965,7 +2192,9 @@ fn item(
             rewound,
         } => changes_card(request, files, *rewound, column, palette),
         Item::Proposals { tasks } => proposals_card(store, tasks, palette),
-        Item::Reports { request, reports } => reports_block(request, reports, session, ui, column),
+        Item::Reports { request, reports } => {
+            reports_block(store, request, reports, session, ui, column)
+        }
     }
 }
 
@@ -4910,7 +5139,7 @@ fn proposals_card(
                     ..palette
                 }
                 .interactive_surface(Element::clickable(
-                    format!("session:{session}"),
+                    format!("thread:{session}"),
                     Element::row(row)
                         .gap(12.0)
                         .padding(14.0)
@@ -4938,6 +5167,7 @@ fn proposals_card(
 /// "Received message from" and the session's name, which opens it, and ▸ to read what it
 /// said. The newest shimmers while the session works on it.
 fn reports_block(
+    store: &Store,
     request: &str,
     reports: &[quill_model::Report],
     session: &Session,
@@ -4977,16 +5207,7 @@ fn reports_block(
             };
             let line = Element::row(vec![
                 lead.centered_y(),
-                // The session's name in the text's ink, underlined, opens it.
-                Element::formatted_text(vec![limn::TextSpan::new(
-                    report.title.clone(),
-                    look::palette().text,
-                    CHAT,
-                    FontFamily::Sans,
-                )
-                .underline()
-                .action(format!("session:{}", report.from))])
-                .centered_y(),
+                session_chip(store, report.from).centered_y(),
                 Element::clickable(key.clone(), caret(open)).centered_y(),
             ])
             .gap(8.0);
@@ -5007,9 +5228,11 @@ fn reports_block(
     Element::column(rows).gap(10.0)
 }
 
-/// A side chat (`/btw`) beside the session [videos of 2026-10-25]: its question as the
-/// title, with expand and close; its own transcript and running line; and "Reply in this
-/// session…" under it. The session it was asked from keeps working.
+/// A session beside the one in view: a side chat (`/btw`) [videos of 2026-10-25], or a session
+/// it started, as Desktop opens a thread. Its title, after its
+/// parent's for a started one, with "open on its own", expand and close; its own transcript
+/// and running line; and a field under it: "Reply in this session…" for a side chat, "Steer
+/// this session…" for a started one. The session in view keeps working.
 fn side_pane(
     store: &Store,
     ui: &Ui,
@@ -5019,13 +5242,37 @@ fn side_pane(
 ) -> Element {
     let side = ui.side_chat.and_then(|id| store.session(id));
     let title = side.map_or_else(|| "Side chat".to_owned(), session_title);
-    let lead = Element::truncated_text(title)
-        .font_family(FontFamily::Sans)
-        .font_size(BODY)
-        .foreground(look::palette().text)
-        .size(Some(width - 120.0), None)
-        .centered_y();
-    let header = pane_header(lead, pane_tools(Pane::Side, ui, palette), width);
+    let parent = side
+        .filter(|s| !s.aside)
+        .and_then(|s| s.parent)
+        .and_then(|p| store.session(p));
+    let room = width - 160.0;
+    let name = |t: String, ink: limn::Color, room: f32| {
+        Element::truncated_text(t)
+            .font_family(FontFamily::Sans)
+            .font_size(BODY)
+            .foreground(ink)
+            .max_width(room)
+            .centered_y()
+    };
+    let lead = match parent {
+        Some(parent) => Element::row(vec![
+            name(session_title(parent), look::muted(), room * 0.4),
+            muted("\u{203a}").centered_y(),
+            name(title, look::palette().text, room * 0.6),
+        ])
+        .gap(6.0),
+        None => name(title, look::palette().text, room),
+    };
+    let mut tools = vec![icon_tool(
+        SIDE_OPEN,
+        icons::of(icons::ARROW_OUT),
+        "Open on its own",
+        28.0,
+        palette,
+    )];
+    tools.extend(pane_tools(Pane::Side, ui, palette));
+    let header = pane_header(lead, tools, width);
     let Some(side) = side else {
         return Element::column(vec![header]).size(Some(width), Some(height));
     };
@@ -5043,7 +5290,11 @@ fn side_pane(
     let reply = limn::TextField::new(
         SIDE_FIELD,
         ui.side_reply.as_str(),
-        "Reply in this session…",
+        if side.aside {
+            "Reply in this session…"
+        } else {
+            "Steer this session…"
+        },
         look::composer_palette(),
     )
     .render()

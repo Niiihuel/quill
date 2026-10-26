@@ -1418,11 +1418,66 @@ fn proposals_share_a_card_that_starts_them_and_reports_read_back() {
     let window = limn::Size::new(1408.0, 844.0);
     let mut tree = UiTree::new(view(&store, &ui, window));
     let frame = tree.layout(window);
-    // The started task follows its session; its report opens it and unfolds.
-    assert!(frame.regions.iter().any(|r| r.id == "session:2"));
+    // The started task follows its session; its report opens it beside and unfolds.
+    assert!(frame.regions.iter().any(|r| r.id == "thread:2"));
     assert!(frame.regions.iter().any(|r| r.id == "report:r2:0"));
     click(&store, &mut ui, "report:r2:0");
     assert!(ui.expanded.contains(&"report:r2:0".to_string()));
+}
+
+#[test]
+fn a_started_session_opens_beside_and_says_when_it_waits() {
+    let (mut store, mut ui) = store_with_session();
+    store.apply(Event::SessionCreated {
+        session: 2,
+        agent: "claude".into(),
+        cwd: "/work".into(),
+    });
+    store.apply(Event::Linked {
+        session: 2,
+        parent: 1,
+        side: false,
+    });
+    store.apply(Event::Renamed {
+        session: 2,
+        title: "Draft release notes".into(),
+    });
+    store.apply(Event::Agent {
+        session: 2,
+        request: Some("r9".into()),
+        event: AgentEvent::PermissionRequest {
+            id: "p1".into(),
+            call: None,
+            tool: "Bash".into(),
+            input: serde_json::json!({"command": "ls", "description": "List files"}),
+            title: None,
+            interactive: false,
+            suggestions: vec![],
+        },
+    });
+    store.apply(Event::Status {
+        session: 2,
+        status: SessionStatus::Awaiting,
+    });
+    // The session in view says the one it started waits, and opens it beside.
+    let window = limn::Size::new(1408.0, 844.0);
+    let frame = UiTree::new(view(&store, &ui, window)).layout(window);
+    assert!(frame.regions.iter().any(|r| r.id == "thread:2"));
+    click(&store, &mut ui, "thread:2");
+    assert_eq!((ui.selected, ui.side_chat), (Some(1), Some(2)));
+    assert!(ui.pane_open(Pane::Side));
+    // Its card is answered from the pane, for it.
+    assert!(matches!(
+        click(&store, &mut ui, "perm:p1:once").as_slice(),
+        [Intent::Decide { session: 2, .. }]
+    ));
+    // Closing it leaves it be: only a side chat is put away.
+    assert!(click(&store, &mut ui, "pane:side:close").is_empty());
+    click(&store, &mut ui, "thread:2");
+    // Shown on its own, it leaves the pane.
+    click(&store, &mut ui, view::SIDE_OPEN);
+    assert_eq!(ui.selected, Some(2));
+    assert!(!ui.pane_open(Pane::Side));
 }
 
 #[test]
@@ -1451,6 +1506,11 @@ fn btw_asks_beside_the_session_and_closing_puts_it_away() {
     // It opens in its pane; the session in view stays.
     assert!(ui.applied(&created).is_empty());
     store.apply(created);
+    store.apply(Event::Linked {
+        session: 2,
+        parent: 1,
+        side: true,
+    });
     assert_eq!((ui.selected, ui.side_chat), (Some(1), Some(2)));
     assert!(ui.pane_open(Pane::Side));
     store.apply(Event::Status {

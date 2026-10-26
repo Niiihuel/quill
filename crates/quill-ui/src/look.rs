@@ -50,6 +50,10 @@ tones! {
     /// (dark: inferred).
     awaiting_edge = hex(0xfee9bb), hex(0x5c4520);
     running = hex(0x3b5bdb), hex(0x3b5bdb);
+    /// A session named in the conversation: Desktop's blue chip
+    /// (light: inferred).
+    mention = hex(0x1f63b8), hex(0x8ab4f0);
+    mention_fill = hex(0xe8f0fb), hex(0x1d2d42);
     added = hex(0x1e9e3c), hex(0x32d74b);
     /// A failed step's label (dark: inferred).
     failed = hex(0xa42528), hex(0xff6b6b);

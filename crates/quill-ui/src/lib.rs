@@ -129,6 +129,8 @@ pub struct Session {
     pub touched: u64,
     /// The session that started it, which it reports to and is nested under.
     pub parent: Option<SessionId>,
+    /// A side chat (`/btw`): an aside of its parent's, not work started for it.
+    pub aside: bool,
 }
 
 /// Work the agent runs beside its turns, as Desktop counts "1 running task".
@@ -212,6 +214,7 @@ impl Store {
                 unread: false,
                 touched: 0,
                 parent: None,
+                aside: false,
             }),
             Event::Status { session, status } => {
                 if let Some(s) = self.session_mut(session) {
@@ -397,10 +400,13 @@ impl Store {
                 }
             }
             Event::Linked {
-                session, parent, ..
+                session,
+                parent,
+                side,
             } => {
                 if let Some(s) = self.session_mut(session) {
                     s.parent = Some(parent);
+                    s.aside = side;
                 }
             }
             Event::Forked { session, from, at } => {
@@ -871,6 +877,21 @@ fn session_clicked(store: &Store, ui: &mut Ui, id: &str) -> Option<Vec<Intent>> 
         ui.row_menu = None;
         let unread = !store.session(s).is_some_and(|s| s.unread);
         return Some(vec![Intent::MarkUnread { session: s, unread }]);
+    } else if let Some(s) = session("thread:") {
+        // A session another started opens beside it, as Desktop's threads do [C:video
+        // 2100633571543367691]; inferred: the same pane as a side chat.
+        ui.side_chat = Some(s);
+        ui.open_pane(Pane::Side);
+        if store.session(s).is_some_and(|s| s.unread) {
+            return Some(vec![Intent::MarkUnread {
+                session: s,
+                unread: false,
+            }]);
+        }
+    } else if id == view::SIDE_OPEN {
+        return ui
+            .side_chat
+            .map(|s| clicked(store, ui, &format!("session:{s}")));
     } else if let Some(s) = session("fork:") {
         ui.row_menu = None;
         ui.open_menu = None;
@@ -1647,10 +1668,11 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
     // settled one (3.6556.2 `closeBtwChild`).
     if id == "pane:side:close" {
         let settled = ui.side_chat.and_then(|s| store.session(s)).filter(|s| {
-            !matches!(
-                s.status,
-                SessionStatus::Running | SessionStatus::Starting | SessionStatus::Awaiting
-            )
+            s.aside
+                && !matches!(
+                    s.status,
+                    SessionStatus::Running | SessionStatus::Starting | SessionStatus::Awaiting
+                )
         });
         ui.close_pane(Pane::Side);
         return settled
@@ -1800,6 +1822,11 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
             ui.title_edit = None;
         }
         ui.selected = Some(session);
+        // A session beside another goes with it: shown on its own, or from elsewhere, it closes.
+        let beside = ui.side_chat.and_then(|s| store.session(s));
+        if beside.is_none_or(|s| s.id == session || s.parent != Some(session)) {
+            ui.close_pane(Pane::Side);
+        }
         let mut intents = vec![Intent::WorkingTree { session }];
         if store.session(session).is_some_and(|s| s.unread) {
             intents.push(Intent::MarkUnread {
@@ -1822,7 +1849,7 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
     // Accepting a plan allows it and puts the session in the mode chosen.
     if let Some((permission, mode)) = id.strip_prefix("planok:").and_then(|r| r.rsplit_once(':')) {
         ui.perm_menu = None;
-        let Some(session) = ui.selected else {
+        let Some(session) = asking(store, ui, permission).map(|s| s.id) else {
             return vec![];
         };
         ui.mode = mode.to_owned();
@@ -1873,7 +1900,7 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         let Some((permission, choice)) = rest.rsplit_once(':') else {
             return vec![];
         };
-        let Some(session) = ui.selected.and_then(|s| store.session(s)) else {
+        let Some(session) = asking(store, ui, permission) else {
             return vec![];
         };
         let Some(Item::Permission { suggestions, .. }) = session
@@ -1905,6 +1932,20 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         }];
     }
     vec![]
+}
+
+/// The session in view, or the one beside it, that asks `permission`: its card is answered
+/// in either.
+fn asking<'a>(store: &'a Store, ui: &Ui, permission: &str) -> Option<&'a Session> {
+    [ui.selected, ui.side_chat]
+        .into_iter()
+        .flatten()
+        .filter_map(|s| store.session(s))
+        .find(|s| {
+            s.items
+                .iter()
+                .any(|i| matches!(i, Item::Permission { id, .. } if id == permission))
+        })
 }
 
 /// Marks a permission as decided once the person chose, so its card closes at once.
@@ -1970,7 +2011,10 @@ mod tests;
 /// `prev` and `next` turn the page, `skip` answers "[No preference]" and moves on
 ///, and `submit` (or `next` on the last page) sends every answer.
 fn answer(store: &Store, ui: &mut Ui, rest: &str) -> Vec<Intent> {
-    let Some(session) = ui.selected.and_then(|s| store.session(s)) else {
+    let Some(session) = rest
+        .split_once(':')
+        .and_then(|(permission, _)| asking(store, ui, permission))
+    else {
         return vec![];
     };
     let find = |permission: &str| {
