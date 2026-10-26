@@ -226,7 +226,7 @@ const HANDLE: f32 = 2.0;
 /// The sidebar's width with its border as it is drawn now: nothing while it is hidden, less
 /// than all of it while it slides.
 pub fn sidebar_width(ui: &Ui) -> f32 {
-    ui.sidebar_shown.value(Instant::now()).round()
+    ui.sidebar.docked_width()
 }
 
 /// The right panel's width for `wanted`: no narrower than its cards are drawn for, and
@@ -438,49 +438,23 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
         Element::row(row).size(Some(rest), Some(below)),
     ])
     .size(Some(rest), Some(window.height));
-    let mut root = vec![];
-    let shown = sidebar_width(ui);
-    if shown > 0.0 {
-        // Full width, moved left by what is still hidden, so its right edge leads.
-        root.push(
-            Element::row(vec![
-                sidebar(store, ui, window.height, palette),
-                vline(window.height),
-            ])
-            .translate(limn::Point::new(shown - look::SIDEBAR_WIDTH, 0.0))
-            .size(Some(shown), Some(window.height))
-            .clip_children(),
-        );
-    }
+    let with_line = || {
+        Element::row(vec![
+            sidebar(store, ui, window.height, palette),
+            vline(window.height),
+        ])
+    };
+    let mut root: Vec<Element> = ui
+        .sidebar
+        .docked(with_line(), window.height)
+        .into_iter()
+        .collect();
     root.push(content);
     let root = Element::row(root)
         .background(look::theme().background)
         .size(Some(window.width), Some(window.height));
-    // The hidden sidebar peeking over the page, the page staying where it is [3.6556.2
-    // `shared-16`]; its shadow is inferred.
-    let peek = ui.peek_shown.value(Instant::now()).round();
-    let root = if !ui.sidebar_open && peek > 0.0 {
-        let sidebar = Element::row(vec![
-            sidebar(store, ui, window.height, palette),
-            vline(window.height),
-        ])
-        .translate(limn::Point::new(peek - look::SIDEBAR_WIDTH, 0.0))
-        .size(Some(peek), Some(window.height))
-        .clip_children()
-        .shadow(
-            limn::Color::rgba(0, 0, 0, 60),
-            limn::Point::new(0.0, 0.0),
-            24.0,
-            0.0,
-        );
-        Element::stack(vec![
-            root,
-            Element::row(vec![sidebar, Element::spacer().flex(1.0)]),
-        ])
-        .size(Some(window.width), Some(window.height))
-    } else {
-        root
-    };
+    // The hidden sidebar peeking over the page [3.6556.2 `shared-16`].
+    let root = ui.sidebar.peeking(root, with_line, window);
     let root = search_dialog(store, ui, root, palette);
     let root = settings_dialog(store, ui, root, window, palette);
     // Desktop's own wording for both closes (Ion `cccc2cf0a`,) and for a delete
@@ -954,12 +928,12 @@ fn sidebar_toggle(ui: &Ui) -> Element {
     toggle(
         SIDEBAR_TOGGLE,
         icons::of(icons::SIDEBAR),
-        if ui.sidebar_open {
+        if ui.sidebar.open {
             "Hide sidebar"
         } else {
             "Show sidebar"
         },
-        !ui.sidebar_open,
+        !ui.sidebar.open,
         Some("Ctrl+B"),
     )
 }
@@ -1013,7 +987,7 @@ fn top_bar(session: Option<&Session>, ui: &Ui, main: f32, beside: f32) -> Elemen
     if ui.expanded_pane.is_some() {
         return Element::spacer().size(None, Some(look::TOP_BAR));
     }
-    let mut row = if ui.sidebar_open {
+    let mut row = if ui.sidebar.open {
         vec![hgap(16.0)]
     } else {
         vec![hgap(9.0), sidebar_toggle(ui), hgap(12.0)]
@@ -1044,7 +1018,7 @@ fn top_bar(session: Option<&Session>, ui: &Ui, main: f32, beside: f32) -> Elemen
             entries.extend(archive_and_delete(s));
             // Centered, the title stays clear of the tools at either end: the sidebar's
             // toggle, and the toggles that sit over the conversation when nothing is beside it.
-            let left: f32 = if ui.sidebar_open { 16.0 } else { 47.0 };
+            let left: f32 = if ui.sidebar.open { 16.0 } else { 47.0 };
             let right = (TOP_TOOLS - beside).max(0.0);
             let room = (main - 2.0 * left.max(right) - 26.0).max(48.0);
             heading.push(
