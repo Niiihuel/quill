@@ -2346,23 +2346,48 @@ fn top_bar(ide: &Ide) -> Element {
         if let Some(color) = mark {
             items.push(limn::StatusDot::new(color).size(6.0).render().centered_y());
         }
-        items.push(icon_tool(
-            &format!("close:{i}"),
-            icons::of(icons::CLOSE),
-            "Close file",
-            20.0,
-            look::palette(),
-        ));
-        let pill = Element::row(items)
-            .gap(6.0)
-            .size(None, Some(28.0))
-            .radius(8.0);
-        let pill = if ide.active == Some(i) {
-            pill.background(look::active())
+        // Two hovers, as quill's rows: the tab's, and over it the close's, a step darker than
+        // whatever the tab is filled with.
+        let active = ide.active == Some(i);
+        let (tab_hover, close_hover) = if active {
+            (look::active_hover(), look::chip_open())
         } else {
-            pill
+            (look::row_hover(), look::tool_hover())
         };
-        row.push(Element::clickable(format!("buffer:{i}"), pill).centered_y());
+        items.push(
+            tool_surface(
+                &format!("close:{i}"),
+                icons::of(icons::CLOSE),
+                "Close file",
+                20.0,
+                None,
+                close_hover,
+                // Ctrl+W closes the file in front only.
+                active.then_some("Ctrl+W"),
+            )
+            .centered_y(),
+        );
+        items.push(hgap(0.0));
+        let pill = Element::row(items).gap(6.0).size(None, Some(28.0));
+        let pill = ComponentPalette {
+            hover: tab_hover,
+            ..look::palette()
+        }
+        .interactive_surface(Element::clickable(format!("buffer:{i}"), pill))
+        .radius(8.0);
+        // The tab's own hover is a layer the whole tab reveals, so it stays on while the
+        // pointer is over the close, a control of its own.
+        let lit = Element::spacer()
+            .background(tab_hover)
+            .radius(8.0)
+            .reveal_on_hover(format!("buffer:{i}:hover"));
+        let tab = Element::stack(vec![lit, pill]).radius(8.0).hover_region();
+        let tab = if active {
+            tab.background(look::active())
+        } else {
+            tab
+        };
+        row.push(tab.centered_y());
     }
     let pills = Element::row(row).gap(4.0).flex(1.0).clip_children();
     let settings = tool_surface(
