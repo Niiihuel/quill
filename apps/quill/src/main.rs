@@ -1,6 +1,8 @@
 //! quill's window: limn paints quill-ui's view; quill-engine runs the agents.
 //! `quill [folder]` opens new sessions in `folder` (the current directory without one).
 
+mod page;
+
 use eframe::egui;
 use limn::{Element, Size, UiTree};
 use quill_engine::Engine;
@@ -32,6 +34,14 @@ struct App {
     applied: Option<quill_model::Motion>,
     /// `QUILL_THEME` pins the theme over Settings, for demos and captures.
     pinned_theme: bool,
+    /// Where the browser leaves its pages' frames, presented each frame.
+    frames: quill_engine::Frames,
+    /// The page's share of the window's input.
+    page: page::Page,
+    /// The tab on screen and its size, as last told to the engine.
+    browser_shown: Option<(SessionId, quill_model::BrowserView)>,
+    /// What the address bar was last set to.
+    address: Option<String>,
 }
 
 impl App {
@@ -119,6 +129,211 @@ impl App {
             terminal.write(&bytes);
         }
         true
+    }
+
+    /// The page's rectangle in the window and whether it is on top under each position:
+    /// what of this frame's input is the page's.
+    fn route_page(
+        &mut self,
+        ctx: &egui::Context,
+        origin: egui::Pos2,
+    ) -> (Vec<page::Ask>, Vec<usize>) {
+        let view = quill_ui::view::BROWSER_VIEW;
+        let frame = self.tree.frame();
+        let rect = |r: limn::Rect| {
+            egui::Rect::from_min_size(origin + egui::vec2(r.x, r.y), egui::vec2(r.width, r.height))
+        };
+        let page = frame
+            .regions
+            .iter()
+            .find(|r| r.id == view)
+            .map(|r| rect(r.rect));
+        let over = |pos: egui::Pos2| {
+            let at = limn::Point::new(pos.x - origin.x, pos.y - origin.y);
+            frame
+                .press_region(at)
+                .filter(|r| r.id == view)
+                .map(|r| rect(r.rect))
+        };
+        let focused = self.tree.focused_id() == Some(view);
+        let events = ctx.input(|i| i.events.clone());
+        self.page.route(&events, over, page, focused)
+    }
+
+    /// Carry out what the page asked; the browser's buttons are clicked as the person would.
+    fn page_asked(&mut self, ask: page::Ask, window: Size) -> Vec<limn::UiAction> {
+        use page::Ask;
+        use quill_ui::view::*;
+        let clicked = |id: String| vec![limn::UiAction::Clicked { id }];
+        let Some(session) = self.ui.selected else {
+            return vec![];
+        };
+        let browser = self
+            .store
+            .session(session)
+            .map(|s| s.browser.clone())
+            .unwrap_or_default();
+        let Some(tab) = browser.active else {
+            return match ask {
+                Ask::ToggleBrowser => clicked(BROWSER_TOGGLE.into()),
+                _ => vec![],
+            };
+        };
+        let send = |op| Intent::Browser { session, op };
+        match ask {
+            Ask::Input(input) => {
+                self.dispatch(vec![send(quill_model::BrowserOp::Input { tab, input })]);
+                vec![]
+            }
+            Ask::Copy { cut } => {
+                let mut ops = vec![send(quill_model::BrowserOp::Copy { tab })];
+                if cut {
+                    ops.push(send(quill_model::BrowserOp::Input {
+                        tab,
+                        input: quill_model::BrowserInput::Key {
+                            key: "Delete".into(),
+                            code: "Delete".into(),
+                            key_code: 46,
+                            text: String::new(),
+                            keys: Default::default(),
+                        },
+                    }));
+                }
+                self.dispatch(ops);
+                vec![]
+            }
+            Ask::Focus => {
+                self.tree.focus_from_pointer(BROWSER_VIEW);
+                vec![]
+            }
+            Ask::FocusAddress => {
+                self.tree.layout(window);
+                self.tree.focus(BROWSER_URL);
+                self.tree.handle_event(limn::UiEvent::Key {
+                    key: limn::Key::A,
+                    ctrl: true,
+                    shift: false,
+                });
+                vec![]
+            }
+            Ask::NewTab => clicked(BROWSER_NEW_TAB.into()),
+            Ask::CloseTab => clicked(format!("browser:close:{tab}")),
+            Ask::Reload => clicked(BROWSER_RELOAD.into()),
+            Ask::ToggleBrowser => clicked(BROWSER_TOGGLE.into()),
+            Ask::NextTab(forward) => {
+                let at = browser.tabs.iter().position(|t| t.id == tab).unwrap_or(0);
+                let count = browser.tabs.len().max(1);
+                let next = if forward {
+                    (at + 1) % count
+                } else {
+                    (at + count - 1) % count
+                };
+                browser
+                    .tabs
+                    .get(next)
+                    .map(|t| clicked(format!("browser:tab:{}", t.id)))
+                    .unwrap_or_default()
+            }
+        }
+    }
+
+    /// The address bar shows the tab's address unless the person is typing in it.
+    fn sync_address(&mut self) {
+        if self.tree.focused_id() == Some(quill_ui::view::BROWSER_URL) {
+            return;
+        }
+        let tab = self
+            .ui
+            .selected
+            .and_then(|s| self.store.session(s))
+            .and_then(|s| s.browser.tab().map(|t| (t.id, t.url.clone())));
+        let url = match &tab {
+            Some((_, url)) if url != "about:blank" => url.clone(),
+            _ => String::new(),
+        };
+        if self.address.as_ref() != Some(&url) {
+            self.tree
+                .set_input_value(quill_ui::view::BROWSER_URL, url.clone());
+            self.address = Some(url);
+        }
+    }
+
+    /// After painting: the engine hears which tab is on screen and at what size, the pointer
+    /// takes the page's shape over it, and an input method follows the page's focus.
+    fn page_frame(&mut self, ctx: &egui::Context, frame: &limn::Frame, origin: egui::Pos2) {
+        let view = quill_ui::view::BROWSER_VIEW;
+        let region = frame.regions.iter().find(|r| r.id == view).map(|r| r.rect);
+        let shown = (|| {
+            let session = self.ui.selected?;
+            let tab = self.store.session(session)?.browser.active?;
+            let rect = region.filter(|_| self.ui.pane_open(Pane::Browser))?;
+            Some((
+                session,
+                quill_model::BrowserView {
+                    tab,
+                    width: rect.width.round() as u32,
+                    height: rect.height.round() as u32,
+                },
+            ))
+        })()
+        .filter(|(_, view)| view.width > 0 && view.height > 0);
+        if shown != self.browser_shown {
+            let intent = match (shown, self.browser_shown) {
+                (Some((session, view)), _) => Intent::Browser {
+                    session,
+                    op: quill_model::BrowserOp::Show { view: Some(view) },
+                },
+                (None, Some((session, _))) => Intent::Browser {
+                    session,
+                    op: quill_model::BrowserOp::Show { view: None },
+                },
+                (None, None) => unreachable!("they differ"),
+            };
+            self.engine.send(intent);
+            self.browser_shown = shown;
+        }
+        let Some(rect) = region else {
+            return;
+        };
+        let rect = egui::Rect::from_min_size(
+            origin + egui::vec2(rect.x, rect.y),
+            egui::vec2(rect.width, rect.height),
+        );
+        let hovered = ctx
+            .input(|i| i.pointer.hover_pos())
+            .is_some_and(|p| rect.contains(p));
+        if hovered {
+            let cursor = self
+                .ui
+                .selected
+                .and_then(|s| self.store.session(s))
+                .map(|s| s.browser.cursor.as_str())
+                .unwrap_or_default();
+            ctx.set_cursor_icon(match cursor {
+                "pointer" => egui::CursorIcon::PointingHand,
+                "text" => egui::CursorIcon::Text,
+                "move" => egui::CursorIcon::Move,
+                "grab" => egui::CursorIcon::Grab,
+                "grabbing" => egui::CursorIcon::Grabbing,
+                "not-allowed" => egui::CursorIcon::NotAllowed,
+                "crosshair" => egui::CursorIcon::Crosshair,
+                "col-resize" | "ew-resize" => egui::CursorIcon::ResizeHorizontal,
+                "row-resize" | "ns-resize" => egui::CursorIcon::ResizeVertical,
+                "wait" | "progress" => egui::CursorIcon::Wait,
+                _ => egui::CursorIcon::Default,
+            });
+        }
+        // Text typed through an input method lands in the page.
+        if self.tree.focused_id() == Some(view) {
+            ctx.output_mut(|output| {
+                output.ime = Some(egui::output::IMEOutput {
+                    purpose: egui::IMEPurpose::Normal,
+                    rect,
+                    cursor_rect: egui::Rect::from_min_size(rect.min, egui::vec2(1.0, 20.0)),
+                    should_interrupt_composition: false,
+                });
+            });
+        }
     }
 
     /// The session on screen, its number of items and the length of a reply being written.
@@ -235,6 +450,14 @@ impl eframe::App for App {
                     egui::UserAttentionType::Informational,
                 ));
             }
+            // What the page had selected goes on the clipboard.
+            if let Event::Browser {
+                update: quill_model::BrowserUpdate::Copied(text),
+                ..
+            } = &event
+            {
+                ctx.copy_text(text.clone());
+            }
             let intents = self.ui.applied(&event);
             self.store.apply(event);
             self.dispatch(intents);
@@ -295,7 +518,27 @@ impl eframe::App for App {
                 id: quill_ui::view::TERMINAL_TOGGLE.into(),
             });
         }
-        for event in limn_egui::events(&ctx, area.min) {
+        // The browser's frames, presented where the view asks for them.
+        self.frames.set_scale(ctx.pixels_per_point());
+        for (id, frame) in self.frames.take() {
+            let size = [frame.width, frame.height];
+            if let Some(surface) = limn_egui::SurfaceFrame::from_rgb(size, &frame.rgb, frame.scale)
+            {
+                limn_egui::present_surface(&ctx, &id, surface);
+            }
+        }
+        let (asks, taken) = self.route_page(&ctx, area.min);
+        for ask in asks {
+            actions.extend(self.page_asked(ask, window));
+        }
+        for item in limn_egui::events_indexed(&ctx, area.min) {
+            if item
+                .source_index
+                .is_some_and(|index| taken.contains(&index))
+            {
+                continue;
+            }
+            let event = item.event;
             // Permission keys work wherever the focus is, the composer included.
             // Ctrl+U adds files; a digit picks that row of an open composer menu, as in Desktop.
             if matches!(
@@ -356,6 +599,8 @@ impl eframe::App for App {
                     limn::Key::I => Some(quill_ui::view::MODEL_MENU),
                     limn::Key::M => Some(quill_ui::view::MODE_MENU),
                     limn::Key::D => Some(quill_ui::view::DIFF_TOGGLE),
+                    // The browser, as Desktop's Ctrl+Shift+B.
+                    limn::Key::B => Some(quill_ui::view::BROWSER_TOGGLE),
                     _ => None,
                 };
                 if let Some(id) = menu {
@@ -446,6 +691,12 @@ impl eframe::App for App {
                     _ => {}
                 }
             }
+            // An address opened, the page takes the keys, as a browser's does.
+            if matches!(&action, limn::UiAction::Submitted { id, .. } if id == quill_ui::view::BROWSER_URL)
+            {
+                self.address = None;
+                self.tree.focus_from_pointer(quill_ui::view::BROWSER_VIEW);
+            }
             // The editor keeps its own text; a sent message empties it.
             if let limn::UiAction::Submitted { id, value } = &action {
                 let field = [quill_ui::view::COMPOSER, quill_ui::view::SIDE_FIELD]
@@ -486,6 +737,7 @@ impl eframe::App for App {
             self.tree.scroll_to_end(&format!("side:{id}:scroll"));
         }
         self.beside = mark;
+        self.sync_address();
         self.ui.tick(&self.store);
         self.tree
             .set_root(quill_ui::view(&self.store, &self.ui, window));
@@ -511,6 +763,7 @@ impl eframe::App for App {
         }
         limn_egui::paint_at(ui, &frame, area.min);
         limn_egui::set_cursor(&ctx, self.tree.cursor());
+        self.page_frame(&ctx, &frame, area.min);
         if let Some(after) = self.tree.animation_repaint_after() {
             ctx.request_repaint_after(after);
         }
@@ -630,6 +883,10 @@ fn main() -> eframe::Result {
             };
             // `QUILL_PROGRAMS=claude=/path/fake-agent` runs another program for an agent, as
             // the engine's tests do, with sessions kept in memory only: a replay to look at.
+            // The browser's frames wake the window too.
+            let frames = quill_engine::Frames::default();
+            let ctx = creation.egui_ctx.clone();
+            frames.on_frame(move || ctx.request_repaint());
             let engine = match std::env::var("QUILL_PROGRAMS") {
                 Ok(programs) => Engine::start_with(
                     sink,
@@ -639,10 +896,17 @@ fn main() -> eframe::Result {
                             .filter_map(|p| p.split_once('='))
                             .map(|(agent, program)| (agent.to_owned(), program.to_owned()))
                             .collect(),
+                        frames: frames.clone(),
                         ..Default::default()
                     },
                 ),
-                Err(_) => Engine::start(sink),
+                Err(_) => Engine::start_with(
+                    sink,
+                    quill_engine::Config {
+                        frames: frames.clone(),
+                        ..quill_engine::Config::default_database()
+                    },
+                ),
             };
             Ok(Box::new(App {
                 tree: UiTree::new(Element::spacer()),
@@ -663,6 +927,10 @@ fn main() -> eframe::Result {
                 beside: None,
                 applied: None,
                 pinned_theme: std::env::var_os("QUILL_THEME").is_some(),
+                frames,
+                page: page::Page::default(),
+                browser_shown: None,
+                address: None,
                 fonts_attached: false,
             }))
         }),

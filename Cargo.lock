@@ -2929,6 +2929,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "quill-browser"
+version = "0.0.1"
+dependencies = [
+ "base64",
+ "libc",
+ "quill-model",
+ "serde_json",
+ "tokio",
+ "zune-core",
+ "zune-jpeg",
+]
+
+[[package]]
 name = "quill-capture"
 version = "0.0.1"
 dependencies = [
@@ -2942,6 +2955,7 @@ version = "0.0.1"
 dependencies = [
  "quill-agent",
  "quill-agent-claude",
+ "quill-browser",
  "quill-git",
  "quill-model",
  "quill-store",

@@ -24,6 +24,7 @@ fn engine() -> (Engine, Receiver<Event>) {
         database: None,
         snapshots: None,
         settings: None,
+        ..Default::default()
     };
     let engine = Engine::start_with(move |event| drop(tx.send(event)), config);
     (engine, rx)
@@ -194,6 +195,7 @@ fn a_kept_session_comes_back_and_continues() {
             database: Some(database.clone()),
             snapshots: None,
             settings: None,
+            ..Default::default()
         };
         (
             Engine::start_with(move |event| drop(tx.send(event)), config),
@@ -287,6 +289,7 @@ fn a_request_is_attributed_and_its_undo_puts_files_back() {
         database: None,
         snapshots: Some(snapshots.clone()),
         settings: None,
+        ..Default::default()
     };
     let engine = Engine::start_with(move |event| drop(tx.send(event)), config);
     let cwd = workdir("rewind");
@@ -339,6 +342,7 @@ fn a_name_and_a_pin_are_kept_and_a_deleted_session_is_gone() {
             database: Some(database.clone()),
             snapshots: None,
             settings: None,
+            ..Default::default()
         };
         (
             Engine::start_with(move |event| drop(tx.send(event)), config),

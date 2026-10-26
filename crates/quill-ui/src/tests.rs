@@ -1891,3 +1891,123 @@ fn the_hidden_sidebar_peeks_from_its_button_and_goes_once_the_pointer_left() {
     ui.tick(&store);
     assert!(ui.peek);
 }
+
+#[test]
+fn the_browser_opens_from_its_toggle_or_when_a_tab_appears_and_navigates_from_its_address() {
+    use quill_model::{BrowserOp, BrowserTab, BrowserUpdate};
+    let (mut store, mut ui) = store_with_session();
+    let intents = update(
+        &store,
+        &mut ui,
+        &UiAction::Clicked {
+            id: view::BROWSER_TOGGLE.into(),
+        },
+    );
+    assert_eq!(
+        intents,
+        vec![Intent::Browser {
+            session: 1,
+            op: BrowserOp::Open { url: None }
+        }]
+    );
+    assert!(ui.pane_open(Pane::Browser));
+    ui.close_pane(Pane::Browser);
+    // A tab the agent opens shows the pane again.
+    let tabs = Event::Browser {
+        session: 1,
+        update: BrowserUpdate::Tabs {
+            tabs: vec![BrowserTab {
+                id: 3,
+                url: "http://localhost:3000/".into(),
+                title: "Acme".into(),
+                ..Default::default()
+            }],
+            active: Some(3),
+        },
+    };
+    ui.applied(&tabs);
+    store.apply(tabs);
+    assert!(ui.pane_open(Pane::Browser));
+    let intents = update(
+        &store,
+        &mut ui,
+        &UiAction::Submitted {
+            id: view::BROWSER_URL.into(),
+            value: "localhost:3000/checkout".into(),
+        },
+    );
+    assert_eq!(
+        intents,
+        vec![Intent::Browser {
+            session: 1,
+            op: BrowserOp::Navigate {
+                tab: 3,
+                url: "localhost:3000/checkout".into()
+            }
+        }]
+    );
+    // The page's surface is laid out where the pane's body is.
+    let window = limn::Size::new(1408.0, 844.0);
+    let frame = UiTree::new(view(&store, &ui, window)).layout(window);
+    let page = frame
+        .regions
+        .iter()
+        .find(|r| r.id == view::BROWSER_VIEW)
+        .unwrap();
+    assert!(
+        page.rect.width > 300.0 && page.rect.height > 300.0,
+        "{:?}",
+        page.rect
+    );
+}
+
+#[test]
+fn browser_steps_read_in_desktops_words_and_fold_into_what_they_did() {
+    let done = ToolResult {
+        output: String::new(),
+        is_error: false,
+        added: 0,
+        removed: 0,
+        files: vec![],
+        stopped: false,
+    };
+    let inputs = [
+        serde_json::json!({ "url": "https://www.example.com/a" }),
+        serde_json::json!({}),
+        serde_json::json!({ "action": "left_click", "coordinate": [10, 10] }),
+        serde_json::json!({ "action": "screenshot" }),
+        serde_json::json!({ "query": "Pay" }),
+    ];
+    let names = [
+        "mcp__browser__navigate",
+        "mcp__browser__read_page",
+        "mcp__browser__computer",
+        "mcp__browser__computer",
+        "mcp__browser__find",
+    ];
+    let steps: Vec<view::Step> = names
+        .iter()
+        .zip(&inputs)
+        .map(|(name, input)| view::Step {
+            call: "c",
+            name,
+            input,
+            result: Some(&done),
+            running: false,
+        })
+        .collect();
+    assert_eq!(view::group_summary(&steps[..1]), "Opened example.com");
+    // Up to three things it did, then an ellipsis.
+    assert_eq!(
+        view::group_summary(&steps),
+        "Opened, read page, clicked\u{2026}"
+    );
+    let running = view::Step {
+        call: "c",
+        name: names[3],
+        input: &inputs[3],
+        result: None,
+        running: true,
+    };
+    assert_eq!(view::group_summary(&[running]), "Capturing page");
+}

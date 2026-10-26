@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 pub use quill_agent::{
     AgentCapabilities, AgentEvent, ContextCategory, ContextKind, ContextUsage, Decision,
-    FileChange, ModelInfo, PlanLimits, Suggestion, Usage, UsageWindow,
+    FileChange, ModelInfo, PlanLimits, Suggestion, ToolContent, Usage, UsageWindow,
 };
 
 /// quill's own id of a session.
@@ -263,6 +263,150 @@ pub enum Intent {
         task: String,
         answer: ProposalAnswer,
     },
+    /// Something the person does in the session's browser (docs/browser.md); answered by
+    /// `Event::Browser`.
+    Browser {
+        session: SessionId,
+        op: BrowserOp,
+    },
+}
+
+/// What the person does in a session's browser.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum BrowserOp {
+    /// Show the browser: its tabs, or a first one at `url` (a blank one without).
+    Open {
+        url: Option<String>,
+    },
+    Navigate {
+        tab: u32,
+        url: String,
+    },
+    NewTab {
+        url: Option<String>,
+    },
+    CloseTab {
+        tab: u32,
+    },
+    SelectTab {
+        tab: u32,
+    },
+    Back {
+        tab: u32,
+    },
+    Forward {
+        tab: u32,
+    },
+    Reload {
+        tab: u32,
+    },
+    Stop {
+        tab: u32,
+    },
+    /// The tab on screen and the size of its view in logical pixels, or none on screen:
+    /// only what is shown is drawn.
+    Show {
+        view: Option<BrowserView>,
+    },
+    Input {
+        tab: u32,
+        input: BrowserInput,
+    },
+    /// Copy what is selected in the page to the clipboard (`BrowserUpdate::Copied`).
+    Copy {
+        tab: u32,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BrowserView {
+    pub tab: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// The pointer or the keyboard in a page, in logical pixels from the view's corner.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum BrowserInput {
+    Move {
+        x: f32,
+        y: f32,
+    },
+    Leave,
+    Down {
+        x: f32,
+        y: f32,
+        button: PointerButton,
+        clicks: u8,
+        keys: Modifiers,
+    },
+    Up {
+        x: f32,
+        y: f32,
+        button: PointerButton,
+        keys: Modifiers,
+    },
+    Wheel {
+        x: f32,
+        y: f32,
+        dx: f32,
+        dy: f32,
+    },
+    /// A key pressed and released: the DOM's `key` and `code`, the Windows key code Chrome
+    /// edits by, and the text it types, if any.
+    Key {
+        key: String,
+        code: String,
+        key_code: u32,
+        text: String,
+        keys: Modifiers,
+    },
+    /// Text typed or pasted, or committed by an input method.
+    Text(String),
+    /// What an input method is composing, shown in place until it commits.
+    Composition(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum PointerButton {
+    Left,
+    Right,
+    Middle,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Modifiers {
+    pub shift: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+}
+
+/// One tab of a session's browser.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BrowserTab {
+    pub id: u32,
+    pub url: String,
+    pub title: String,
+    pub loading: bool,
+    pub back: bool,
+    pub forward: bool,
+}
+
+/// What changed in a session's browser.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum BrowserUpdate {
+    Tabs {
+        tabs: Vec<BrowserTab>,
+        active: Option<u32>,
+    },
+    /// The pointer's shape over the page, as CSS names it ("pointer", "text"…).
+    Cursor(String),
+    /// What was selected in the page, for the clipboard.
+    Copied(String),
+    /// Something the person should know: a dialog the page opened, a download saved.
+    Notice(String),
+    /// The browser could not start or stopped.
+    Failed(String),
 }
 
 /// What the person does with a proposed task.
@@ -461,6 +605,11 @@ pub enum Event {
         request: RequestId,
         reports: Vec<Report>,
     },
+    /// The session's browser changed; never stored.
+    Browser {
+        session: SessionId,
+        update: BrowserUpdate,
+    },
 }
 
 impl Event {
@@ -488,7 +637,8 @@ impl Event {
             | Event::Linked { session, .. }
             | Event::Proposed { session, .. }
             | Event::ProposalAnswered { session, .. }
-            | Event::Reported { session, .. } => *session,
+            | Event::Reported { session, .. }
+            | Event::Browser { session, .. } => *session,
             // quill's own, not a session's: no session has id 0.
             Event::Settings { .. } | Event::Storage { .. } => 0,
         }

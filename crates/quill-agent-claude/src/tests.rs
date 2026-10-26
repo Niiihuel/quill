@@ -471,7 +471,13 @@ fn quills_own_tools_are_served_in_process_and_never_ask() {
     let line = claude
         .encode(AgentCommand::HostToolResult {
             id: id.clone(),
-            text: "Proposed".into(),
+            content: vec![
+                ToolContent::Text("Proposed".into()),
+                ToolContent::Image {
+                    mime: "image/jpeg".into(),
+                    data: "AAAA".into(),
+                },
+            ],
             is_error: false,
         })
         .remove(0);
@@ -479,4 +485,46 @@ fn quills_own_tools_are_served_in_process_and_never_ask() {
     let response = &reply["response"]["response"]["mcp_response"];
     assert_eq!(response["id"], 2);
     assert_eq!(response["result"]["content"][0]["text"], "Proposed");
+    // A picture goes as MCP's image block.
+    assert_eq!(
+        response["result"]["content"][1],
+        serde_json::json!({ "type": "image", "data": "AAAA", "mimeType": "image/jpeg" })
+    );
+}
+
+#[test]
+fn the_browser_server_lists_its_tools_and_its_calls_never_ask() {
+    // The same protocol as the sessions server's capture, for the server named "browser".
+    let mut claude = Claude::new();
+    let ask = |claude: &mut Claude, id: &str, request: Value| {
+        claude.decode(
+            &serde_json::json!({ "type": "control_request", "request_id": id, "request": request })
+                .to_string(),
+        )
+    };
+    let listed = ask(
+        &mut claude,
+        "r1",
+        serde_json::json!({ "subtype": "mcp_message", "server_name": "browser",
+            "message": { "jsonrpc": "2.0", "id": 1, "method": "tools/list" } }),
+    );
+    let reply: Value = serde_json::from_str(&listed.replies[0]).unwrap();
+    let tools = reply["response"]["response"]["mcp_response"]["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(tools.len(), BROWSER_TOOLS.len());
+    assert_eq!(tools[0]["name"], "navigate");
+    assert_eq!(tools[0]["inputSchema"]["required"][0], "url");
+    // Loaded with the session, not deferred behind tool search.
+    assert_eq!(tools[0]["_meta"]["anthropic/alwaysLoad"], true);
+    let allowed = ask(
+        &mut claude,
+        "r2",
+        serde_json::json!({ "subtype": "can_use_tool", "tool_name": "mcp__browser__computer",
+            "input": { "action": "screenshot" }, "tool_use_id": "t1" }),
+    );
+    assert!(allowed.events.is_empty());
+    let reply: Value = serde_json::from_str(&allowed.replies[0]).unwrap();
+    assert_eq!(reply["response"]["response"]["behavior"], "allow");
 }

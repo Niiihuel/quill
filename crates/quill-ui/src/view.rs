@@ -131,6 +131,8 @@ fn layout(store: &Store, ui: &Ui, window: Size) -> Layout {
         .iter()
         .copied()
         .filter(|p| *p != Pane::Diff || diff_files(store, ui).is_some())
+        // A browser belongs to a session.
+        .filter(|p| *p != Pane::Browser || session.is_some())
         .collect();
     if let Some(pane) = ui.expanded_pane.filter(|p| panes.contains(p)) {
         return Layout {
@@ -148,8 +150,8 @@ fn layout(store: &Store, ui: &Ui, window: Size) -> Layout {
         Some(Pane::Terminal | Pane::Agent | Pane::Plan) => 1.0 / 3.0,
         // A session beside reads at about Desktop's thread pane.
         Some(Pane::Side) => 0.42,
-        // Inferred: a document reads best at half the room.
-        Some(Pane::Document) => 0.5,
+        // Inferred: a document reads best at half the room, and so does a page.
+        Some(Pane::Document | Pane::Browser) => 0.5,
         None => 0.0,
     };
     // Dragging the boundary sets the share, as in Desktop.
@@ -181,6 +183,23 @@ pub const MIN_PANE: f32 = 120.0;
 /// pointer.
 pub const COLUMN_HANDLE: &str = "split:column";
 pub const STACK_HANDLE: &str = "split:stack";
+/// The built-in browser (docs/browser.md): its toggle, the page's input surface, the
+/// address bar, and the toolbar's buttons; tabs are "browser:tab:{id}" and their close
+/// "browser:close:{id}".
+pub const BROWSER_TOGGLE: &str = "browser:toggle";
+pub const BROWSER_VIEW: &str = "browser:view";
+pub const BROWSER_URL: &str = "browser:url";
+pub const BROWSER_NEW_TAB: &str = "browser:new";
+pub const BROWSER_BACK: &str = "browser:back";
+pub const BROWSER_FORWARD: &str = "browser:forward";
+pub const BROWSER_RELOAD: &str = "browser:reload";
+pub const BROWSER_STOP: &str = "browser:stop";
+pub const BROWSER_NOTICE_CLOSE: &str = "browser:notice:close";
+
+/// The surface a session's tab is drawn on; the host presents its frames there.
+pub fn browser_surface(session: quill_model::SessionId, tab: u32) -> String {
+    format!("browser:{session}:{tab}")
+}
 /// The right panel's left edge: dragged it sets the panel's width, clicked it hides the
 /// panel, as Desktop's side column does ("Click to collapse", "Drag to resize", 3.6556.2
 /// `ca2ef848d`).
@@ -366,6 +385,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
                 Pane::Plan => plan_pane(session, ui, width, height),
                 Pane::Side => side_pane(store, ui, width, height, palette),
                 Pane::Document => document_pane(ui, width, height, palette),
+                Pane::Browser => browser_pane(session, ui, width, height, palette),
             });
         }
         if layout.main > 0.0 {
@@ -676,6 +696,193 @@ fn terminal_pane(
     Element::column(vec![header, body.flex(1.0)]).size(Some(width), Some(height))
 }
 
+/// The session's browser [notes, docs/browser.md]: its tabs over a toolbar of back,
+/// forward, reload and the address, then the page itself, which takes the pointer and the
+/// keys while it has the focus. Desktop's texts, less the agent's name.
+fn browser_pane(
+    session: Option<&Session>,
+    ui: &Ui,
+    width: f32,
+    height: f32,
+    palette: ComponentPalette,
+) -> Element {
+    let Some(session) = session else {
+        return Element::spacer().size(Some(width), Some(height));
+    };
+    let browser = &session.browser;
+    let room = (width - 140.0).max(80.0);
+    let each = (room / browser.tabs.len().max(1) as f32).clamp(64.0, 180.0);
+    let mut strip: Vec<Element> = browser
+        .tabs
+        .iter()
+        .map(|tab| {
+            let name = if !tab.title.is_empty() {
+                tab.title.clone()
+            } else if tab.url == "about:blank" {
+                "New tab".into()
+            } else {
+                tab.url.clone()
+            };
+            let pill = Element::row(vec![
+                hgap(8.0),
+                Element::truncated_text(name)
+                    .font_family(FontFamily::Sans)
+                    .font_size(SMALL)
+                    .foreground(look::palette().text)
+                    .max_width(each - 40.0)
+                    .centered_y(),
+                Element::spacer().flex(1.0),
+                icon_tool(
+                    &format!("browser:close:{}", tab.id),
+                    icons::of(icons::CLOSE),
+                    "Close tab",
+                    20.0,
+                    palette,
+                ),
+            ])
+            .gap(4.0)
+            .size(Some(each), Some(28.0))
+            .radius(8.0);
+            let pill = if Some(tab.id) == browser.active {
+                pill.background(look::active())
+            } else {
+                pill
+            };
+            Element::clickable(format!("browser:tab:{}", tab.id), pill)
+                .accessibility_label(format!("Tab {}", tab.title))
+                .centered_y()
+        })
+        .collect();
+    strip.push(icon_tool(
+        BROWSER_NEW_TAB,
+        icons::of(icons::ADD),
+        "New tab",
+        28.0,
+        palette,
+    ));
+    let header = pane_header(
+        Element::row(strip).gap(4.0),
+        pane_tools(Pane::Browser, ui, palette),
+        width,
+    );
+    let tab = browser.tab();
+    // What cannot be done now is drawn muted and takes no press.
+    let tool = |enabled: bool, id: &str, icon: &'static str, label: &str| {
+        if enabled {
+            icon_tool(id, icons::of(icon), label, 28.0, palette)
+        } else {
+            Element::row(vec![Element::icon(icons::of(icon))
+                .foreground(look::muted())
+                .size(Some(16.0), Some(16.0))
+                .centered()])
+            .size(Some(28.0), Some(28.0))
+            .centered_y()
+        }
+    };
+    let reload = match tab {
+        Some(tab) if tab.loading => icon_tool(
+            BROWSER_STOP,
+            icons::of(icons::CLOSE),
+            "Stop loading",
+            28.0,
+            palette,
+        ),
+        _ => icon_tool(
+            BROWSER_RELOAD,
+            icons::of(icons::RELOAD),
+            "Reload",
+            28.0,
+            palette,
+        ),
+    };
+    let address = limn::TextField::new(
+        BROWSER_URL,
+        tab.map_or("", |t| {
+            if t.url == "about:blank" {
+                ""
+            } else {
+                t.url.as_str()
+            }
+        }),
+        "Enter a URL",
+        palette,
+    )
+    .size(ControlSize::Compact)
+    .width((width - 130.0).max(80.0))
+    .render()
+    .border(look::card_border(), 1.0)
+    .focus_border(look::handle(), 1.0)
+    .radius(8.0)
+    .centered_y();
+    let toolbar = Element::column(vec![
+        Element::row(vec![
+            hgap(8.0),
+            tool(
+                tab.is_some_and(|t| t.back),
+                BROWSER_BACK,
+                icons::ARROW_LEFT,
+                "Go back",
+            ),
+            tool(
+                tab.is_some_and(|t| t.forward),
+                BROWSER_FORWARD,
+                icons::ARROW_RIGHT,
+                "Go forward",
+            ),
+            reload,
+            address,
+        ])
+        .gap(4.0)
+        .size(Some(width), Some(40.0)),
+        hline(width, look::pane_border()),
+    ]);
+    let notice = ui.browser_notice.get(&session.id).map(|words| {
+        Element::column(vec![
+            hline(width, look::pane_border()),
+            Element::row(vec![
+                hgap(12.0),
+                Element::truncated_text(words.clone())
+                    .font_family(FontFamily::Sans)
+                    .font_size(SMALL)
+                    .foreground(look::muted())
+                    .max_width(width - 60.0)
+                    .centered_y(),
+                Element::spacer().flex(1.0),
+                icon_tool(
+                    BROWSER_NOTICE_CLOSE,
+                    icons::of(icons::CLOSE),
+                    "Dismiss",
+                    24.0,
+                    palette,
+                ),
+                hgap(4.0),
+            ])
+            .size(Some(width), Some(32.0)),
+        ])
+    });
+    let below = height - look::PANE_HEADER - 1.0 - 41.0 - if notice.is_some() { 33.0 } else { 0.0 };
+    let body = match (tab, &browser.failed) {
+        (Some(tab), _) => Element::focus_area(
+            BROWSER_VIEW,
+            Element::surface(browser_surface(session.id, tab.id), "Page"),
+        )
+        .accessibility_label("Browser page")
+        .size(Some(width), Some(below.max(0.0))),
+        (None, failed) => {
+            Element::column(vec![muted(failed.clone().unwrap_or_else(|| {
+                "Type a URL or ask the agent to open a site.".into()
+            }))
+            .font_size(SMALL)
+            .centered_x()])
+            .padding(24.0)
+            .size(Some(width), Some(below.max(0.0)))
+        }
+    };
+    let mut column = vec![header, toolbar, body];
+    column.extend(notice);
+    Element::column(column).size(Some(width), Some(height))
+}
+
 /// A tab's right-click menu, Desktop's four actions: rename, clear, close, and
 /// close the others when there are others.
 fn tab_menu(tab: usize, count: usize, child: Element, palette: ComponentPalette) -> Element {
@@ -901,6 +1108,15 @@ fn top_bar(session: Option<&Session>, ui: &Ui, main: f32) -> Element {
         ));
         // A hairline parts the rail's toggle from the panes'.
         row.push(vline(16.0).centered_y());
+    }
+    if session.is_some() {
+        row.push(toggle(
+            BROWSER_TOGGLE,
+            icons::of(icons::GLOBE),
+            "Browser",
+            ui.pane_open(Pane::Browser),
+            Some("Ctrl+Shift+B"),
+        ));
     }
     row.push(toggle(
         TERMINAL_TOGGLE,
@@ -1759,6 +1975,12 @@ fn entries<'a>(
                         ])
                         .gap(8.0),
                     );
+                } else if let Some(opened) = opened_tab(name, result.as_ref()) {
+                    // A tab the agent opened shows as a card under its step, as Desktop's
+                    //.
+                    steps.push(step);
+                    flush(&mut steps, &mut items);
+                    items.push(browser_card(session, &opened, column, palette));
                 } else if stands_alone(name) {
                     flush(&mut steps, &mut items);
                     if let Some(element) = lone_step(&step, column, palette) {
@@ -2635,6 +2857,169 @@ fn inflect(phrase: &str, verb: impl Fn(&str) -> String) -> String {
     }
 }
 
+/// A browser tool's step in Desktop's words (3.6556.2 `shared-130`, notes): "Opening
+/// localhost:3000", "Reading page", "Filling in a field", "Clicking", "Capturing page".
+fn browser_step(tool: &str, input: &Value, done: bool) -> (String, String) {
+    let said = |key: &str| input[key].as_str().unwrap_or_default().to_owned();
+    let pick = |past: &str, present: &str| if done { past } else { present }.to_owned();
+    let none = String::new();
+    match tool {
+        "navigate" => match said("url").as_str() {
+            "back" => (pick("Went back", "Going back"), none),
+            "forward" => (pick("Went forward", "Going forward"), none),
+            url => match host(url) {
+                Some(host) => (pick("Opened", "Opening"), host),
+                None => (pick("Opened a page", "Opening a page"), none),
+            },
+        },
+        "read_page" if input["filter"] == "interactive" => (
+            pick("Read page (interactive)", "Reading page (interactive)"),
+            none,
+        ),
+        "read_page" => (pick("Read page", "Reading page"), none),
+        "get_page_text" => (pick("Read page text", "Reading page text"), none),
+        "find" => (
+            pick("Found", "Finding"),
+            format!("\u{201c}{}\u{201d}", said("query")),
+        ),
+        "form_input" => (pick("Filled in a field", "Filling in a field"), none),
+        "computer" => {
+            let action = said("action");
+            match action.as_str() {
+                "screenshot" => (pick("Captured page", "Capturing page"), none),
+                "left_click" | "right_click" | "double_click" | "triple_click" => {
+                    (pick("Clicked", "Clicking"), none)
+                }
+                "type" => (pick("Typed", "Typing"), none),
+                "key" => (pick("Pressed", "Pressing"), said("text")),
+                "scroll" => (
+                    pick("Scrolled", "Scrolling"),
+                    input["scroll_direction"]
+                        .as_str()
+                        .unwrap_or("down")
+                        .to_owned(),
+                ),
+                "scroll_to" => (pick("Scrolled to element", "Scrolling to element"), none),
+                "left_click_drag" => (pick("Dragged", "Dragging"), none),
+                "hover" => (pick("Hovered", "Hovering"), none),
+                "wait" => (
+                    pick("Waited", "Waiting"),
+                    format!("{} seconds", input["duration"].as_f64().unwrap_or(1.0)),
+                ),
+                _ => (pick("Interacted with page", "Interacting with page"), none),
+            }
+        }
+        "javascript_tool" => (pick("Ran page script", "Running page script"), none),
+        "read_console_messages" => (pick("Read console", "Reading console"), none),
+        "read_network_requests" => (
+            pick("Read network activity", "Reading network activity"),
+            none,
+        ),
+        "resize_window" => (pick("Resized browser", "Resizing browser"), none),
+        "tabs_context" => (pick("Checked tabs", "Checking tabs"), none),
+        "tabs_create" => (pick("Opened tab", "Opening tab"), none),
+        "tabs_select" => (pick("Switched tabs", "Switching tabs"), none),
+        "tabs_close" => (pick("Closed tab", "Closing tab"), none),
+        "browser_batch" => (
+            format!(
+                "Batch \u{2014} {} actions",
+                input["actions"].as_array().map_or(0, Vec::len)
+            ),
+            none,
+        ),
+        _ => (pick("Used the browser", "Using the browser"), none),
+    }
+}
+
+/// The tab a browser tool opened, from the line its answer leads with.
+fn opened_tab(name: &str, result: Option<&ToolResult>) -> Option<Value> {
+    if !matches!(name, "mcp__browser__navigate" | "mcp__browser__tabs_create") {
+        return None;
+    }
+    let result = result.filter(|r| !r.is_error && !r.stopped)?;
+    let first = result.output.lines().next()?;
+    let card: Value = serde_json::from_str(first).ok()?;
+    (card["type"] == "browser").then_some(card)
+}
+
+/// Desktop's "Opened in Browser" card [notes]: the page's title, "{host} · Opened in
+/// Browser" (or that the tab closed), and "Open", which shows the pane on that tab. A globe
+/// stands where Desktop has a thumbnail: a surface is not resampled, so a small one would
+/// show a corner of the page.
+fn browser_card(
+    session: &Session,
+    opened: &Value,
+    column: f32,
+    palette: ComponentPalette,
+) -> Element {
+    let id = opened["tabId"].as_u64().unwrap_or_default() as u32;
+    let url = opened["url"].as_str().unwrap_or_default();
+    let tab = session.browser.tabs.iter().find(|t| t.id == id);
+    let title = tab
+        .map(|t| t.title.clone())
+        .filter(|t| !t.is_empty())
+        .or_else(|| host(url))
+        .unwrap_or_else(|| "Browser tab".into());
+    let place = host(tab.map_or(url, |t| t.url.as_str()));
+    let line = match (tab, place) {
+        (None, _) => "Browser tab closed".to_owned(),
+        (Some(_), Some(place)) => format!("{place} \u{b7} Opened in Browser"),
+        (Some(_), None) => "Opened in Browser".to_owned(),
+    };
+    let width = column.min(480.0);
+    let mut row = vec![
+        Element::row(vec![Element::icon(icons::of(icons::GLOBE))
+            .foreground(look::muted())
+            .size(Some(20.0), Some(20.0))
+            .centered()])
+        .background(look::command_box())
+        .radius(8.0)
+        .size(Some(40.0), Some(40.0))
+        .centered_y(),
+        Element::column(vec![
+            Element::truncated_text(title)
+                .font_family(FontFamily::Sans)
+                .font_size(BODY)
+                .foreground(look::palette().text)
+                .max_width(width - 160.0),
+            muted(line).font_size(SMALL),
+        ])
+        .gap(2.0)
+        .centered_y(),
+        Element::spacer().flex(1.0),
+    ];
+    if tab.is_some() {
+        row.push(
+            keyed_button(
+                &format!("browser:card:{id}"),
+                "Open",
+                "",
+                false,
+                true,
+                palette,
+            )
+            .centered_y(),
+        );
+    }
+    Element::panel(Element::row(row).gap(12.0).padding(12.0))
+        .background(palette.surface)
+        .border(look::card_border(), 1.0)
+        .radius(12.0)
+        .size(Some(width), None)
+}
+
+/// A URL's host as Desktop shows it: without "www." and at most its last 48 characters.
+fn host(url: &str) -> Option<String> {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let host = rest
+        .split(['/', '?', '#'])
+        .next()
+        .filter(|h| !h.is_empty())?;
+    let host = host.strip_prefix("www.").unwrap_or(host);
+    let chars: Vec<char> = host.chars().collect();
+    Some(chars[chars.len().saturating_sub(48)..].iter().collect())
+}
+
 fn file_of(input: &Value) -> String {
     input["file_path"]
         .as_str()
@@ -2664,6 +3049,16 @@ fn step_label(step: &Step, done: bool) -> (String, String) {
                 Some(_) => said,
             };
             return (phrase, String::new());
+        }
+        name if name.starts_with("mcp__browser__") => {
+            let failed = step.result.is_some_and(|r| r.is_error);
+            let (verb, object) =
+                browser_step(&name["mcp__browser__".len()..], input, done || failed);
+            return if failed {
+                (format!("{verb} (failed)"), object)
+            } else {
+                (verb, object)
+            };
         }
         "Read" => ("Read", "Reading", file_of(input)),
         "Edit" | "MultiEdit" | "NotebookEdit" => ("Edited", "Editing", file_of(input)),
@@ -2749,9 +3144,26 @@ pub fn group_summary(steps: &[Step]) -> String {
         }
     }
     let mut files: Vec<(String, Vec<String>)> = vec![];
+    // The browser's steps by what they did, as Desktop joins up to three ("Read page,
+    // clicked…", 3.6556.2 `shared-130` `KB=3`).
+    let mut browsing: Vec<String> = vec![];
+    // The only one says what it acted on too: "Opened example.com".
+    let mut lone_browsing = None;
     let (mut commands, mut searches, mut agents, mut others) = (0, 0, 0, 0);
     for step in steps {
         match step.name {
+            name if name.starts_with("mcp__browser__") => {
+                let (verb, object) = step_label(step, true);
+                lone_browsing = lone_browsing.is_none().then(|| {
+                    format!("{} {object}", verb.to_lowercase())
+                        .trim_end()
+                        .to_owned()
+                });
+                let verb = verb.to_lowercase();
+                if !browsing.contains(&verb) {
+                    browsing.push(verb);
+                }
+            }
             "Bash" => commands += 1,
             "Grep" | "Glob" => searches += 1,
             "Agent" | "Task" => agents += 1,
@@ -2771,6 +3183,20 @@ pub fn group_summary(steps: &[Step]) -> String {
         .into_iter()
         .map(|(file, verbs)| format!("{} {file}", verbs.join(" and ")))
         .collect();
+    let single = steps
+        .iter()
+        .filter(|s| s.name.starts_with("mcp__browser__"))
+        .count()
+        == 1;
+    if let (true, Some(lone)) = (single, lone_browsing) {
+        clauses.push(lone);
+    } else if !browsing.is_empty() {
+        let mut clause = browsing[..browsing.len().min(3)].join(", ");
+        if browsing.len() > 3 {
+            clause.push('\u{2026}');
+        }
+        clauses.push(clause);
+    }
     if searches > 0 {
         clauses.push("searched the code".into());
     }

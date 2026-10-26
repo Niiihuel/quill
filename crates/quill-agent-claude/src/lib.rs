@@ -5,7 +5,8 @@
 use quill_agent::{
     AgentAdapter, AgentCapabilities, AgentCommand, AgentEvent, AgentId, CommandRun,
     ContextCategory, ContextKind, ContextUsage, Decision, Decoded, FileChange, LaunchPlan,
-    ModelInfo, PlanLimits, SessionSpec, Suggestion, Usage, UsageWindow, HOST_TOOLS,
+    ModelInfo, PlanLimits, SessionSpec, Suggestion, ToolContent, Usage, UsageWindow, BROWSER_GUIDE,
+    BROWSER_TOOLS, HOST_TOOLS,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -95,7 +96,9 @@ impl Claude {
             // quill's own tools are quill's to run: they never ask the person (an
             // `own_initiative` call only proposes, and its card is where the person answers).
             Some("can_use_tool")
-                if text(&request["tool_name"]).starts_with(&format!("mcp__{SERVER}__")) =>
+                if [SERVER, BROWSER_SERVER].iter().any(|server| {
+                    text(&request["tool_name"]).starts_with(&format!("mcp__{server}__"))
+                }) =>
             {
                 decoded.replies.push(success(
                     &id,
@@ -103,8 +106,21 @@ impl Claude {
                         "toolUseID": request["tool_use_id"] }),
                 ));
             }
-            Some("mcp_message") if request["server_name"] == SERVER => {
-                self.host_message(id, &request["message"], decoded)
+            Some("mcp_message")
+                if request["server_name"] == SERVER || request["server_name"] == BROWSER_SERVER =>
+            {
+                let tools: &[(&str, &str, &str)] = if request["server_name"] == SERVER {
+                    &HOST_TOOLS
+                } else {
+                    &BROWSER_TOOLS
+                };
+                self.host_message(
+                    id,
+                    text(&request["server_name"]),
+                    tools,
+                    &request["message"],
+                    decoded,
+                )
             }
             Some("can_use_tool") => {
                 let tool = text(&request["tool_name"]);
@@ -146,19 +162,35 @@ impl Claude {
     /// are answered here, a tool call goes to the engine (verified on CLI 2.1.310,
     /// [F:sessions]; the protocol is the CLI's `mcp_message`, as `initialize.sdkMcpServers`
     /// names the server).
-    fn host_message(&mut self, id: Value, message: &Value, decoded: &mut Decoded) {
+    fn host_message(
+        &mut self,
+        id: Value,
+        server: String,
+        tools: &[(&str, &str, &str)],
+        message: &Value,
+        decoded: &mut Decoded,
+    ) {
         let rpc = message["id"].clone();
         let result = match message["method"].as_str() {
             Some("initialize") => json!({
                 "protocolVersion": message["params"]["protocolVersion"],
                 "capabilities": { "tools": {} },
-                "serverInfo": { "name": SERVER, "version": env!("CARGO_PKG_VERSION") },
+                "serverInfo": { "name": server, "version": env!("CARGO_PKG_VERSION") },
             }),
             Some("tools/list") => {
-                json!({ "tools": HOST_TOOLS.map(|(name, description, schema)| json!({
-                "name": name, "description": description,
-                "inputSchema": serde_json::from_str::<Value>(schema).unwrap_or_default(),
-            })) })
+                let tools: Vec<Value> = tools
+                    .iter()
+                    .map(|(name, description, schema)| {
+                        // Loaded with the session rather than found through tool search, as
+                        // Desktop marks its own (`anthropic/alwaysLoad`, 3.6556.2 asar).
+                        json!({
+                            "name": name, "description": description,
+                            "inputSchema": serde_json::from_str::<Value>(schema).unwrap_or_default(),
+                            "_meta": { "anthropic/alwaysLoad": true },
+                        })
+                    })
+                    .collect();
+                json!({ "tools": tools })
             }
             Some("tools/call") => {
                 let id_text = text(&id);
@@ -296,8 +328,8 @@ impl AgentAdapter for Claude {
                 let line = self.request(json!({
                     "subtype": "initialize",
                     "hooks": { "PostToolUse": [{ "hookCallbackIds": [POST_TOOL_HOOK] }] },
-                    "sdkMcpServers": [SERVER],
-                    "appendSystemPrompt": SESSIONS_GUIDE,
+                    "sdkMcpServers": [SERVER, BROWSER_SERVER],
+                    "appendSystemPrompt": format!("{SESSIONS_GUIDE}\n\n{BROWSER_GUIDE}"),
                 }));
                 self.initialize = Some(self.last_request_id());
                 vec![line]
@@ -352,12 +384,27 @@ impl AgentAdapter for Claude {
                 self.context_request = Some(self.last_request_id());
                 vec![line]
             }
-            AgentCommand::HostToolResult { id, text, is_error } => {
+            AgentCommand::HostToolResult {
+                id,
+                content,
+                is_error,
+            } => {
                 let rpc = self.host_calls.remove(&id).unwrap_or_default();
+                // MCP's content blocks; the CLI hands a picture to the model as one
+                // (verified on 2.1.310 with a screenshot's text read back).
+                let content: Vec<Value> = content
+                    .into_iter()
+                    .map(|block| match block {
+                        ToolContent::Text(text) => json!({ "type": "text", "text": text }),
+                        ToolContent::Image { mime, data } => {
+                            json!({ "type": "image", "data": data, "mimeType": mime })
+                        }
+                    })
+                    .collect();
                 vec![success(
                     &Value::String(id),
                     json!({ "mcp_response": { "jsonrpc": "2.0", "id": rpc, "result": {
-                        "content": [{ "type": "text", "text": text }], "isError": is_error,
+                        "content": content, "isError": is_error,
                     } } }),
                 )]
             }
@@ -576,6 +623,9 @@ fn success(id: &Value, response: Value) -> String {
 /// The in-process MCP server that carries quill's own tools ([`HOST_TOOLS`]); the agent sees
 /// them as `mcp__sessions__…`.
 const SERVER: &str = "sessions";
+/// The in-process MCP server of the built-in browser's tools ([`BROWSER_TOOLS`]):
+/// `mcp__browser__navigate` and the rest.
+const BROWSER_SERVER: &str = "browser";
 
 /// When to start or propose another session, appended to the agent's system prompt. quill's
 /// words for what Desktop says in its own section on starting other sessions (3.6556.2

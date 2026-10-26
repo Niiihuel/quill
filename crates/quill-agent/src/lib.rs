@@ -309,9 +309,27 @@ pub enum AgentCommand {
     /// The answer to an [`AgentEvent::HostTool`] call.
     HostToolResult {
         id: String,
-        text: String,
+        content: Vec<ToolContent>,
         is_error: bool,
     },
+}
+
+/// One block of a host tool's answer: words, or a picture (a page's screenshot).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum ToolContent {
+    Text(String),
+    Image {
+        /// "image/jpeg", "image/png".
+        mime: String,
+        /// The picture, base64.
+        data: String,
+    },
+}
+
+impl ToolContent {
+    pub fn text(words: impl Into<String>) -> Vec<Self> {
+        vec![Self::Text(words.into())]
+    }
 }
 
 /// quill's own tools, which an adapter offers its agent where the agent can take tools from
@@ -354,3 +372,87 @@ pub trait AgentAdapter: Send {
     fn encode(&mut self, command: AgentCommand) -> Vec<String>;
     fn decode(&mut self, line: &str) -> Decoded;
 }
+
+/// The built-in browser's tools (docs/browser.md §4), served like [`HOST_TOOLS`] by a server of
+/// their own, `browser`. Their meaning follows Claude Desktop 3.6556.2's browser tools (ficha
+///; the words are quill's.
+pub const BROWSER_TOOLS: [(&str, &str, &str); 15] = [
+    (
+        "navigate",
+        "Open a URL in a tab of the built-in browser, which the user sees beside the conversation, or go \"back\" or \"forward\" in its history. Waits for the page to load. Local addresses (localhost, 127.0.0.1) are always allowed; other sites may need the user's permission.",
+        r#"{"type":"object","properties":{"url":{"type":"string","description":"The address to open, or \"back\" / \"forward\"."},"tabId":{"type":"integer","description":"The tab to use; the one on screen when left out."}},"required":["url"]}"#,
+    ),
+    (
+        "read_page",
+        "The page as a tree of its elements, one per line: role, name, and a ref (ref_N) that other tools take to act on it. filter \"interactive\" keeps only the controls visible on screen. Start from ref_id to read part of a page.",
+        r#"{"type":"object","properties":{"filter":{"type":"string","enum":["all","interactive"]},"ref_id":{"type":"string"},"depth":{"type":"integer","description":"How deep to go, 15 when left out."},"max_chars":{"type":"integer","description":"50000 when left out."},"tabId":{"type":"integer"}}}"#,
+    ),
+    (
+        "find",
+        "Look for elements whose role or name contains the words given, with the refs to act on them; at most 20.",
+        r#"{"type":"object","properties":{"query":{"type":"string"},"tabId":{"type":"integer"}},"required":["query"]}"#,
+    ),
+    (
+        "get_page_text",
+        "The page's readable text: its main content when it has one, else the whole body.",
+        r#"{"type":"object","properties":{"tabId":{"type":"integer"}}}"#,
+    ),
+    (
+        "form_input",
+        "Set the value of a form field by its ref: the text of an input or text area, the option of a select (by value or label), whether a checkbox or radio is checked (true/false).",
+        r#"{"type":"object","properties":{"ref":{"type":"string"},"value":{"type":["string","boolean","number"]},"tabId":{"type":"integer"}},"required":["ref","value"]}"#,
+    ),
+    (
+        "computer",
+        "Look at and use the page as the user would. Actions: screenshot (a picture of the tab, at most 800 px wide; coordinates in later actions are in its pixels), left_click, right_click, double_click, triple_click (at coordinate, or at an element's ref), type (text into what has the focus), key (keys such as \"Enter\", \"Tab\", \"ctrl+a\"), scroll (scroll_direction up/down/left/right and scroll_amount ticks at coordinate), scroll_to (ref), hover, left_click_drag (from start_coordinate to coordinate), wait (duration seconds, at most 10).",
+        r#"{"type":"object","properties":{"action":{"type":"string","enum":["screenshot","left_click","right_click","double_click","triple_click","type","key","scroll","scroll_to","hover","left_click_drag","wait"]},"coordinate":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2},"start_coordinate":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2},"ref":{"type":"string"},"text":{"type":"string"},"scroll_direction":{"type":"string","enum":["up","down","left","right"]},"scroll_amount":{"type":"integer"},"duration":{"type":"number"},"tabId":{"type":"integer"}},"required":["action"]}"#,
+    ),
+    (
+        "javascript_tool",
+        "Run JavaScript in the page and get its value (awaited when it is a promise). The last expression is the value.",
+        r#"{"type":"object","properties":{"text":{"type":"string","description":"The script."},"tabId":{"type":"integer"}},"required":["text"]}"#,
+    ),
+    (
+        "read_console_messages",
+        "What the page logged to its console since it opened, with uncaught errors; pattern keeps the lines that match it, clear forgets what was read.",
+        r#"{"type":"object","properties":{"pattern":{"type":"string"},"only_errors":{"type":"boolean"},"clear":{"type":"boolean"},"tabId":{"type":"integer"}}}"#,
+    ),
+    (
+        "read_network_requests",
+        "The requests the page made, with their method and status; url_pattern keeps those whose address contains it, clear forgets what was read.",
+        r#"{"type":"object","properties":{"url_pattern":{"type":"string"},"clear":{"type":"boolean"},"tabId":{"type":"integer"}}}"#,
+    ),
+    (
+        "resize_window",
+        "Size the tab's viewport, to check a layout at another width (a phone is 375 x 812, a tablet 768 x 1024). Width 0 gives the pane's size back.",
+        r#"{"type":"object","properties":{"width":{"type":"integer"},"height":{"type":"integer"},"tabId":{"type":"integer"}},"required":["width","height"]}"#,
+    ),
+    (
+        "tabs_context",
+        "The browser's tabs: their ids, titles and addresses, and which is on screen.",
+        r#"{"type":"object","properties":{}}"#,
+    ),
+    (
+        "tabs_create",
+        "Open a new tab, at url or blank, and put it on screen.",
+        r#"{"type":"object","properties":{"url":{"type":"string"}}}"#,
+    ),
+    (
+        "tabs_select",
+        "Put a tab on screen.",
+        r#"{"type":"object","properties":{"tabId":{"type":"integer"}},"required":["tabId"]}"#,
+    ),
+    (
+        "tabs_close",
+        "Close a tab.",
+        r#"{"type":"object","properties":{"tabId":{"type":"integer"}},"required":["tabId"]}"#,
+    ),
+    (
+        "browser_batch",
+        "Run up to 25 of these tools one after another, stopping at the first that fails: a list of {\"tool\": name, \"input\": {...}}. For steps whose outcome you do not need to see in between.",
+        r#"{"type":"object","properties":{"actions":{"type":"array","maxItems":25,"items":{"type":"object","properties":{"tool":{"type":"string"},"input":{"type":"object"}},"required":["tool"]}}},"required":["actions"]}"#,
+    ),
+];
+
+/// What an agent is told of the built-in browser, in words of quill's own.
+pub const BROWSER_GUIDE: &str = "# Built-in browser\n\nYou have a browser built into this app, with the browser tools (navigate, read_page, find, get_page_text, form_input, computer, javascript_tool, read_console_messages, read_network_requests, tabs_*). The user sees its tab beside the conversation and can use it too. Use it to check what you build for the web: start the dev server, open it, read the console and the page, act on it, and take a screenshot to show the result instead of asking the user to look. Prefer read_page and find to pick elements by ref; use screenshots to see layout. Local addresses are always allowed; other sites may ask the user first. Do not use it for what a plain fetch answers.";

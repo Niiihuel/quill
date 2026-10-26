@@ -9,6 +9,8 @@ use quill_model::{
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
+
+pub use quill_browser::{Frame, Frames};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
@@ -44,6 +46,10 @@ pub struct Config {
     pub snapshots: Option<PathBuf>,
     /// Where the person's settings are kept; `None` keeps them in memory only.
     pub settings: Option<PathBuf>,
+    /// The built-in browser's Chromium profile; `None` puts one in the temporary folder.
+    pub browser: Option<PathBuf>,
+    /// Where the browser leaves its pages' frames for the window to present.
+    pub frames: quill_browser::Frames,
 }
 
 impl Config {
@@ -63,6 +69,7 @@ impl Config {
             database: Some(data.join("quill/quill.db")),
             snapshots: Some(data.join("quill/snapshots")),
             settings: Some(config.join("quill/settings.json")),
+            browser: Some(data.join("quill/browser")),
             ..Self::default()
         }
     }
@@ -116,6 +123,13 @@ enum Internal {
         id: String,
         name: String,
         input: serde_json::Value,
+    },
+    /// A browser tool the agent called finished.
+    HostAnswered {
+        session: SessionId,
+        id: String,
+        content: Vec<quill_agent::ToolContent>,
+        is_error: bool,
     },
     /// A turn began or the session stopped working.
     Busy { session: SessionId, busy: bool },
@@ -172,6 +186,8 @@ struct Router {
     reports: HashMap<SessionId, Vec<quill_model::Report>>,
     /// Sessions in the middle of a turn.
     busy: std::collections::HashSet<SessionId>,
+    /// The built-in browser, shared by every session (each in a context of its own).
+    browser: quill_browser::Browser,
     /// The reply being read aloud: what stops it, and the task that ends once it stopped.
     reading: Option<(
         tokio::sync::oneshot::Sender<()>,
@@ -206,12 +222,31 @@ impl Router {
                 ui(event);
             })
         };
+        let browser = {
+            let ui = ui.clone();
+            let home = std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| ".".into());
+            quill_browser::Browser::new(
+                quill_browser::Options {
+                    program: None,
+                    profile: config.browser.clone().unwrap_or_else(|| {
+                        std::env::temp_dir().join(format!("quill-browser-{}", std::process::id()))
+                    }),
+                    downloads: home.join("Downloads"),
+                    frames: config.frames.clone(),
+                },
+                // What the browser shows is the UI's only: never stored.
+                Arc::new(move |session, update| ui(Event::Browser { session, update })),
+            )
+        };
         Self {
             store,
             ui,
             sink,
             config,
             internal,
+            browser,
             sessions: HashMap::new(),
             folders: HashMap::new(),
             started: HashMap::new(),
@@ -495,6 +530,14 @@ impl Router {
             }
             Intent::Archive { session, archived } => {
                 (self.sink)(Event::Archived { session, archived });
+                if archived {
+                    let browser = self.browser.clone();
+                    tokio::spawn(async move { browser.forget(session).await });
+                }
+                return;
+            }
+            Intent::Browser { session, op } => {
+                self.browser.send(session, op);
                 return;
             }
             Intent::MarkUnread { session, unread } => {
@@ -667,6 +710,8 @@ impl Router {
             }
             // The agent is stopped first, so nothing it says lands after its record is gone.
             Intent::Delete { session } => {
+                let browser = self.browser.clone();
+                tokio::spawn(async move { browser.forget(session).await });
                 self.folders.remove(&session);
                 self.started.remove(&session);
                 self.agent_ids.lock().unwrap().remove(&session);
@@ -737,6 +782,28 @@ impl Router {
 
     async fn internal(&mut self, note: Internal) {
         match note {
+            // The browser's tools wait on pages: they run beside the router, which hears
+            // their answer back.
+            Internal::HostTool {
+                session,
+                id,
+                name,
+                input,
+            } if quill_agent::BROWSER_TOOLS
+                .iter()
+                .any(|(tool, ..)| *tool == name) =>
+            {
+                let (browser, internal) = (self.browser.clone(), self.internal.clone());
+                tokio::spawn(async move {
+                    let (content, is_error) = browser.tool(session, &name, input).await;
+                    let _ = internal.send(Internal::HostAnswered {
+                        session,
+                        id,
+                        content,
+                        is_error,
+                    });
+                });
+            }
             Internal::HostTool {
                 session,
                 id,
@@ -746,9 +813,26 @@ impl Router {
                 let (text, is_error) = self.host_tool(session, &name, &input).await;
                 self.tell(
                     session,
-                    Input::Command(AgentCommand::HostToolResult { id, text, is_error }),
+                    Input::Command(AgentCommand::HostToolResult {
+                        id,
+                        content: quill_agent::ToolContent::text(text),
+                        is_error,
+                    }),
                 );
             }
+            Internal::HostAnswered {
+                session,
+                id,
+                content,
+                is_error,
+            } => self.tell(
+                session,
+                Input::Command(AgentCommand::HostToolResult {
+                    id,
+                    content,
+                    is_error,
+                }),
+            ),
             Internal::Busy { session, busy } => {
                 if busy {
                     self.busy.insert(session);

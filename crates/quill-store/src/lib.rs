@@ -47,7 +47,8 @@ impl Store {
             | Event::FileRead { .. }
             | Event::FileWriteFailed { .. }
             | Event::Settings { .. }
-            | Event::Storage { .. } => false,
+            | Event::Storage { .. }
+            | Event::Browser { .. } => false,
             Event::Agent { event, .. } => !matches!(
                 event,
                 AgentEvent::TextDelta { .. }

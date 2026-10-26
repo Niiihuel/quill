@@ -1,0 +1,24 @@
+[package]
+name = "quill-browser"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "quill's built-in browser: a Chromium it launches and drives over the DevTools protocol."
+publish = false
+
+[dependencies]
+quill-model = { path = "../quill-model" }
+serde_json.workspace = true
+# Calls answered on a channel, the event loop and its timers.
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+# dup2 and fcntl, to hand Chromium its pipe on fds 3 and 4.
+libc = "0.2"
+# The screencast's JPEG frames, decoded off the UI thread (already in the tree through image).
+zune-jpeg = "0.5"
+zune-core = "0.5"
+# The screencast's frames arrive base64-encoded in the JSON (already in the tree).
+base64 = "0.22"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }

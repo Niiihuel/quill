@@ -10,8 +10,8 @@ pub mod view;
 pub use view::{menu_digit, view};
 
 use quill_model::{
-    AgentCapabilities, AgentEvent, Decision, Event, FileEffect, Intent, NewSession, ProposalAnswer,
-    RequestId, SessionId, SessionStatus, Suggestion,
+    AgentCapabilities, AgentEvent, BrowserOp, Decision, Event, FileEffect, Intent, NewSession,
+    ProposalAnswer, RequestId, SessionId, SessionStatus, Suggestion,
 };
 use serde_json::Value;
 use std::path::PathBuf;
@@ -108,6 +108,8 @@ pub struct Session {
     pub context_window: u64,
     /// What fills the context, as the agent last told it while the Context card was open.
     pub context_usage: Option<quill_model::ContextUsage>,
+    /// Its built-in browser, as the engine last told it.
+    pub browser: SessionBrowser,
     pub cost: f64,
     /// What is uncommitted in its folder, as the engine last said.
     pub working: Option<Vec<quill_model::FileEffect>>,
@@ -209,6 +211,7 @@ impl Store {
                 context_tokens: 0,
                 context_window: 0,
                 context_usage: None,
+                browser: SessionBrowser::default(),
                 working: None,
                 cost: 0.0,
                 running_since: None,
@@ -440,6 +443,11 @@ impl Store {
             Event::Forwarded { session, from } => {
                 if let Some(s) = self.session_mut(session) {
                     s.items.push(Item::Forwarded { from });
+                }
+            }
+            Event::Browser { session, update } => {
+                if let Some(s) = self.session_mut(session) {
+                    s.browser.heard(update);
                 }
             }
             Event::Reading { .. }
@@ -778,6 +786,10 @@ pub struct Ui {
     /// The reply being read aloud, by its session and place.
     pub reading: Option<(SessionId, usize)>,
     pub document: Option<Document>,
+    /// How many tabs each session's browser had when last heard: a new one opens the pane.
+    pub browser_tabs: std::collections::HashMap<SessionId, usize>,
+    /// What each session's browser last had to say, until dismissed.
+    pub browser_notice: std::collections::HashMap<SessionId, String>,
     /// The settings in force, as the engine last kept them, and the agents it can run.
     pub settings: quill_model::Settings,
     pub agents: Vec<quill_model::AgentInfo>,
@@ -1091,6 +1103,40 @@ pub fn shortcut(store: &Store, ui: &Ui, key: limn::Key, ctrl: bool, shift: bool)
     ))
 }
 
+/// A session's browser as the engine last told it (docs/browser.md).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SessionBrowser {
+    pub tabs: Vec<quill_model::BrowserTab>,
+    pub active: Option<u32>,
+    /// The page's cursor under the pointer, as CSS names it.
+    pub cursor: String,
+    /// Why it could not start or stopped, until a tab opens again.
+    pub failed: Option<String>,
+}
+
+impl SessionBrowser {
+    fn heard(&mut self, update: quill_model::BrowserUpdate) {
+        use quill_model::BrowserUpdate;
+        match update {
+            BrowserUpdate::Tabs { tabs, active } => {
+                if !tabs.is_empty() {
+                    self.failed = None;
+                }
+                self.tabs = tabs;
+                self.active = active;
+            }
+            BrowserUpdate::Cursor(cursor) => self.cursor = cursor,
+            BrowserUpdate::Failed(error) => self.failed = Some(error),
+            // The view keeps notices until dismissed; the host puts copies on the clipboard.
+            BrowserUpdate::Notice(_) | BrowserUpdate::Copied(_) => {}
+        }
+    }
+
+    pub fn tab(&self) -> Option<&quill_model::BrowserTab> {
+        self.tabs.iter().find(|t| Some(t.id) == self.active)
+    }
+}
+
 /// What can open in the column beside the conversation.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Pane {
@@ -1104,16 +1150,19 @@ pub enum Pane {
     Side,
     /// The file `Ui::document` names, to read and edit.
     Document,
+    /// The session's built-in browser.
+    Browser,
 }
 
 impl Pane {
-    pub const ALL: [Pane; 6] = [
+    pub const ALL: [Pane; 7] = [
         Pane::Diff,
         Pane::Terminal,
         Pane::Agent,
         Pane::Plan,
         Pane::Side,
         Pane::Document,
+        Pane::Browser,
     ];
 
     pub fn key(self) -> &'static str {
@@ -1124,6 +1173,7 @@ impl Pane {
             Pane::Plan => "plan",
             Pane::Side => "side",
             Pane::Document => "document",
+            Pane::Browser => "browser",
         }
     }
 }
@@ -1263,6 +1313,8 @@ impl Ui {
             copied: None,
             reading: None,
             document: None,
+            browser_tabs: Default::default(),
+            browser_notice: Default::default(),
             settings: Default::default(),
             agents: vec![],
             settings_page: None,
@@ -1478,7 +1530,7 @@ impl Ui {
             Pane::Plan => self.plan = None,
             Pane::Side => self.side_chat = None,
             Pane::Document => self.document = None,
-            Pane::Terminal => {}
+            Pane::Terminal | Pane::Browser => {}
         }
     }
 
@@ -1491,6 +1543,26 @@ impl Ui {
     }
 
     fn applied_to_view(&mut self, event: &Event) -> Vec<Intent> {
+        // A tab that appears in the session on screen, as when the agent opens a page, shows
+        // the browser, as Desktop's does.
+        if let Event::Browser {
+            session,
+            update: quill_model::BrowserUpdate::Tabs { tabs, .. },
+        } = event
+        {
+            let before = self.browser_tabs.insert(*session, tabs.len()).unwrap_or(0);
+            if self.selected == Some(*session) && tabs.len() > before {
+                self.open_pane(Pane::Browser);
+            }
+        }
+        if let Event::Browser {
+            session,
+            update:
+                quill_model::BrowserUpdate::Notice(words) | quill_model::BrowserUpdate::Failed(words),
+        } = event
+        {
+            self.browser_notice.insert(*session, words.clone());
+        }
         if let Event::Settings { settings, agents } = event {
             look::set_text_size(settings.text_size);
             look::set_wide(settings.wide);
@@ -1658,6 +1730,23 @@ pub fn update(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Intent
                 decision: Decision::Deny { message },
             }]
         }
+        // The address bar: Enter opens what was typed in the tab on screen.
+        UiAction::Submitted { id, value } if id == view::BROWSER_URL => {
+            let Some(session) = ui.selected else {
+                return vec![];
+            };
+            let tab = store.session(session).and_then(|s| s.browser.active);
+            let op = match tab {
+                Some(tab) => BrowserOp::Navigate {
+                    tab,
+                    url: value.clone(),
+                },
+                None => BrowserOp::Open {
+                    url: Some(value.clone()),
+                },
+            };
+            vec![Intent::Browser { session, op }]
+        }
         UiAction::InputChanged { id, value } if id == view::TITLE_FIELD => {
             ui.title_edit = Some(value.clone());
             vec![]
@@ -1816,6 +1905,53 @@ fn effort_slid(store: &Store, ui: &mut Ui, fraction: f32, committed: bool) -> Ve
             }]
         })
         .unwrap_or_default()
+}
+
+/// The browser's own controls: its toggle, tabs and toolbar. `None` when `id` is none of
+/// them.
+fn browser_clicked(store: &Store, ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
+    let session = ui.selected?;
+    let browser = &store.session(session)?.browser;
+    let tab = browser.active;
+    if id == view::BROWSER_NOTICE_CLOSE {
+        ui.browser_notice.remove(&session);
+        return Some(vec![]);
+    }
+    let op = if id == view::BROWSER_TOGGLE {
+        if ui.pane_open(Pane::Browser) {
+            ui.close_pane(Pane::Browser);
+            return Some(vec![]);
+        }
+        ui.open_pane(Pane::Browser);
+        BrowserOp::Open { url: None }
+    } else if let Some(tab) = id
+        .strip_prefix("browser:card:")
+        .and_then(|t| t.parse().ok())
+    {
+        // "Open" on a card: the pane, on that tab.
+        ui.open_pane(Pane::Browser);
+        BrowserOp::SelectTab { tab }
+    } else if id == view::BROWSER_NEW_TAB {
+        BrowserOp::NewTab { url: None }
+    } else if let Some(tab) = id.strip_prefix("browser:tab:").and_then(|t| t.parse().ok()) {
+        BrowserOp::SelectTab { tab }
+    } else if let Some(tab) = id
+        .strip_prefix("browser:close:")
+        .and_then(|t| t.parse().ok())
+    {
+        BrowserOp::CloseTab { tab }
+    } else if id == view::BROWSER_BACK {
+        BrowserOp::Back { tab: tab? }
+    } else if id == view::BROWSER_FORWARD {
+        BrowserOp::Forward { tab: tab? }
+    } else if id == view::BROWSER_RELOAD {
+        BrowserOp::Reload { tab: tab? }
+    } else if id == view::BROWSER_STOP {
+        BrowserOp::Stop { tab: tab? }
+    } else {
+        return None;
+    };
+    Some(vec![Intent::Browser { session, op }])
 }
 
 /// A boundary followed the pointer to `position`: the column's left edge, or the top of the
@@ -2003,6 +2139,9 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
                 }]
             })
             .unwrap_or_default();
+    }
+    if let Some(intents) = browser_clicked(store, ui, id) {
+        return intents;
     }
     if let Some(rest) = id.strip_prefix("pane:") {
         for pane in Pane::ALL {
