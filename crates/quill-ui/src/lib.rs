@@ -104,6 +104,8 @@ pub struct Session {
     pub helpers: std::collections::HashMap<String, Vec<Item>>,
     /// Kept at the top of the sidebar, under "Pinned".
     pub pinned: bool,
+    /// The repository its folder is in, as the engine last read it.
+    pub repo: Option<quill_model::Repo>,
     /// Out of the sidebar; the search still finds it.
     pub archived: bool,
     /// Has news the person has not seen: a gray dot in its row.
@@ -185,6 +187,7 @@ impl Store {
                 tasks: vec![],
                 helpers: Default::default(),
                 pinned: false,
+                repo: None,
                 archived: false,
                 unread: false,
                 touched: 0,
@@ -255,9 +258,17 @@ impl Store {
                 }
             }
             Event::Changes { .. } => {}
-            Event::WorkingTree { session, files } => {
+            Event::WorkingTree {
+                session,
+                files,
+                repo,
+            } => {
                 if let Some(s) = self.session_mut(session) {
                     s.working = Some(files);
+                    if let Some(repo) = &repo {
+                        s.branch = Some(repo.branch.clone());
+                    }
+                    s.repo = repo;
                 }
             }
             Event::Environment { session, branch } => {
@@ -591,6 +602,10 @@ pub struct Ui {
     pub deleting: Option<SessionId>,
     /// What the search dialog looks for, while it is open.
     pub search: Option<String>,
+    /// The branch bar's pull request opens as a draft; the last kind chosen stays.
+    pub pr_draft: bool,
+    /// Sessions whose branch bar the person closed.
+    pub bar_closed: Vec<SessionId>,
     /// How the sidebar groups and orders the sessions.
     pub group_by: GroupBy,
     pub sort_by: SortBy,
@@ -630,6 +645,29 @@ pub enum Allow {
     Always,
 }
 
+/// What the branch bar asks of the agent to open a pull request: commit what is left, push,
+/// open it with `gh`, as a draft when that kind was chosen, and give its address. Desktop
+/// sends its own request of the same steps [3.6556.2/c06cf64bb]; these words are quill's.
+fn pr_request(draft: bool) -> String {
+    let (kind, open) = if draft {
+        ("as a draft", "`gh pr create --draft`")
+    } else {
+        ("ready for review", "`gh pr create`, without `--draft`")
+    };
+    format!(
+        "Create a pull request for the changes in this session, {kind}.\n\n\
+         1. If there are uncommitted changes, commit them with a message that says what \
+         changed and why.\n\
+         2. Push the branch.\n\
+         3. Open the pull request with {open}. Give it a title that sums up the change and a \
+         body that says what changed, why, and what a reviewer should know; follow the \
+         repository's template if it has one.\n\
+         4. Reply with the pull request's address.\n\n\
+         If this branch has a pull request already, push any new commits and give its address \
+         instead of opening another."
+    )
+}
+
 /// The sidebar's and the top bar's own clicks: hiding the sidebar, search, and what a
 /// session's menus do. `None` when `id` is none of them.
 fn session_clicked(store: &Store, ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
@@ -646,6 +684,24 @@ fn session_clicked(store: &Store, ui: &mut Ui, id: &str) -> Option<Vec<Intent>> 
         ui.open_menu = (ui.open_menu != Some(view::TITLE_MENU)).then_some(view::TITLE_MENU);
     } else if id == format!("{}:dismiss", view::TITLE_MENU) {
         ui.open_menu = None;
+    } else if id == view::PR_MENU {
+        ui.open_menu = (ui.open_menu != Some(view::PR_MENU)).then_some(view::PR_MENU);
+    } else if id == format!("{}:dismiss", view::PR_MENU) {
+        ui.open_menu = None;
+    } else if let Some(kind) = id.strip_prefix("pr-kind:") {
+        ui.open_menu = None;
+        ui.pr_draft = kind == "draft";
+    } else if id == view::PR_CREATE {
+        let session = ui.selected.and_then(|s| store.session(s));
+        return Some(match session {
+            Some(s) if view::pr_blocked(s).is_none() => vec![Intent::Send {
+                session: s.id,
+                text: pr_request(ui.pr_draft),
+            }],
+            _ => vec![],
+        });
+    } else if id == view::BAR_CLOSE {
+        ui.bar_closed.extend(ui.selected);
     } else if id == view::DELETE_CANCEL {
         ui.deleting = None;
     } else if id == view::DELETE_CONFIRM {
@@ -878,6 +934,8 @@ impl Ui {
             title_edit: None,
             deleting: None,
             search: None,
+            pr_draft: false,
+            bar_closed: vec![],
             group_by: GroupBy::default(),
             sort_by: SortBy::default(),
             ascending: false,
@@ -929,10 +987,14 @@ impl Ui {
             }
             if let Some(text) = self.waiting.take() {
                 self.selected = Some(*session);
-                return vec![Intent::Send {
-                    session: *session,
-                    text,
-                }];
+                // The branch bar shows from the start, not after the first step.
+                return vec![
+                    Intent::Send {
+                        session: *session,
+                        text,
+                    },
+                    Intent::WorkingTree { session: *session },
+                ];
             }
         }
         if let Event::Status {
@@ -957,10 +1019,11 @@ impl Ui {
                 }];
             }
         }
-        // A finished turn may have changed files: what is uncommitted is asked for again.
+        // A finished turn or step may have changed files: what is uncommitted is asked for
+        // again, so the branch bar's counts follow the work as it happens.
         if let Event::Agent {
             session,
-            event: AgentEvent::TurnFinished { .. },
+            event: AgentEvent::TurnFinished { .. } | AgentEvent::ToolResult { .. },
             ..
         } = event
         {

@@ -159,10 +159,13 @@ fn the_first_message_creates_a_session_then_sends_it() {
     });
     assert_eq!(
         then,
-        vec![Intent::Send {
-            session: 7,
-            text: "hi".into()
-        }]
+        vec![
+            Intent::Send {
+                session: 7,
+                text: "hi".into()
+            },
+            Intent::WorkingTree { session: 7 }
+        ]
     );
     assert_eq!(ui.selected, Some(7));
 }
@@ -1177,4 +1180,11 @@ fn the_list_groups_by_status_and_sorts_by_name() {
         (ui.group_by, ui.sort_by, ui.ascending),
         (GroupBy::Folder, SortBy::Updated, false)
     );
+}
+
+#[test]
+fn the_branch_bar_writes_its_counts_with_commas() {
+    assert_eq!(view::thousands(12), "12");
+    assert_eq!(view::thousands(5318), "5,318");
+    assert_eq!(view::thousands(1_234_567), "1,234,567");
 }

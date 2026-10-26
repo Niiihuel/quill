@@ -44,6 +44,17 @@ pub struct FileEffect {
     pub patch: String,
 }
 
+/// The repository a folder is in: its branch, where it pushes, and the branch pull requests
+/// go into.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Repo {
+    pub branch: String,
+    /// `origin`'s URL, when there is one.
+    pub remote: Option<String>,
+    /// The branch `origin` names as its own, such as `main`.
+    pub base: Option<String>,
+}
+
 /// What the UI asks of the engine.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Intent {
@@ -162,10 +173,12 @@ pub enum Event {
         session: SessionId,
         branch: Option<String>,
     },
-    /// What is uncommitted in the session's folder now, against its branch's last commit.
+    /// What is uncommitted in the session's folder now, against its branch's last commit,
+    /// and the repository it is in, if it is in one.
     WorkingTree {
         session: SessionId,
         files: Vec<FileEffect>,
+        repo: Option<Repo>,
     },
     /// The person answered a permission; kept so a session read back shows it answered.
     Decided {

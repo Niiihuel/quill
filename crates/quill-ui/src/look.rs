@@ -102,6 +102,12 @@ tones! {
     slider_mark = hex(0xafafaf), hex(0x6a6a6a);
     /// An active toggle or tab.
     active = hex(0xe5e5e5), hex(0x303030);
+    /// The branch bar over the composer and its chips: the person's dark Desktop draws them
+    /// #252525 and #454545; the light ones are inferred.
+    branch_bar = hex(0xf5f5f5), hex(0x252525);
+    branch_chip = hex(0xffffff), hex(0x454545);
+    branch_chip_edge = hex(0xe3e3e3), hex(0x454545);
+    branch_chip_hover = hex(0xf0f0f0), hex(0x505050);
 }
 
 // Sizes are Desktop's at 1× (Xvfb at 96 dpi, 1408×844), from private notes
@@ -153,15 +159,21 @@ pub fn palette() -> limn::ComponentPalette {
 }
 
 /// Menus: rows light gray under the pointer; Desktop marks the current row with
-/// its check alone.
+/// its check alone. Dark, a menu stands lighter than the page: #303030 with a #373737 edge
+/// and #4F4F4F rows under the pointer.
 pub fn menu_palette() -> limn::ComponentPalette {
     let palette = palette();
+    if is_dark() {
+        return limn::ComponentPalette {
+            surface: hex(0x303030),
+            border: hex(0x373737),
+            hover: hex(0x4f4f4f),
+            selected: hex(0x4f4f4f),
+            ..palette
+        };
+    }
     limn::ComponentPalette {
-        hover: if is_dark() {
-            hex(0x2e2e2e)
-        } else {
-            hex(0xf0f0f0)
-        },
+        hover: hex(0xf0f0f0),
         selected: palette.raised,
         ..palette
     }
@@ -181,19 +193,24 @@ pub fn composer_palette() -> limn::ComponentPalette {
     }
 }
 
-/// Desktop's tooltips are near-black with white words and a gray shortcut; limn
-/// takes one style for every tooltip from its tokens.
+/// Desktop's tooltips are near-black with white words and a gray shortcut, and
+/// white with dark words on a dark page, as the person asked; limn takes one style for every
+/// tooltip from its tokens.
 pub fn install() {
     let mut tokens = limn::tokens();
     // Shortcuts are words, not key caps, in menus and tooltips alike.
     tokens.shortcut_style = limn::ShortcutStyle::Text;
-    let ink = Color::rgb(0x0b, 0x0b, 0x0b);
+    let (fill, text, muted) = if is_dark() {
+        (hex(0xffffff), hex(0x191919), hex(0x6b6b6b))
+    } else {
+        (hex(0x0b0b0b), hex(0xffffff), hex(0xa3a3a3))
+    };
     tokens.tooltip = Some(limn::TooltipStyle {
-        background: ink,
-        border: ink,
-        keycap: ink,
-        text: Color::rgb(0xff, 0xff, 0xff),
-        muted: Color::rgb(0xa3, 0xa3, 0xa3),
+        background: fill,
+        border: fill,
+        keycap: fill,
+        text,
+        muted,
         shadow: Color::rgba(0, 0, 0, 40),
     });
     limn::set_tokens(tokens);

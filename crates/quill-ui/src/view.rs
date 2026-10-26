@@ -54,6 +54,10 @@ pub const SEARCH_NEW: &str = "search:new";
 pub const TITLE_MENU: &str = "title-menu";
 /// The field the title turns into while the person renames the session.
 pub const TITLE_FIELD: &str = "title:field";
+/// The branch bar's pull request, the menu that picks its kind, and its close button.
+pub const PR_CREATE: &str = "pr:create";
+pub const PR_MENU: &str = "pr-menu";
+pub const BAR_CLOSE: &str = "branch-bar:close";
 pub const FILTER_RESET: &str = "filter:reset";
 pub const DELETE_CONFIRM: &str = "delete:confirm";
 pub const DELETE_CANCEL: &str = "delete:cancel";
@@ -2720,8 +2724,11 @@ fn composer(
     .card_radius(14.0)
     .context(composer_footer(store, session, ui, palette))
     .render();
-    if session.is_some() {
-        return box_;
+    if let Some(session) = session {
+        return match branch_bar(session, ui, column, palette) {
+            Some(bar) => Element::column(vec![bar, box_]).gap(8.0),
+            None => box_,
+        };
     }
     // quill runs sessions on this computer only, so "Local" is a label, not a menu.
     let local = Element::row(vec![
@@ -2739,6 +2746,181 @@ fn composer(
         box_,
     ])
     .gap(13.0)
+}
+
+/// A count with commas between its thousands, as the branch bar writes them.
+pub(crate) fn thousands(n: u32) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (at, digit) in digits.chars().enumerate() {
+        if at > 0 && (digits.len() - at).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// Why the branch bar's pull request cannot be opened now, in Desktop's words.
+pub fn pr_blocked(session: &Session) -> Option<&'static str> {
+    let repo = session.repo.as_ref()?;
+    if repo.remote.is_none() {
+        Some("Add a GitHub remote to create a pull request")
+    } else if repo.base.as_ref() == Some(&repo.branch) {
+        Some("Already on the base branch \u{2014} check out a feature branch first")
+    } else if matches!(
+        session.status,
+        SessionStatus::Running | SessionStatus::Starting | SessionStatus::Awaiting
+    ) {
+        Some("Claude is working \u{2014} wait for the turn to finish")
+    } else {
+        None
+    }
+}
+
+/// A chip of the branch bar: 28 px, the bar's lighter fill.
+fn bar_chip(content: Element) -> Element {
+    Element::row(vec![content])
+        .size(None, Some(28.0))
+        .background(look::branch_chip())
+        .border(look::branch_chip_edge(), 1.0)
+        .radius(6.0)
+        .clip_children()
+        .centered_y()
+}
+
+/// The bar over a session's composer, as the person's Desktop keeps it
+///: the folder and its branch, the lines added and
+/// removed since the last commit rolling to each new count, the pull
+/// request in the kind last chosen, and a close. It shows while the folder is a repository.
+fn branch_bar(
+    session: &Session,
+    ui: &Ui,
+    column: f32,
+    palette: ComponentPalette,
+) -> Option<Element> {
+    let repo = session.repo.as_ref()?;
+    if ui.bar_closed.contains(&session.id) {
+        return None;
+    }
+    let mut row = vec![
+        hgap(5.0),
+        muted(folder_name(&session.cwd)).centered_y(),
+        muted(repo.branch.clone())
+            .font_family(FontFamily::Monospace)
+            .centered_y(),
+        Element::spacer().flex(1.0),
+    ];
+    let (added, removed) = session
+        .working
+        .iter()
+        .flatten()
+        .fold((0, 0), |(a, r), f| (a + f.added, r + f.removed));
+    if added + removed > 0 {
+        let count = |key: &str, text: String, color: limn::Color| {
+            limn::RollingNumber::new(format!("bar:{}:{key}", session.id), text, palette)
+                .color(color)
+                .font_size(BODY)
+                .render()
+                .centered_y()
+        };
+        row.push(bar_chip(
+            Element::row(vec![
+                hgap(6.0),
+                count("added", format!("+{}", thousands(added)), look::added()),
+                count(
+                    "removed",
+                    format!("\u{2212}{}", thousands(removed)),
+                    look::removed(),
+                ),
+                hgap(6.0),
+            ])
+            .gap(4.0),
+        ));
+    }
+    let label = if ui.pr_draft {
+        "Create draft PR"
+    } else {
+        "Create PR"
+    };
+    let blocked = pr_blocked(session);
+    // Space at the sides only: the label sits in the middle of the 28 px chip.
+    let main = Element::row(vec![
+        hgap(10.0),
+        text(label)
+            .foreground(if blocked.is_some() {
+                look::muted()
+            } else {
+                look::palette().text
+            })
+            .centered_y(),
+        hgap(10.0),
+    ])
+    .size(None, Some(28.0));
+    let hover = ComponentPalette {
+        hover: look::branch_chip_hover(),
+        ..palette
+    };
+    let main = match blocked {
+        Some(reason) => limn::Tooltip::new(main, "pr:why", reason, look::palette()).render(),
+        None => hover
+            .interactive_surface(Element::clickable(PR_CREATE, main))
+            .size(None, Some(28.0)),
+    };
+    let open = ui.open_menu == Some(PR_MENU);
+    let chevron = hover
+        .interactive_surface(Element::clickable(
+            PR_MENU,
+            Element::icon(icons::of(icons::CARET_DOWN))
+                .foreground(look::palette().text)
+                .size(Some(14.0), Some(14.0))
+                .centered(),
+        ))
+        .accessibility_label("Pull request options")
+        .size(Some(28.0), Some(28.0));
+    let chevron = if open {
+        chevron.background(look::branch_chip_hover())
+    } else {
+        chevron
+    };
+    let kinds = vec![
+        limn::DropdownMenuItem::new("pr-kind:ready", "Create PR")
+            .radio(!ui.pr_draft)
+            .into(),
+        limn::DropdownMenuItem::new("pr-kind:draft", "Create draft PR")
+            .radio(ui.pr_draft)
+            .into(),
+    ];
+    let chevron = menu(
+        chevron,
+        kinds,
+        open,
+        PR_MENU,
+        200.0,
+        limn::PopoverPlacement::TopEnd,
+    );
+    row.push(bar_chip(Element::row(vec![
+        main,
+        Element::spacer()
+            .background(look::branch_bar())
+            .size(Some(1.0), Some(28.0)),
+        chevron,
+    ])));
+    row.push(icon_tool(
+        BAR_CLOSE,
+        icons::of(icons::CLOSE),
+        "Close",
+        28.0,
+        palette,
+    ));
+    Some(
+        Element::row(row)
+            .gap(8.0)
+            .padding(8.0)
+            .size(Some(column), Some(45.0))
+            .background(look::branch_bar())
+            .radius(12.0),
+    )
 }
 
 /// A round-cornered 34 px icon button inside the composer, gray under the pointer and while

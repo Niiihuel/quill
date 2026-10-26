@@ -167,6 +167,26 @@ fn counts(patch: &str) -> (u32, u32) {
     })
 }
 
+/// The repository `dir` is in, if it is in one: its branch, `origin` and the branch
+/// `origin` names as its own.
+pub fn repo(dir: &Path) -> Option<quill_model::Repo> {
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .ok()?;
+        let out = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        (output.status.success() && !out.is_empty()).then_some(out)
+    };
+    Some(quill_model::Repo {
+        branch: branch(dir)?,
+        remote: git(&["remote", "get-url", "origin"]),
+        base: git(&["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+            .map(|head| head.trim_start_matches("origin/").to_owned()),
+    })
+}
+
 /// The branch checked out in `dir`'s own repository, if it is one.
 pub fn branch(dir: &Path) -> Option<String> {
     let output = Command::new("git")

@@ -340,13 +340,16 @@ impl Router {
                 if let Some(cwd) = self.folders.get(&session).cloned() {
                     let sink = self.sink.clone();
                     tokio::spawn(async move {
-                        let files =
-                            tokio::task::spawn_blocking(move || quill_git::working_changes(&cwd))
-                                .await
-                                .ok()
-                                .and_then(Result::ok)
-                                .unwrap_or_default();
-                        sink(Event::WorkingTree { session, files });
+                        let read = tokio::task::spawn_blocking(move || {
+                            let files = quill_git::working_changes(&cwd).unwrap_or_default();
+                            (files, quill_git::repo(&cwd))
+                        });
+                        let (files, repo) = read.await.unwrap_or_default();
+                        sink(Event::WorkingTree {
+                            session,
+                            files,
+                            repo,
+                        });
                     });
                 }
                 return;
