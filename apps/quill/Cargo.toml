@@ -11,6 +11,7 @@ limn.workspace = true
 limn-egui.workspace = true
 eframe.workspace = true
 quill-ui = { path = "../../crates/quill-ui" }
+quill-components = { path = "../../crates/quill-components" }
 quill-model = { path = "../../crates/quill-model" }
 quill-engine = { path = "../../crates/quill-engine" }
 # The platform's own folder dialog, through the desktop portal (no GTK linked in).

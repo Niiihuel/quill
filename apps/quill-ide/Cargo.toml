@@ -1,0 +1,31 @@
+[package]
+name = "quill-ide"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "quill-ide: a native code reader and editor in quill's look, drawn with limn."
+
+[dependencies]
+# Tree-sitter's highlighting, which tells types, properties and functions apart.
+limn = { workspace = true, features = ["syntax"] }
+limn-egui.workspace = true
+limn-editor.workspace = true
+# Tree-sitter's folds and declarations, for folding, sticky scopes and the symbols' path.
+limn-language = { path = "../../../limn-quill-integration/crates/limn-language" }
+eframe.workspace = true
+quill-components = { path = "../../crates/quill-components" }
+# The terminal's shells, as quill runs them.
+quill-pty = { path = "../../crates/quill-pty" }
+# Lists a folder as git sees it, .gitignore and all, as ripgrep does.
+ignore = "0.4"
+serde.workspace = true
+serde_json.workspace = true
+# The platform's own folder dialog, through the desktop portal (no GTK linked in), as quill's.
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+# A line diff of a file against its last commit, for the gutter's marks.
+similar = "2"
+# The desktop's trash, where the tree moves what it deletes.
+trash = "5"
+# renameat2 with RENAME_NOREPLACE: a rename in the tree never replaces a file.
+libc = "0.2"

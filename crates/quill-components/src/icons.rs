@@ -76,6 +76,14 @@ pub const COLLAPSE: &str = icon!("<path d='M16.5 9h-5.5V3.5M11 9l6-6M3.5 11H9v5.
 pub const FOLDER: &str = icon!(
     "<path d='M2.25 5.5a2 2 0 0 1 2-2h3.6l2.15 2.25h5.75a2 2 0 0 1 2 2v7.25a2 2 0 0 1-2 2h-11.5a2 2 0 0 1-2-2z'/>"
 );
+/// The folder opened: its front leant forward off the back.
+pub const FOLDER_OPEN: &str = icon!(
+    "<path d='M2.25 14.75V5.5a2 2 0 0 1 2-2h3.6l2.15 2.25h5.25a2 2 0 0 1 2 2v1.25'/><path d='M4.4 9.9a1.75 1.75 0 0 1 1.62-1.15h11.1a.9.9 0 0 1 .84 1.23l-1.9 5.05a1.75 1.75 0 0 1-1.64 1.12h-10.67a1 1 0 0 1-.94-1.35z'/>"
+);
+/// A sheet with its corner folded: a file.
+pub const FILE: &str = icon!(
+    "<path d='M11.25 2.5h-5.5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h8.5a2 2 0 0 0 2-2v-8.5z'/><path d='M11.25 2.5v3.5a1 1 0 0 0 1 1h4'/>"
+);
 pub const LAPTOP: &str = icon!(
     "<rect x='3.5' y='3.75' width='13' height='9.25' rx='1.75'/><path d='M1.75 16.25h16.5'/>"
 );
@@ -190,6 +198,8 @@ pub const ALL: &[(&str, &str)] = &[
     ("expand", EXPAND),
     ("collapse", COLLAPSE),
     ("folder", FOLDER),
+    ("folder_open", FOLDER_OPEN),
+    ("file", FILE),
     ("laptop", LAPTOP),
     ("cloud", CLOUD),
     ("globe", GLOBE),

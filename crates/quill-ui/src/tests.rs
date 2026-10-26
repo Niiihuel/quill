@@ -1087,12 +1087,12 @@ fn a_hidden_sidebar_gives_its_width_to_the_conversation() {
     let mut tree = UiTree::new(view(&store, &ui, window));
     tree.layout(window);
     click(&store, &mut ui, view::SIDEBAR_TOGGLE);
-    assert!(!ui.sidebar_open);
+    assert!(!ui.sidebar.open);
     // It slides away on a spring and has nothing left in a second.
     ui.tick(&store);
     let later = std::time::Instant::now() + std::time::Duration::from_secs(1);
-    assert_eq!(ui.sidebar_shown.target(), 0.0);
-    assert_eq!(ui.sidebar_shown.value(later), 0.0);
+    assert_eq!(ui.sidebar.shown.target(), 0.0);
+    assert_eq!(ui.sidebar.shown.value(later), 0.0);
     tree.set_root(view(&store, &ui, window));
     tree.layout(window);
 }
@@ -1720,19 +1720,19 @@ fn hidden_by_a_click_the_sidebar_peeks_again_only_once_the_pointer_left_its_butt
     ui.hovered = Some(view::SIDEBAR_TOGGLE.into());
     ui.pointer = Some(limn::Point::new(20.0, 18.0));
     click(&store, &mut ui, view::SIDEBAR_TOGGLE);
-    assert!(!ui.sidebar_open);
+    assert!(!ui.sidebar.open);
     ui.tick(&store);
-    assert!(!ui.peek);
+    assert!(!ui.sidebar.peek);
     // Over the sidebar sliding away from under it, the pointer has not left yet.
     ui.hovered = None;
     ui.tick(&store);
-    assert!(!ui.peek);
+    assert!(!ui.sidebar.peek);
     ui.pointer = Some(limn::Point::new(700.0, 300.0));
     ui.tick(&store);
     ui.hovered = Some(view::SIDEBAR_TOGGLE.into());
     ui.pointer = Some(limn::Point::new(20.0, 18.0));
     ui.tick(&store);
-    assert!(ui.peek);
+    assert!(ui.sidebar.peek);
 }
 
 #[test]
@@ -1915,29 +1915,29 @@ fn token_counts_read_as_desktop_writes_them() {
 #[test]
 fn the_hidden_sidebar_peeks_from_its_button_and_goes_once_the_pointer_left() {
     let (store, mut ui) = store_with_session();
-    ui.sidebar_open = false;
+    ui.sidebar.open = false;
     ui.hovered = Some(view::SIDEBAR_TOGGLE.into());
     ui.pointer = Some(limn::Point::new(20.0, 18.0));
     ui.tick(&store);
-    assert!(ui.peek);
+    assert!(ui.sidebar.peek);
     // On the sidebar it stays; off it, it goes after 180 ms.
     ui.hovered = None;
     ui.pointer = Some(limn::Point::new(120.0, 300.0));
     ui.tick(&store);
-    assert!(ui.peek);
+    assert!(ui.sidebar.peek);
     ui.pointer = Some(limn::Point::new(700.0, 300.0));
     ui.tick(&store);
-    assert!(ui.peek);
+    assert!(ui.sidebar.peek);
     std::thread::sleep(std::time::Duration::from_millis(200));
     ui.tick(&store);
-    assert!(!ui.peek);
+    assert!(!ui.sidebar.peek);
     // The window's edge opens it once the pointer rested there.
     ui.pointer = Some(limn::Point::new(4.0, 300.0));
     ui.tick(&store);
-    assert!(!ui.peek);
+    assert!(!ui.sidebar.peek);
     std::thread::sleep(std::time::Duration::from_millis(120));
     ui.tick(&store);
-    assert!(ui.peek);
+    assert!(ui.sidebar.peek);
 }
 
 #[test]
