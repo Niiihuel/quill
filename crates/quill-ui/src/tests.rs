@@ -1591,21 +1591,21 @@ fn outputs_open_in_a_document_pane_that_saves_and_follows_the_agent() {
         .iter()
         .any(|r| r.id == "doc:open:docs/notes.md"));
     assert!(!frame.regions.iter().any(|r| r.id == "doc:open:old.txt"));
-    assert_eq!(
-        click(&store, &mut ui, "doc:open:docs/notes.md"),
-        vec![Intent::ReadFile {
+    // It opens in the Files pane, its folder shown in the tree.
+    assert!(
+        click(&store, &mut ui, "doc:open:docs/notes.md").contains(&Intent::ReadFile {
             session: 1,
             path: "docs/notes.md".into()
-        }]
+        })
     );
-    assert!(ui.pane_open(Pane::Document));
+    assert!(ui.pane_open(Pane::Files));
     let read = |text: &str| Event::FileRead {
         session: 1,
         path: "docs/notes.md".into(),
         text: Some(text.into()),
     };
     ui.applied(&read("# Notes\n"));
-    let document = ui.document.as_ref().unwrap();
+    let document = ui.document().unwrap();
     assert!(document.preview && !document.dirty);
     assert_eq!(document.text().as_deref(), Some("# Notes\n"));
     // What the agent writes shows at once while the person has not edited it.
@@ -1629,21 +1629,18 @@ fn outputs_open_in_a_document_pane_that_saves_and_follows_the_agent() {
         &store,
         &mut ui,
         &UiAction::EditorChanged {
-            id: view::DOC_EDITOR.into(),
+            id: crate::files::editor_id("docs/notes.md"),
             document_id: 0,
             revision: 1,
         },
     );
-    assert!(ui.document.as_ref().unwrap().dirty);
+    assert!(ui.document().unwrap().dirty);
     assert!(!ui
         .applied(&wrote)
         .iter()
         .any(|i| matches!(i, Intent::ReadFile { .. })));
     ui.applied(&read("# Other\n"));
-    assert_eq!(
-        ui.document.as_ref().unwrap().text().as_deref(),
-        Some("# Notes\n")
-    );
+    assert_eq!(ui.document().unwrap().text().as_deref(), Some("# Notes\n"));
     assert_eq!(
         click(&store, &mut ui, view::DOC_SAVE),
         vec![Intent::WriteFile {
@@ -1653,7 +1650,7 @@ fn outputs_open_in_a_document_pane_that_saves_and_follows_the_agent() {
         }]
     );
     ui.applied(&read("# Notes\n"));
-    assert!(!ui.document.as_ref().unwrap().dirty);
+    assert!(!ui.document().unwrap().dirty);
 }
 
 #[test]
@@ -2113,7 +2110,7 @@ fn the_files_pane_lists_the_folder_opens_a_file_and_follows_a_rename() {
             path: "a.md".into()
         }]
     );
-    assert!(ui.pane_open(Pane::Document));
+    assert!(ui.pane_open(Pane::Files));
     // Renamed, the document goes with it; in the trash, it closes.
     let rename = quill_files::Op::Rename {
         path: "a.md".into(),
@@ -2124,7 +2121,7 @@ fn the_files_pane_lists_the_folder_opens_a_file_and_follows_a_rename() {
         op: rename,
         result: Ok(vec!["b.md".into()]),
     });
-    assert_eq!(ui.document.as_ref().unwrap().path, "b.md");
+    assert_eq!(ui.document().unwrap().path, "b.md");
     let trash = quill_files::Op::Trash {
         path: "b.md".into(),
     };
@@ -2133,7 +2130,7 @@ fn the_files_pane_lists_the_folder_opens_a_file_and_follows_a_rename() {
         op: trash,
         result: Ok(vec![]),
     });
-    assert!(ui.document.is_none());
+    assert!(ui.document().is_none());
     // Closed and opened again, it lists again what it had.
     click(&store, &mut ui, view::FILES_TOGGLE);
     let again = click(&store, &mut ui, view::FILES_TOGGLE);
@@ -2180,16 +2177,16 @@ fn code_from_an_editor_goes_to_its_folders_session_as_a_mention() {
 #[test]
 fn a_wider_pane_widens_the_column_and_panes_stack_and_expand_on_springs() {
     let (store, mut ui) = store_with_session();
-    ui.open_pane(Pane::Files);
+    ui.open_pane(Pane::Terminal);
     ui.tick(&store);
-    assert_eq!(ui.column_share.target(), 0.25);
-    // A document beside the tree takes a reader's width, and opens under it.
-    ui.open_pane(Pane::Document);
+    assert_eq!(ui.column_share.target(), 1.0 / 3.0);
+    // The file tile takes a reader's width, and opens under the terminal.
+    ui.open_pane(Pane::Files);
     ui.tick(&store);
     assert_eq!(ui.column_share.target(), 0.5);
     assert_eq!(ui.stack_shown.target(), 1.0);
     // Expanded, it grows over the conversation, and moves while it does.
-    ui.expanded_pane = Some(Pane::Document);
+    ui.expanded_pane = Some(Pane::Files);
     ui.tick(&store);
     assert_eq!(ui.expand_shown.target(), 1.0);
     assert!(ui.animating());

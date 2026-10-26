@@ -2203,6 +2203,7 @@ fn tree(ide: &Ide, height: f32) -> Element {
     file_tree::view(
         &ide.tree,
         &ide.pack,
+        file_tree::Look::Ide,
         shown,
         note,
         [look::SIDEBAR_WIDTH, height],
@@ -2871,10 +2872,6 @@ pub fn indent_style(prefs: &Prefs) -> limn_editor::IndentStyle {
         limn_editor::IndentStyle::Tabs(width)
     }
 }
-
-/// Code in quill's inks, as its conversation's code blocks: keywords orange, strings the
-/// added green, functions the cursor's blue, interpolations the removed red;
-/// types in quill's violet and properties in its mention blue, inferred.
 
 /// The line under the editor, quiet as quill's pane headers: the Vim mode, the file and
 /// whether it is saved, then the caret, the language, the line ending and the branch.

@@ -4,6 +4,7 @@
 //! disk: it says what to list and which operation to run (`Job`, run by the host beside the
 //! window with `quill_files`), and what the host must do about its own (`Outcome`).
 
+use crate::icons;
 use crate::look::{self, SMALL};
 use crate::packs::Pack;
 use crate::pieces::*;
@@ -21,6 +22,16 @@ const TRASH_CANCEL: &str = "trash:cancel";
 pub const ERROR_DISMISS: &str = "file-error:dismiss";
 /// A row of the tree: denser than the sidebar's 32 px, as a reader's tree is.
 pub const ROW: f32 = 26.0;
+const DESKTOP_ROW: f32 = 24.0;
+
+/// How the tree is drawn: quill-ide's, with its icon pack and depth guides, or Desktop's in
+/// its file tile, quieter: 24 px rows 8 px deeper a level, a folder's chevron alone, a file's
+/// plain glyph, no guides (2.9939.4 `cccc2cf0a` `ag`, `shared-15` `Qx`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Look {
+    Ide,
+    Desktop,
+}
 
 /// A name being typed for the tree: of something new in a folder (ending in `/`, a folder),
 /// or of a file or folder renamed. Its words, and why the last try failed.
@@ -493,6 +504,7 @@ impl FileTree {
 pub fn view(
     tree: &FileTree,
     pack: &Pack,
+    style: Look,
     selected: Option<&Path>,
     note: Option<Element>,
     [width, height]: [f32; 2],
@@ -529,8 +541,33 @@ pub fn view(
         look::menu_palette(),
     )
     .render()];
-    for ((entry, _), guides) in visible.iter().zip(limn::guides_for_depths(&depths)) {
+    for ((entry, depth), guides) in visible.iter().zip(limn::guides_for_depths(&depths)) {
         let open = entry.dir && tree.expanded.contains(&entry.path);
+        if style == Look::Desktop {
+            let glyph = match (entry.dir, open) {
+                (true, true) => icons::CARET_DOWN,
+                (true, false) => icons::CARET_RIGHT,
+                (false, _) => icons::FILE,
+            };
+            let content = vec![
+                hgap(8.0 + *depth as f32 * 8.0),
+                Element::icon(icons::of(glyph))
+                    .foreground(look::muted())
+                    .size(Some(14.0), Some(14.0))
+                    .centered_y(),
+                Element::truncated_text(name(&entry.path))
+                    .font_family(limn::FontFamily::Sans)
+                    .font_size(look::BODY)
+                    .foreground(look::palette().text)
+                    .flex(1.0)
+                    .centered_y(),
+            ];
+            let id = row_id(&entry.path, entry.dir);
+            let selected = selected == Some(entry.path.as_path());
+            let row = side_row(id, content, selected, DESKTOP_ROW).size(Some(row_width), None);
+            rows.push(row_menu(tree, &entry.path, entry.dir, row));
+            continue;
+        }
         let (icon, ink) = pack.icon(&entry.path, entry.dir, open);
         let icon = Element::icon(icon)
             .foreground(ink)

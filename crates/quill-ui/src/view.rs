@@ -85,9 +85,7 @@ pub const SIDE_OPEN: &str = "side:open";
 pub use quill_components::settings::{SETTINGS_CLOSE, SETTINGS_OPEN, SETTINGS_SEARCH};
 pub const SETTINGS_FIRST: &str = "general";
 pub const SETTINGS_STORAGE_OPEN: &str = "settings:storage:open";
-/// The document pane's editor and its buttons.
-pub const DOC_EDITOR: &str = "doc:editor";
-pub const DOC_EDIT: &str = "doc:edit";
+/// The Files pane's buttons over the file on screen.
 pub const DOC_PREVIEW: &str = "doc:preview";
 pub const DOC_SAVE: &str = "doc:save";
 /// "Show more" under Completed.
@@ -394,7 +392,6 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
                 Pane::Agent => agent_pane(store, session, ui, width, height, palette),
                 Pane::Plan => plan_pane(session, ui, width, height),
                 Pane::Side => side_pane(store, ui, width, height, palette),
-                Pane::Document => document_pane(ui, width, height, palette),
                 Pane::Browser => browser_pane(session, ui, width, height, palette),
                 Pane::Files => files_pane(ui, width, height, palette),
             };
@@ -477,9 +474,9 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     // The hidden sidebar peeking over the page [3.6556.2 `shared-16`].
     let root = ui.sidebar.peeking(root, with_line, window);
     let root = search_dialog(store, ui, root, palette);
-    // The Files pane's naming dialog and its trash's question.
-    let root = match ui.selected.and_then(|s| ui.files.get(&s)) {
-        Some(tree) if ui.pane_open(Pane::Files) => quill_components::tree::dialogs(tree, root),
+    // The Files pane's naming dialog, its trash's question, and a tab's edits to give up.
+    let root = match ui.files_pane() {
+        Some(pane) if ui.pane_open(Pane::Files) => files_dialogs(pane, root),
         _ => root,
     };
     let root = settings_dialog(store, ui, root, window, palette);
@@ -667,42 +664,284 @@ fn terminal_pane(
 /// The session's browser [notes, docs/browser.md]: its tabs over a toolbar of back,
 /// forward, reload and the address, then the page itself, which takes the pointer and the
 /// keys while it has the focus. Desktop's texts, less the agent's name.
-/// The session's folder as quill-ide's tree, the file the document pane shows marked; why the
-/// last operation failed over it, until dismissed.
+/// The Files pane, as Desktop's file tile [2.9939.4 `cccc2cf0a` `Ig`]: the tree's toggle and
+/// the open files' tabs over the tree and the file on screen. Narrower than the two side by
+/// side, the tree takes the pane while it shows, as Desktop's does over its tabs.
 fn files_pane(ui: &Ui, width: f32, height: f32, palette: ComponentPalette) -> Element {
     use quill_components::{packs::Pack, tree};
-    let Some(files) = ui.selected.and_then(|s| ui.files.get(&s)) else {
+    let Some(pane) = ui.files_pane() else {
         return Element::spacer().size(Some(width), Some(height));
     };
-    let tools = pane_tools(Pane::Files, ui, palette);
-    let header = pane_header(text("Files").centered_y(), tools, width);
-    let mut below = height - look::PANE_HEADER - 1.0;
-    let mut body = vec![header];
-    if let Some(error) = &files.error {
-        let ok = keyed_button(tree::ERROR_DISMISS, "OK", "", false, true, palette);
-        let row = Element::row(vec![
-            muted(error.clone())
-                .foreground(look::failed())
-                .flex(1.0)
-                .centered_y(),
-            ok.centered_y(),
-        ])
-        .gap(8.0)
-        .padding(8.0);
-        body.push(row);
-        below -= 44.0;
-    }
-    let shown = (ui.document.as_ref())
-        .filter(|d| Some(d.session) == ui.selected)
-        .map(|d| files.root.join(&d.path));
-    body.push(tree::view(
-        files,
-        &Pack::Quill,
-        shown.as_deref(),
+    let toggle = tool_surface(
+        crate::files::TREE_TOGGLE,
+        icons::of(icons::LIST),
+        if pane.tree_open {
+            "Hide file tree"
+        } else {
+            "Show file tree"
+        },
+        24.0,
+        pane.tree_open.then(look::active),
+        look::tool_hover(),
         None,
-        [width, below.max(0.0)],
+    );
+    let tools = pane_tools(Pane::Files, ui, palette);
+    let room = width - 12.0 - 32.0 - tools.len() as f32 * 32.0 - 16.0;
+    let tabs: Vec<Element> = (pane.tabs.iter().enumerate())
+        .map(|(i, d)| file_tab(i, d, pane.active == Some(i), palette))
+        .collect();
+    let lead = Element::row(vec![
+        toggle.centered_y(),
+        Element::row(tabs)
+            .gap(2.0)
+            .size(Some(room.max(0.0)), Some(look::PANE_HEADER))
+            .clip_children(),
+    ])
+    .gap(6.0);
+    let header = pane_header(lead, tools, width);
+    let below = height - look::PANE_HEADER - 1.0;
+    // Desktop's tree is 240 px by default, beside a file at least 160 wide (`Pg`).
+    let tree_width = 240.0_f32.min((width * 0.45).round());
+    let beside = width >= 240.0 + 160.0;
+    let shown = pane.document().map(|d| pane.absolute(d));
+    let tree = |w: f32| {
+        let mut column = vec![];
+        if let Some(error) = &pane.tree.error {
+            let ok = keyed_button(tree::ERROR_DISMISS, "OK", "", false, true, palette);
+            column.push(
+                Element::row(vec![
+                    muted(error.clone())
+                        .foreground(look::failed())
+                        .flex(1.0)
+                        .centered_y(),
+                    ok.centered_y(),
+                ])
+                .gap(8.0)
+                .padding(8.0),
+            );
+        }
+        let rows = below - if column.is_empty() { 0.0 } else { 44.0 };
+        column.push(tree::view(
+            &pane.tree,
+            &Pack::Quill,
+            tree::Look::Desktop,
+            shown.as_deref(),
+            None,
+            [w, rows.max(0.0)],
+        ));
+        Element::column(column).size(Some(w), Some(below))
+    };
+    let body = match (pane.tree_open, beside) {
+        (true, true) => Element::row(vec![
+            tree(tree_width),
+            vline(below),
+            file_view(pane, width - tree_width - 1.0, below, palette),
+        ]),
+        (true, false) => tree(width),
+        (false, _) => file_view(pane, width, below, palette),
+    };
+    Element::column(vec![header, body]).size(Some(width), Some(height))
+}
+
+/// A file's tab, as Desktop's [2.9939.4 `cf550b864`]: 24 px, its name up to 140 px, the
+/// close always there, the one on screen on the selected fill.
+fn file_tab(
+    at: usize,
+    document: &crate::Document,
+    active: bool,
+    palette: ComponentPalette,
+) -> Element {
+    let name = document
+        .path
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let label = Element::truncated_text(name)
+        .font_family(FontFamily::Sans)
+        .font_size(BODY)
+        .foreground(if active {
+            look::palette().text
+        } else {
+            look::muted()
+        })
+        .max_width(140.0)
+        .centered_y();
+    let hover = ComponentPalette {
+        hover: look::row_hover(),
+        ..palette
+    };
+    let tab = hover.interactive_surface(Element::clickable(
+        format!("doc:tab:{at}"),
+        Element::row(vec![hgap(8.0), label, hgap(2.0)]).size(None, Some(24.0)),
     ));
-    Element::column(body).size(Some(width), Some(height))
+    let close = icon_tool(
+        &format!("doc:close:{at}"),
+        icons::of(icons::CLOSE),
+        "Close file",
+        20.0,
+        palette,
+    );
+    let tab = Element::row(vec![tab, close, hgap(2.0)])
+        .size(None, Some(24.0))
+        .radius(6.0)
+        .centered_y();
+    if active {
+        tab.background(look::selected())
+    } else {
+        tab
+    }
+}
+
+/// The file on screen, as Desktop's: its path, folders muted leading to the tree and its name
+/// copying itself, and its tools (Reload, Preview or source, Find, Copy; Cancel and Save while
+/// edited), over the file in quill's editor, rendered for Markdown, or what keeps it from
+/// showing. With no file, Desktop's words for an empty tile.
+fn file_view(
+    pane: &crate::files::FilesPane,
+    width: f32,
+    height: f32,
+    palette: ComponentPalette,
+) -> Element {
+    use crate::files;
+    use quill_components::{code, find};
+    let note = |title: &str, words: &str| {
+        let fill = || Element::spacer().flex(1.0);
+        Element::column(vec![
+            fill(),
+            text(title).centered_x(),
+            muted(words).font_size(SMALL).centered_x(),
+            fill(),
+        ])
+        .gap(6.0)
+        .size(Some(width), Some(height))
+    };
+    let Some(document) = pane.document() else {
+        return note(
+            "Open files appear here",
+            "Pick a file in the tree, or click a file path in the conversation.",
+        );
+    };
+    const BAR: f32 = 32.0;
+    let root = pane.tree.root.clone();
+    let file = document.path.clone();
+    let crumbs = limn::Breadcrumb::from_path("doc:crumbs", document.path.clone(), look::palette())
+        .segment_action(move |segment| {
+            Some(if segment == file {
+                files::COPY_PATH.into()
+            } else {
+                format!("tree:reveal-dir:{}", root.join(segment).display())
+            })
+        });
+    let tool = |id: &str, icon: &'static str, label: &str| {
+        tool_surface(
+            id,
+            icons::of(icon),
+            label,
+            24.0,
+            None,
+            look::tool_hover(),
+            None,
+        )
+        .centered_y()
+    };
+    let mut tools = vec![];
+    if document.dirty {
+        tools.push(keyed_button(files::REVERT, "Cancel", "", false, true, palette).centered_y());
+        tools.push(keyed_button(DOC_SAVE, "Save", "Ctrl+S", true, true, palette).centered_y());
+    } else {
+        tools.push(tool(files::RELOAD, icons::RELOAD, "Reload file"));
+    }
+    if document.markdown() && document.editor.is_some() {
+        tools.push(if document.preview {
+            tool(DOC_PREVIEW, icons::CODE, "View source")
+        } else {
+            tool(DOC_PREVIEW, icons::EYE, "Preview")
+        });
+    }
+    if document.editor.is_some() && !(document.markdown() && document.preview) {
+        tools.push(tool(find::FIND_OPEN, icons::SEARCH, "Find in file"));
+    }
+    tools.push(tool(files::COPY, icons::COPY, "Copy file contents"));
+    let crumbs = crumbs
+        .width((width - tools.len() as f32 * 32.0 - 120.0).max(80.0))
+        .height(BAR - 1.0)
+        .render();
+    let mut row = vec![hgap(8.0), crumbs.centered_y(), Element::spacer().flex(1.0)];
+    row.extend(tools);
+    row.push(hgap(6.0));
+    let mut column = vec![
+        Element::row(row)
+            .gap(4.0)
+            .size(Some(width), Some(BAR - 1.0)),
+        hline(width, look::pane_border()),
+    ];
+    let mut below = height - BAR;
+    if let Some(error) = &document.error {
+        column.push(
+            Element::row(vec![
+                muted(format!("Not saved: {error}")).foreground(look::failed())
+            ])
+            .padding(10.0),
+        );
+        below -= 40.0;
+    }
+    let path = pane.absolute(document);
+    column.push(match &document.editor {
+        None if document.unreadable => note("This file can't be shown as text.", ""),
+        None => Element::spacer().size(Some(width), Some(below)),
+        Some(editor) if document.markdown() && document.preview => {
+            let text = document.text().unwrap_or_default();
+            let ids = code::PreviewIds {
+                id: "doc:preview-text",
+                scroll: "doc:scroll",
+                link: "doc:link:",
+                diagram: "doc:diagram:",
+            };
+            let _ = editor;
+            code::markdown_preview(&text, ids, &[], [width, below])
+        }
+        Some(editor) => code::editor(files::editor_id(&document.path), editor, &path)
+            .soft_wrap(document.markdown())
+            .reveal_top_inset(if pane.find.is_some() { 48.0 } else { 0.0 })
+            .search_matches(
+                (pane.find.as_ref())
+                    .and_then(|f| f.results.as_ref())
+                    .map_or(0, |r| r.revision),
+                (pane.find.as_ref())
+                    .and_then(|f| f.results.as_ref())
+                    .map(|r| r.matches.clone())
+                    .unwrap_or_default(),
+            )
+            .height(below)
+            .render(),
+    });
+    // The find bar floats under the end of the line over the file.
+    if let Some(bar) = &pane.find {
+        let anchor = Element::spacer().size(Some(width - 12.0), Some(0.0));
+        column.insert(2, find::bar(bar, width, anchor));
+    }
+    Element::column(column).size(Some(width), Some(height))
+}
+
+/// The pane's dialogs over `base`: the tree's (a name, the trash's question) and Desktop's
+/// question before a tab with edits not saved closes.
+fn files_dialogs(pane: &crate::files::FilesPane, base: Element) -> Element {
+    use crate::files;
+    let base = quill_components::tree::dialogs(&pane.tree, base);
+    let name = (pane.discarding)
+        .and_then(|at| pane.tabs.get(at))
+        .map(|d| d.path.rsplit('/').next().unwrap_or_default().to_owned())
+        .unwrap_or_default();
+    confirm(
+        base,
+        pane.discarding.is_some(),
+        "Discard unsaved changes?",
+        &format!("Your edits to {name} have not been saved. Leaving this tab discards them."),
+        "Discard",
+        files::DISCARD,
+        files::KEEP,
+    )
 }
 
 fn browser_pane(
@@ -5792,94 +6031,6 @@ fn outputs(session: &Session) -> Vec<String> {
     };
     paths.retain(|p| !gone(p));
     paths
-}
-
-/// A file of the session's folder to read and edit:
-/// Markdown rendered until "Edit", any other text in limn's editor; "Save" (or Ctrl+S) writes
-/// it while it has changes. What the agent writes to it shows at once, unless the person
-/// changed it first.
-fn document_pane(ui: &Ui, width: f32, height: f32, palette: ComponentPalette) -> Element {
-    let Some(document) = &ui.document else {
-        return Element::spacer().size(Some(width), Some(height));
-    };
-    let (dir, name) = match document.path.rsplit_once('/') {
-        Some((dir, name)) => (dir.to_owned(), name.to_owned()),
-        None => (String::new(), document.path.clone()),
-    };
-    let mut lead = vec![text(name).centered_y()];
-    if !dir.is_empty() {
-        lead.push(muted(dir).font_size(SMALL).centered_y());
-    }
-    let mut tools = vec![];
-    if document.markdown() && document.editor.is_some() {
-        tools.push(if document.preview {
-            keyed_button(DOC_EDIT, "Edit", "", false, true, palette)
-        } else {
-            keyed_button(DOC_PREVIEW, "Preview", "", false, true, palette)
-        });
-    }
-    if document.dirty {
-        tools.push(keyed_button(
-            DOC_SAVE, "Save", "Ctrl+S", true, true, palette,
-        ));
-    }
-    tools.extend(pane_tools(Pane::Document, ui, palette));
-    let header = pane_header(Element::row(lead).gap(8.0), tools, width);
-    let below = height - look::PANE_HEADER - 1.0;
-    let mut body = vec![];
-    if let Some(error) = &document.error {
-        body.push(
-            Element::row(vec![
-                muted(format!("Not saved: {error}")).foreground(look::failed())
-            ])
-            .padding(12.0),
-        );
-    }
-    body.push(match &document.editor {
-        None if document.unreadable => {
-            Element::column(vec![muted("This file can't be shown as text.")]).padding(16.0)
-        }
-        None => Element::spacer().size(None, Some(0.0)),
-        Some(_) if document.markdown() && document.preview => Element::scroll(
-            "doc:scroll",
-            Element::column(vec![
-                Markdown::new(&document.text().unwrap_or_default(), look::palette())
-                    .width(width - 48.0)
-                    .font_size(chat())
-                    .render()
-                    .element,
-            ])
-            .padding(24.0),
-        )
-        .flex(1.0),
-        Some(editor) => Element::column(vec![limn::CodeEditor::new(DOC_EDITOR, editor.clone())
-            .palette(look::palette())
-            .language(language_of(&document.path))
-            .soft_wrap(document.markdown())
-            .line_numbers(!document.markdown())
-            .height(below - 16.0 - if document.error.is_some() { 40.0 } else { 0.0 })
-            .render()])
-        .padding(8.0),
-    });
-    Element::column(vec![header, Element::column(body).flex(1.0)]).size(Some(width), Some(height))
-}
-
-/// The syntax a file's extension says it is in, for the editor's colors.
-fn language_of(path: &str) -> limn::CodeLanguage {
-    use limn::CodeLanguage::*;
-    match path.rsplit('.').next().unwrap_or_default() {
-        "rs" => Rust,
-        "json" => Json,
-        "js" | "mjs" | "cjs" => JavaScript,
-        "ts" => TypeScript,
-        "tsx" | "jsx" => Tsx,
-        "py" => Python,
-        "toml" => Toml,
-        "css" => Css,
-        "html" => Html,
-        "md" | "markdown" => Markdown,
-        _ => Plain,
-    }
 }
 
 /// The right panel's Context card, folded until opened.
