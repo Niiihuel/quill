@@ -123,6 +123,10 @@ pub enum TreeKey {
     New,
     Rename,
     Trash,
+    /// nvim-tree's `y`, `x` and `p`: copy, cut and paste.
+    Copy,
+    Cut,
+    Paste,
 }
 
 /// When a file or folder last changed on the disk; `None` when it is not there.
@@ -209,7 +213,7 @@ pub enum Loaded {
     Changes(PathBuf, u64, Vec<(std::ops::Range<usize>, Change)>),
     Analyzed(PathBuf, Structure),
     /// What a file operation made or moved to, from the folder, or why it did not.
-    File(Op, Result<Option<PathBuf>, String>),
+    File(Op, Result<Vec<PathBuf>, String>),
     /// Edits made on the disk, or why not.
     EditsApplied(PathBuf, Result<Stamp, String>),
 }
@@ -451,6 +455,8 @@ pub struct Ide {
     pub naming: Option<Naming>,
     pub trashing: Option<PathBuf>,
     pub file_error: Option<String>,
+    /// What the tree copied (or cut, when true) to paste in another folder.
+    pub tree_clipboard: Option<(Vec<PathBuf>, bool)>,
     /// Language servers: what was asked and waits for the host to send, each file's
     /// diagnostics with the revision they came for, the hover shown, the references listed
     /// with the row Enter opens, the name a symbol is being renamed to, and the last news.
@@ -545,6 +551,7 @@ impl Ide {
             naming: None,
             trashing: None,
             file_error: None,
+            tree_clipboard: None,
             lsp_asks: vec![],
             diagnostics: HashMap::new(),
             hover: None,
@@ -1073,6 +1080,30 @@ impl Ide {
             } else {
                 self.trashing = Some(at);
             }
+        } else if let Some(at) = path("tree:yank:") {
+            self.tree_clipboard = Some((vec![at], false));
+        } else if let Some(at) = path("tree:cut:") {
+            // What has changes not saved is not moved under them.
+            if self
+                .buffers
+                .iter()
+                .any(|b| b.path.starts_with(&at) && b.dirty())
+            {
+                self.file_error = Some(format!(
+                    "{} has changes not saved: save or close them first.",
+                    name(&at)
+                ));
+            } else {
+                self.tree_clipboard = Some((vec![at], true));
+            }
+        } else if let Some(into) = path("tree:paste:") {
+            let (sources, cut) = self.tree_clipboard.clone()?;
+            let sources = sources.iter().map(|s| self.relative(s)).collect();
+            let into = self.relative(&into);
+            return Some(vec![Job::File(
+                self.root.clone(),
+                Op::Paste { sources, cut, into },
+            )]);
         } else if let Some(at) = path("tree:copy:") {
             let relative = at.strip_prefix(&self.root).unwrap_or(&at);
             self.copy = Some(relative.display().to_string());
@@ -1138,7 +1169,7 @@ impl Ide {
             Op::CreateFile { name, .. } | Op::CreateDir { name, .. } | Op::Rename { name, .. } => {
                 name
             }
-            Op::Trash { .. } => "",
+            Op::Trash { .. } | Op::Paste { .. } => "",
         }) {
             naming.error = Some(error);
             return vec![];
@@ -1147,9 +1178,9 @@ impl Ide {
     }
 
     /// A file operation done: the tree listed again, and the open files where they are now.
-    fn file_done(&mut self, op: Op, done: Result<Option<PathBuf>, String>) -> Vec<Job> {
-        let made = match done {
-            Ok(made) => made.map(|m| self.root.join(m)),
+    fn file_done(&mut self, op: Op, done: Result<Vec<PathBuf>, String>) -> Vec<Job> {
+        let all: Vec<PathBuf> = match done {
+            Ok(made) => made.into_iter().map(|m| self.root.join(m)).collect(),
             Err(error) => {
                 match self.naming.as_mut() {
                     Some(naming) => naming.error = Some(error),
@@ -1159,9 +1190,27 @@ impl Ide {
             }
         };
         self.naming = None;
+        let made = all.first().cloned();
         let mut jobs = vec![];
         let list = |path: &Path| Job::List(path.parent().unwrap_or(path).to_path_buf());
         match op {
+            Op::Paste { sources, cut, into } => {
+                jobs.push(Job::List(self.root.join(&into)));
+                if cut {
+                    self.tree_clipboard = None;
+                    for (source, moved_to) in sources.iter().zip(&all) {
+                        let old = self.root.join(source);
+                        jobs.push(list(&old));
+                        for buffer in &mut self.buffers {
+                            if let Some(Some(moved)) =
+                                crate::files::moved(&buffer.path, &old, Some(moved_to))
+                            {
+                                buffer.path = moved;
+                            }
+                        }
+                    }
+                }
+            }
             Op::CreateFile { .. } => {
                 if let Some(file) = made {
                     jobs.push(list(&file));
@@ -1536,6 +1585,22 @@ impl Ide {
                 jobs = self.update(&UiAction::Clicked {
                     id: format!("tree:rename:{}", path.display()),
                 });
+                None
+            }
+            TreeKey::Copy | TreeKey::Cut => {
+                let verb = if key == TreeKey::Copy { "yank" } else { "cut" };
+                let id = format!("tree:{verb}:{}", path.display());
+                jobs = self.update(&UiAction::Clicked { id });
+                None
+            }
+            TreeKey::Paste => {
+                let dir = if focused.starts_with("dir:") {
+                    path.clone()
+                } else {
+                    path.parent().map_or(self.root.clone(), Path::to_path_buf)
+                };
+                let id = format!("tree:paste:{}", dir.display());
+                jobs = self.update(&UiAction::Clicked { id });
                 None
             }
             TreeKey::Trash => {
@@ -2253,6 +2318,14 @@ fn row_menu(ide: &Ide, path: &Path, dir: bool, row: Element) -> Element {
             &format!("tree:rename:{}", path.display()),
             "Rename\u{2026}",
             "r",
+        ),
+        limn::ContextMenuEntry::Separator,
+        menu_item(&format!("tree:yank:{}", path.display()), "Copy", "y"),
+        menu_item(&format!("tree:cut:{}", path.display()), "Cut", "x"),
+        limn::ContextMenuEntry::Item(
+            limn::ContextMenuItem::new(format!("tree:paste:{}", folder.display()), "Paste")
+                .shortcut("p")
+                .enabled(ide.tree_clipboard.is_some()),
         ),
         limn::ContextMenuEntry::Separator,
         menu_item(
@@ -3552,7 +3625,7 @@ mod tests {
             name: "lib".into(),
         };
         assert_eq!(jobs, vec![Job::File("/r".into(), made.clone())]);
-        let jobs = ide.loaded(Loaded::File(made, Ok(Some("lib".into()))));
+        let jobs = ide.loaded(Loaded::File(made, Ok(vec!["lib".into()])));
         assert!(ide.naming.is_none() && ide.expanded.contains(Path::new("/r/lib")));
         assert_eq!(
             jobs,
@@ -3570,7 +3643,7 @@ mod tests {
             input(&mut ide, "b.rs"),
             vec![Job::File("/r".into(), rename.clone())]
         );
-        ide.loaded(Loaded::File(rename, Ok(Some("b.rs".into()))));
+        ide.loaded(Loaded::File(rename, Ok(vec!["b.rs".into()])));
         assert_eq!(ide.buffers[0].path, Path::new("/r/b.rs"));
         // Unsaved changes keep it out of the trash; saved, it goes and its tab closes.
         type_in(&ide.buffers[0], 0, "x");
@@ -3587,7 +3660,7 @@ mod tests {
             click(&mut ide, TRASH_CONFIRM),
             vec![Job::File("/r".into(), trash.clone())]
         );
-        ide.loaded(Loaded::File(trash, Ok(None)));
+        ide.loaded(Loaded::File(trash, Ok(vec![])));
         assert!(ide.buffers.is_empty());
     }
 
@@ -3727,6 +3800,36 @@ mod tests {
         let window = Size::new(1408.0, 844.0);
         let frame = UiTree::new(view(&ide, window)).layout(window);
         assert!(frame.regions.iter().any(|r| r.id == "doc:preview"));
+    }
+
+    #[test]
+    fn the_tree_copies_cuts_and_pastes_and_the_open_files_follow_a_move() {
+        let mut ide = with_files();
+        ide.tree_key("file:/r/a.rs", TreeKey::Copy);
+        assert_eq!(ide.tree_clipboard, Some((vec!["/r/a.rs".into()], false)));
+        let (_, jobs) = ide.tree_key("dir:/r/src", TreeKey::Paste);
+        let copy = Op::Paste {
+            sources: vec!["a.rs".into()],
+            cut: false,
+            into: "src".into(),
+        };
+        assert_eq!(jobs, vec![Job::File("/r".into(), copy)]);
+        // Cut: unsaved changes keep it; saved, the move takes the open file along.
+        read(&mut ide, "/r/a.rs", "a");
+        type_in(&ide.buffers[0], 0, "x");
+        ide.tree_key("file:/r/a.rs", TreeKey::Cut);
+        assert!(ide.file_error.take().is_some());
+        let shared = ide.buffers[0].editor.as_ref().unwrap().shared_buffer();
+        shared.lock().unwrap().mark_saved();
+        ide.tree_key("file:/r/a.rs", TreeKey::Cut);
+        let (_, jobs) = ide.tree_key("dir:/r/src", TreeKey::Paste);
+        let [Job::File(_, cut @ Op::Paste { cut: true, .. })] = <[Job; 1]>::try_from(jobs).unwrap()
+        else {
+            panic!("a cut pastes as a move");
+        };
+        ide.loaded(Loaded::File(cut, Ok(vec!["src/a.rs".into()])));
+        assert_eq!(ide.buffers[0].path, Path::new("/r/src/a.rs"));
+        assert!(ide.tree_clipboard.is_none());
     }
 
     #[test]

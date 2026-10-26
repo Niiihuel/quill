@@ -9,11 +9,32 @@ use std::path::{Component, Path, PathBuf};
 /// One operation; every path is from the folder.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Op {
-    CreateFile { parent: PathBuf, name: String },
-    CreateDir { parent: PathBuf, name: String },
-    Rename { path: PathBuf, name: String },
-    Trash { path: PathBuf },
+    CreateFile {
+        parent: PathBuf,
+        name: String,
+    },
+    CreateDir {
+        parent: PathBuf,
+        name: String,
+    },
+    Rename {
+        path: PathBuf,
+        name: String,
+    },
+    Trash {
+        path: PathBuf,
+    },
+    /// Copies `sources` into the folder `into`, or moves them there when `cut`.
+    Paste {
+        sources: Vec<PathBuf>,
+        cut: bool,
+        into: PathBuf,
+    },
 }
+
+/// A copy stops rather than follow a folder without end.
+const MAX_COPY_DEPTH: usize = 64;
+const MAX_COPY_ENTRIES: usize = 20_000;
 
 /// Moves one absolute path to the trash: the desktop's, or a test's stand-in.
 pub type Trash = fn(&Path) -> Result<(), String>;
@@ -23,15 +44,22 @@ pub fn system_trash(path: &Path) -> Result<(), String> {
     trash::delete(path).map_err(|_| "the desktop's trash is not available".to_owned())
 }
 
-/// Runs `op` under `root`, and says the path it made or moved to, from the folder.
-pub fn run(root: &Path, op: &Op, trash: Trash) -> Result<Option<PathBuf>, String> {
+/// Runs `op` under `root`, and says the paths it made or moved to, from the folder.
+pub fn run(root: &Path, op: &Op, trash: Trash) -> Result<Vec<PathBuf>, String> {
     Ok(match op {
-        Op::CreateFile { parent, name } => Some(create(root, parent, name, false)?),
-        Op::CreateDir { parent, name } => Some(create(root, parent, name, true)?),
-        Op::Rename { path, name } => Some(rename(root, path, name)?),
+        Op::CreateFile { parent, name } => vec![create(root, parent, name, false)?],
+        Op::CreateDir { parent, name } => vec![create(root, parent, name, true)?],
+        Op::Rename { path, name } => vec![rename(root, path, name)?],
         Op::Trash { path } => {
             trash_path(root, path, trash)?;
-            None
+            vec![]
+        }
+        Op::Paste { sources, cut, into } => {
+            let mut made = vec![];
+            for source in sources {
+                made.push(paste(root, source, *cut, into, trash)?);
+            }
+            made
         }
     })
 }
@@ -137,6 +165,112 @@ fn trash_path(root: &Path, path: &Path, trash: Trash) -> Result<(), String> {
     trash(&target)
 }
 
+/// Pastes one entry into `into` and says where it went. A copy never replaces: a taken name
+/// gets " copy", " copy 2"… A cut moves, and across disks copies and trashes the original.
+fn paste(
+    root: &Path,
+    source: &Path,
+    cut: bool,
+    into: &Path,
+    trash: Trash,
+) -> Result<PathBuf, String> {
+    let Some(name) = source.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+        return Err("The folder itself is not pasted here".into());
+    };
+    let from = locate(root, source)?;
+    let folder = locate(root, into)?;
+    let metadata = fs::symlink_metadata(&from).map_err(|e| reason(&e))?;
+    if !fs::symlink_metadata(&folder).is_ok_and(|m| m.is_dir()) {
+        return Err("Its folder is not there anymore".into());
+    }
+    if metadata.is_dir() && into.starts_with(source) {
+        return Err("A folder does not go inside itself".into());
+    }
+    if cut && source.parent() == Some(into) {
+        // It is there already: moving it would only rename it.
+        return Ok(source.to_path_buf());
+    }
+    let name = free_name(&folder, &name, metadata.is_dir())?;
+    let (target, relative) = (folder.join(&name), into.join(&name));
+    if cut {
+        match move_without_replacing(&from, &target) {
+            Ok(()) => return Ok(relative),
+            Err(error) if error.kind() == io::ErrorKind::CrossesDevices => {}
+            Err(error) => return Err(reason(&error)),
+        }
+    }
+    copy_entry(&from, &target, 0, &mut MAX_COPY_ENTRIES.clone()).map_err(|e| {
+        match e.get_ref() {
+            Some(limit) => limit.to_string(),
+            None => reason(&e),
+        }
+    })?;
+    if cut {
+        trash(&from).map_err(|e| format!("Copied, but the original is still there: {e}"))?;
+    }
+    Ok(relative)
+}
+
+/// `name` when nothing in `folder` has it, else the first free of "name copy", "name copy 2"…,
+/// kept before a file's extension.
+fn free_name(folder: &Path, name: &str, folder_too: bool) -> Result<String, String> {
+    let (stem, extension) = match name.rfind('.') {
+        Some(dot) if !folder_too && dot > 0 => name.split_at(dot),
+        _ => (name, ""),
+    };
+    (0..1000)
+        .map(|attempt| match attempt {
+            0 => name.to_owned(),
+            1 => format!("{stem} copy{extension}"),
+            _ => format!("{stem} copy {attempt}{extension}"),
+        })
+        .find(|candidate| fs::symlink_metadata(folder.join(candidate)).is_err())
+        .ok_or_else(|| "There are too many copies of that name".to_owned())
+}
+
+/// Copies a file, a folder with what it holds, or a link as a link. Nothing is followed and
+/// nothing there is written over.
+fn copy_entry(from: &Path, to: &Path, depth: usize, budget: &mut usize) -> io::Result<()> {
+    let limit = |message: &'static str| io::Error::other(message);
+    *budget = budget
+        .checked_sub(1)
+        .ok_or_else(|| limit("The folder holds too many things"))?;
+    let metadata = fs::symlink_metadata(from)?;
+    let kind = metadata.file_type();
+    if kind.is_symlink() {
+        return std::os::unix::fs::symlink(fs::read_link(from)?, to);
+    }
+    if kind.is_dir() {
+        if depth >= MAX_COPY_DEPTH {
+            return Err(limit("The folder is too deep"));
+        }
+        fs::create_dir(to)?;
+        for entry in fs::read_dir(from)? {
+            let entry = entry?;
+            copy_entry(
+                &entry.path(),
+                &to.join(entry.file_name()),
+                depth + 1,
+                budget,
+            )?;
+        }
+    } else if kind.is_file() {
+        let mut source = fs::OpenOptions::new();
+        source.read(true);
+        // A file swapped for a link after the check above is not followed.
+        std::os::unix::fs::OpenOptionsExt::custom_flags(&mut source, libc::O_NOFOLLOW);
+        let mut target = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(to)?;
+        io::copy(&mut source.open(from)?, &mut target)?;
+    } else {
+        return Err(limit("Only files, folders and links are copied"));
+    }
+    // Last, so a read-only folder still takes what it holds.
+    fs::set_permissions(to, metadata.permissions())
+}
+
 /// Rename `source` to `target` only if nothing is there: atomically on Linux.
 fn move_without_replacing(source: &Path, target: &Path) -> io::Result<()> {
     #[cfg(target_os = "linux")]
@@ -199,9 +333,9 @@ mod tests {
                 parent: "".into(),
                 name: "src".into()
             }),
-            Ok(Some("src".into()))
+            Ok(vec!["src".into()])
         );
-        assert_eq!(op(file("src", "a.rs")), Ok(Some("src/a.rs".into())));
+        assert_eq!(op(file("src", "a.rs")), Ok(vec!["src/a.rs".into()]));
         fs::write(root.join("src/a.rs"), "kept").unwrap();
         assert_eq!(
             op(file("src", "a.rs")),
@@ -222,16 +356,48 @@ mod tests {
             Err("Something has that name already".into())
         );
         assert_eq!(fs::read_to_string(root.join("src/a.rs")).unwrap(), "kept");
-        assert_eq!(op(rename("src/b.rs", "c.rs")), Ok(Some("src/c.rs".into())));
+        assert_eq!(op(rename("src/b.rs", "c.rs")), Ok(vec!["src/c.rs".into()]));
         assert_eq!(
             op(Op::Trash {
                 path: "src/c.rs".into()
             }),
-            Ok(None)
+            Ok(vec![])
         );
         let left = root.join("src/.trashed/c.rs").exists() && !root.join("src/c.rs").exists();
+        // Pasted copies take free names, and a folder does not go inside itself.
+        let paste = |sources: &[&str], cut, into: &str| Op::Paste {
+            sources: sources.iter().map(PathBuf::from).collect(),
+            cut,
+            into: into.into(),
+        };
+        assert_eq!(
+            op(paste(&["src/a.rs"], false, "src")),
+            Ok(vec!["src/a copy.rs".into()])
+        );
+        assert_eq!(
+            op(paste(&["src/a.rs"], false, "src")),
+            Ok(vec!["src/a copy 2.rs".into()])
+        );
+        assert_eq!(
+            op(paste(&["src"], false, "src")),
+            Err("A folder does not go inside itself".into())
+        );
+        op(Op::CreateDir {
+            parent: "".into(),
+            name: "lib".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            op(paste(&["src/a copy.rs"], true, "lib")),
+            Ok(vec!["lib/a copy.rs".into()])
+        );
+        let went = !root.join("src/a copy.rs").exists() && root.join("lib/a copy.rs").exists();
+        assert_eq!(
+            fs::read_to_string(root.join("src/a copy 2.rs")).unwrap(),
+            "kept"
+        );
         fs::remove_dir_all(&root).unwrap();
-        assert!(left);
+        assert!(left && went);
         let at = Path::new("src/a.rs");
         assert_eq!(
             moved(at, Path::new("src"), Some(Path::new("lib"))),
