@@ -40,7 +40,7 @@ impl Store {
     /// Whether `event` is worth keeping: what the transcript shows once it has settled.
     pub fn keeps(event: &Event) -> bool {
         match event {
-            Event::Status { .. } | Event::WorkingTree { .. } => false,
+            Event::Status { .. } | Event::WorkingTree { .. } | Event::Deleted { .. } => false,
             Event::Agent { event, .. } => !matches!(
                 event,
                 AgentEvent::TextDelta { .. }
@@ -61,6 +61,15 @@ impl Store {
         self.conn.execute(
             "INSERT INTO events (session, event) VALUES (?1, ?2)",
             params![session as i64, json],
+        )?;
+        Ok(())
+    }
+
+    /// Forget every event of `session`.
+    pub fn delete(&self, session: SessionId) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM events WHERE session = ?1",
+            params![session as i64],
         )?;
         Ok(())
     }
@@ -152,5 +161,24 @@ mod tests {
         assert_eq!(loaded[0].1.len(), 3);
         assert_eq!(loaded[0].1[0], created);
         assert_eq!(loaded[0].1[2], finished);
+    }
+
+    #[test]
+    fn a_deleted_session_does_not_come_back() {
+        let store = Store::in_memory().unwrap();
+        for session in [1, 2] {
+            let created = Event::SessionCreated {
+                session,
+                agent: "claude".into(),
+                cwd: "/work".into(),
+            };
+            store.append(session, &created).unwrap();
+        }
+        store.delete(1).unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(
+            loaded.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![2]
+        );
     }
 }

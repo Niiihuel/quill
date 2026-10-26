@@ -102,6 +102,14 @@ pub struct Session {
     pub tasks: Vec<Task>,
     /// What each helper agent wrote and did, by the tool call that started it.
     pub helpers: std::collections::HashMap<String, Vec<Item>>,
+    /// Kept at the top of the sidebar, under "Pinned".
+    pub pinned: bool,
+    /// Out of the sidebar; the search still finds it.
+    pub archived: bool,
+    /// Has news the person has not seen: a gray dot in its row.
+    pub unread: bool,
+    /// When it last changed in this run, for "Last updated".
+    pub touched: u64,
 }
 
 /// Work the agent runs beside its turns, as Desktop counts "1 running task".
@@ -130,6 +138,8 @@ pub struct Store {
     /// The plan's usage windows, as the agent last reported them; they are the person's,
     /// not one session's.
     pub limits: Option<quill_model::PlanLimits>,
+    /// Counts the events applied, so a session knows when it last changed.
+    pub clock: u64,
 }
 
 impl Store {
@@ -142,6 +152,13 @@ impl Store {
     }
 
     pub fn apply(&mut self, event: Event) {
+        self.clock += 1;
+        if matches!(event, Event::Queued { .. } | Event::Agent { .. }) {
+            let clock = self.clock;
+            if let Some(s) = self.session_mut(event.session()) {
+                s.touched = clock;
+            }
+        }
         match event {
             Event::SessionCreated {
                 session,
@@ -167,6 +184,10 @@ impl Store {
                 step_since: None,
                 tasks: vec![],
                 helpers: Default::default(),
+                pinned: false,
+                archived: false,
+                unread: false,
+                touched: 0,
             }),
             Event::Status { session, status } => {
                 if let Some(s) = self.session_mut(session) {
@@ -269,6 +290,38 @@ impl Store {
                             }
                         }
                     }
+                }
+            }
+            Event::Renamed { session, title } => {
+                if let Some(s) = self.session_mut(session) {
+                    s.title = title;
+                }
+            }
+            Event::Pinned { session, pinned } => {
+                if let Some(s) = self.session_mut(session) {
+                    s.pinned = pinned;
+                }
+            }
+            Event::Deleted { session } => self.sessions.retain(|s| s.id != session),
+            Event::Archived { session, archived } => {
+                if let Some(s) = self.session_mut(session) {
+                    s.archived = archived;
+                }
+            }
+            Event::Unread { session, unread } => {
+                if let Some(s) = self.session_mut(session) {
+                    s.unread = unread;
+                }
+            }
+            // A fork starts as its parent was: its conversation, under the parent's name
+            // marked as a fork (inferred: Desktop's name for a fork was not captured).
+            Event::Forked { session, from } => {
+                let parent = self
+                    .session(from)
+                    .map(|p| (p.items.clone(), p.title.clone()));
+                if let (Some(s), Some((items, title))) = (self.session_mut(session), parent) {
+                    s.items = items;
+                    s.title = format!("{title} (fork)");
                 }
             }
         }
@@ -528,6 +581,46 @@ pub struct Ui {
     pub revising: Option<String>,
     pub revision: String,
     pub terminal: TerminalPane,
+    /// Whether the sidebar shows; Ctrl+B hides it, as in Desktop.
+    pub sidebar_open: bool,
+    /// The session whose sidebar row has its "···" menu open.
+    pub row_menu: Option<SessionId>,
+    /// The selected session's title while the person renames it in the top bar.
+    pub title_edit: Option<String>,
+    /// The session the delete dialog asks about.
+    pub deleting: Option<SessionId>,
+    /// What the search dialog looks for, while it is open.
+    pub search: Option<String>,
+    /// How the sidebar groups and orders the sessions.
+    pub group_by: GroupBy,
+    pub sort_by: SortBy,
+    pub ascending: bool,
+    /// Sessions seen running in this run: only their turns that end unseen leave them
+    /// unread, not the turns read back at start.
+    pub live: std::collections::HashSet<SessionId>,
+    /// The group header whose filter menu is open.
+    pub filter_menu: Option<String>,
+    /// A fork was asked for: the session the engine makes next is it, and opens.
+    pub waiting_fork: bool,
+}
+
+/// The sidebar's groups: by folder, Desktop's default, by status, or one list.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum GroupBy {
+    #[default]
+    Folder,
+    Status,
+    None,
+}
+
+/// The order within a group. "Last updated" counts what happened in this run; sessions
+/// read back at start keep the order they were made in until they change.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum SortBy {
+    #[default]
+    Updated,
+    Created,
+    Name,
 }
 
 /// The two ways to allow a permission; the card's main button is the one used last.
@@ -535,6 +628,109 @@ pub struct Ui {
 pub enum Allow {
     Once,
     Always,
+}
+
+/// The sidebar's and the top bar's own clicks: hiding the sidebar, search, and what a
+/// session's menus do. `None` when `id` is none of them.
+fn session_clicked(store: &Store, ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
+    let session = |prefix: &str| -> Option<SessionId> { id.strip_prefix(prefix)?.parse().ok() };
+    if id == view::SIDEBAR_TOGGLE {
+        ui.sidebar_open = !ui.sidebar_open;
+    } else if id == view::SEARCH {
+        ui.search = Some(String::new());
+    } else if id == view::SEARCH_CLOSE {
+        ui.search = None;
+    } else if id == view::SEARCH_NEW {
+        return Some(clicked(store, ui, view::NEW_SESSION));
+    } else if id == view::TITLE_MENU {
+        ui.open_menu = (ui.open_menu != Some(view::TITLE_MENU)).then_some(view::TITLE_MENU);
+    } else if id == format!("{}:dismiss", view::TITLE_MENU) {
+        ui.open_menu = None;
+    } else if id == view::DELETE_CANCEL {
+        ui.deleting = None;
+    } else if id == view::DELETE_CONFIRM {
+        return Some(
+            ui.deleting
+                .take()
+                .map(|session| vec![Intent::Delete { session }])
+                .unwrap_or_default(),
+        );
+    } else if let Some(s) = id
+        .strip_suffix(":dismiss")
+        .and_then(|rest| rest.strip_prefix("row-menu:"))
+    {
+        if s.parse().ok() == ui.row_menu {
+            ui.row_menu = None;
+        }
+    } else if let Some(s) = session("row-menu:") {
+        ui.row_menu = (ui.row_menu != Some(s)).then_some(s);
+    } else if let Some(s) = session("rename:") {
+        ui.row_menu = None;
+        ui.open_menu = None;
+        ui.selected = Some(s);
+        ui.title_edit = store.session(s).map(|s| s.title.clone());
+    } else if let Some(s) = session("pin:") {
+        ui.row_menu = None;
+        let pinned = !store.session(s).is_some_and(|s| s.pinned);
+        return Some(vec![Intent::Pin { session: s, pinned }]);
+    } else if let Some(s) = session("archive:") {
+        ui.row_menu = None;
+        ui.open_menu = None;
+        let archived = !store.session(s).is_some_and(|s| s.archived);
+        return Some(vec![Intent::Archive {
+            session: s,
+            archived,
+        }]);
+    } else if let Some(s) = session("unread:") {
+        ui.row_menu = None;
+        let unread = !store.session(s).is_some_and(|s| s.unread);
+        return Some(vec![Intent::MarkUnread { session: s, unread }]);
+    } else if let Some(s) = session("fork:") {
+        ui.row_menu = None;
+        ui.open_menu = None;
+        // The fork opens as soon as the engine makes it, as a new session does.
+        ui.waiting_fork = true;
+        return Some(vec![Intent::Fork { session: s }]);
+    } else if let Some(key) = id.strip_prefix("filter-menu:") {
+        match key.strip_suffix(":dismiss") {
+            Some(key) if ui.filter_menu.as_deref() == Some(key) => ui.filter_menu = None,
+            Some(_) => {}
+            None => {
+                ui.filter_menu = (ui.filter_menu.as_deref() != Some(key)).then(|| key.to_owned())
+            }
+        }
+    } else if let Some(by) = id.strip_prefix("group-by:") {
+        ui.filter_menu = None;
+        ui.group_by = match by {
+            "status" => GroupBy::Status,
+            "none" => GroupBy::None,
+            _ => GroupBy::Folder,
+        };
+    } else if let Some(by) = id.strip_prefix("sort-by:") {
+        ui.filter_menu = None;
+        ui.sort_by = match by {
+            "created" => SortBy::Created,
+            "name" => SortBy::Name,
+            _ => SortBy::Updated,
+        };
+    } else if let Some(way) = id.strip_prefix("sort-way:") {
+        ui.filter_menu = None;
+        ui.ascending = way == "ascending";
+    } else if id == view::FILTER_RESET {
+        ui.filter_menu = None;
+        (ui.group_by, ui.sort_by, ui.ascending) = Default::default();
+    } else if id.starts_with("open-in:") {
+        // The host opens the folder; the menus close.
+        ui.row_menu = None;
+        ui.open_menu = None;
+    } else if let Some(s) = session("delete:") {
+        ui.row_menu = None;
+        ui.open_menu = None;
+        ui.deleting = Some(s);
+    } else {
+        return None;
+    }
+    Some(vec![])
 }
 
 /// The click a key press stands for, wherever the focus is, as in Desktop: on a
@@ -677,6 +873,17 @@ impl Ui {
             revising: None,
             revision: String::new(),
             terminal: TerminalPane::default(),
+            sidebar_open: true,
+            row_menu: None,
+            title_edit: None,
+            deleting: None,
+            search: None,
+            group_by: GroupBy::default(),
+            sort_by: SortBy::default(),
+            ascending: false,
+            live: Default::default(),
+            filter_menu: None,
+            waiting_fork: false,
         }
     }
 
@@ -706,12 +913,47 @@ impl Ui {
     /// After the engine reported `event`: select a session the person just created
     /// and send what they wrote while it was being made.
     pub fn applied(&mut self, event: &Event) -> Vec<Intent> {
+        if let Event::Deleted { session } = event {
+            if self.selected == Some(*session) {
+                self.selected = None;
+                self.title_edit = None;
+                self.panes.clear();
+                self.expanded_pane = None;
+            }
+        }
         if let Event::SessionCreated { session, .. } = event {
+            if std::mem::take(&mut self.waiting_fork) {
+                self.selected = Some(*session);
+                self.title_edit = None;
+                return vec![Intent::WorkingTree { session: *session }];
+            }
             if let Some(text) = self.waiting.take() {
                 self.selected = Some(*session);
                 return vec![Intent::Send {
                     session: *session,
                     text,
+                }];
+            }
+        }
+        if let Event::Status {
+            session,
+            status: SessionStatus::Running,
+        } = event
+        {
+            self.live.insert(*session);
+        }
+        // A turn that ends while the person looks elsewhere leaves news, as Desktop's
+        // "ready" rows.
+        if let Event::Agent {
+            session,
+            event: AgentEvent::TurnFinished { .. },
+            ..
+        } = event
+        {
+            if self.selected != Some(*session) && self.live.contains(session) {
+                return vec![Intent::MarkUnread {
+                    session: *session,
+                    unread: true,
                 }];
             }
         }
@@ -780,6 +1022,36 @@ pub fn update(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Intent
                 decision: Decision::Deny { message },
             }]
         }
+        UiAction::InputChanged { id, value } if id == view::TITLE_FIELD => {
+            ui.title_edit = Some(value.clone());
+            vec![]
+        }
+        UiAction::Submitted { id, value } if id == view::TITLE_FIELD => {
+            ui.title_edit = None;
+            let title = value.trim();
+            match ui.selected.and_then(|id| store.session(id)) {
+                Some(s) if !title.is_empty() && title != s.title => vec![Intent::Rename {
+                    session: s.id,
+                    title: title.to_owned(),
+                }],
+                _ => vec![],
+            }
+        }
+        UiAction::InputChanged { id, value } if id == view::SEARCH_FIELD => {
+            ui.search = Some(value.clone());
+            vec![]
+        }
+        // Enter opens what the search lists first, as its "↵" marks.
+        UiAction::Submitted { id, .. } if id == view::SEARCH_FIELD => {
+            let first = ui
+                .search
+                .as_deref()
+                .and_then(|query| view::found(store, query).into_iter().next());
+            match first {
+                Some(session) => clicked(store, ui, &format!("search:{session}")),
+                None => clicked(store, ui, view::NEW_SESSION),
+            }
+        }
         UiAction::InputChanged { id, value } if id == view::COMPOSER => {
             ui.prompt = value.clone();
             vec![]
@@ -816,7 +1088,7 @@ pub fn update(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Intent
 /// A boundary followed the pointer to `position`: the column's left edge, or the top of the
 /// lower stacked pane.
 fn dragged(ui: &mut Ui, id: &str, position: limn::Point) {
-    let rest = ui.window.width - look::SIDEBAR_WIDTH;
+    let rest = ui.window.width - view::sidebar_width(ui);
     if id == view::COLUMN_HANDLE && rest > 0.0 {
         let width = view::column_width(rest, (ui.window.width - position.x) / rest);
         ui.column_fraction = Some(width / rest);
@@ -881,6 +1153,11 @@ pub fn terminal_key(
     shift: bool,
 ) -> bool {
     use limn::Key;
+    // The title's field gives up the rename too.
+    if focused == Some(view::TITLE_FIELD) && key == Key::Escape {
+        ui.title_edit = None;
+        return true;
+    }
     let pane = &mut ui.terminal;
     if focused == Some(view::TERMINAL_RENAME) && key == Key::Escape {
         pane.renaming = None;
@@ -912,7 +1189,12 @@ pub fn terminal_key(
 fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
     if id == view::NEW_SESSION {
         ui.selected = None;
+        ui.search = None;
+        ui.title_edit = None;
         return vec![];
+    }
+    if let Some(intents) = session_clicked(store, ui, id) {
+        return intents;
     }
     if let Some(rest) = id.strip_prefix("ask:") {
         return answer(store, ui, rest);
@@ -1081,9 +1363,24 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
             })
             .unwrap_or_default();
     }
-    if let Some(session) = id.strip_prefix("session:").and_then(|s| s.parse().ok()) {
+    if let Some(session) = id
+        .strip_prefix("session:")
+        .or_else(|| id.strip_prefix("search:"))
+        .and_then(|s| s.parse().ok())
+    {
+        ui.search = None;
+        if ui.selected != Some(session) {
+            ui.title_edit = None;
+        }
         ui.selected = Some(session);
-        return vec![Intent::WorkingTree { session }];
+        let mut intents = vec![Intent::WorkingTree { session }];
+        if store.session(session).is_some_and(|s| s.unread) {
+            intents.push(Intent::MarkUnread {
+                session,
+                unread: false,
+            });
+        }
+        return intents;
     }
     if let Some(call) = id.strip_prefix("agent:") {
         ui.helper = Some(call.to_owned());

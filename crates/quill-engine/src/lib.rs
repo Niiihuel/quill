@@ -96,93 +96,170 @@ fn open_store(config: &Config, sink: &Sink) -> quill_store::Store {
     })
 }
 
-/// Hands each intent to its session's actor, creating sessions as asked. Sessions kept
-/// from earlier runs come back first, ready to continue their conversation.
 async fn route(mut rx: UnboundedReceiver<Intent>, ui: Sink, config: Config) {
-    let store = Arc::new(Mutex::new(open_store(&config, &ui)));
-    // Every event is written before the UI sees it (spec.md D5).
-    let sink: Sink = {
-        let (store, ui) = (store.clone(), ui.clone());
-        Arc::new(move |event: Event| {
-            if let Err(error) = store.lock().unwrap().append(event.session(), &event) {
-                ui(Event::Status {
-                    session: event.session(),
-                    status: SessionStatus::Failed(format!("not saved: {error}")),
-                });
-            }
-            ui(event);
-        })
-    };
-    let mut sessions: HashMap<SessionId, UnboundedSender<Input>> = HashMap::new();
-    // Each session's folder, for what is uncommitted in it.
-    let mut folders: HashMap<SessionId, std::path::PathBuf> = HashMap::new();
-    let mut next: SessionId = 0;
-    let kept = store.lock().unwrap().load().unwrap_or_default();
-    for (session, events) in kept {
-        next = next.max(session);
-        let Some(restored) = Restored::from(&events) else {
-            continue;
-        };
-        folders.insert(session, restored.new.cwd.clone());
-        for event in events {
-            ui(event);
-        }
-        let Some(adapter) = adapter(&restored.new.agent) else {
-            continue;
-        };
-        let (tx, rx) = unbounded_channel();
-        let program = config.programs.get(&restored.new.agent).cloned();
-        let mut actor = Actor::new(
-            session,
-            restored.new,
-            adapter,
-            program,
-            tx.clone(),
-            sink.clone(),
-        );
-        actor.spec.resume = restored.resume;
-        actor.before = restored.before;
-        actor.shadow_root = config.snapshots.clone();
-        tokio::spawn(actor.run(rx));
-        sessions.insert(session, tx);
-        ui(Event::Status {
-            session,
-            status: SessionStatus::Exited,
-        });
-    }
+    let mut router = Router::new(ui, config);
+    router.restore();
     while let Some(intent) = rx.recv().await {
+        router.intent(intent).await;
+    }
+}
+
+/// The engine's own state: each session's actor and how it started.
+struct Router {
+    store: Arc<Mutex<quill_store::Store>>,
+    ui: Sink,
+    /// Every event is written before the UI sees it (spec.md D5).
+    sink: Sink,
+    config: Config,
+    sessions: HashMap<SessionId, UnboundedSender<Input>>,
+    /// Each session's folder, for what is uncommitted in it.
+    folders: HashMap<SessionId, std::path::PathBuf>,
+    /// How each session started, which a fork of it or a session it starts starts as too.
+    started: HashMap<SessionId, NewSession>,
+    /// Each session's own id at its agent, which a fork continues from.
+    agent_ids: Arc<Mutex<HashMap<SessionId, String>>>,
+    next: SessionId,
+}
+
+impl Router {
+    fn new(ui: Sink, config: Config) -> Self {
+        let store = Arc::new(Mutex::new(open_store(&config, &ui)));
+        let agent_ids: Arc<Mutex<HashMap<SessionId, String>>> = Arc::default();
+        let sink: Sink = {
+            let (store, ui, agent_ids) = (store.clone(), ui.clone(), agent_ids.clone());
+            Arc::new(move |event: Event| {
+                if let Event::Agent {
+                    session,
+                    event: AgentEvent::Session { id },
+                    ..
+                } = &event
+                {
+                    agent_ids.lock().unwrap().insert(*session, id.clone());
+                }
+                if let Err(error) = store.lock().unwrap().append(event.session(), &event) {
+                    ui(Event::Status {
+                        session: event.session(),
+                        status: SessionStatus::Failed(format!("not saved: {error}")),
+                    });
+                }
+                ui(event);
+            })
+        };
+        Self {
+            store,
+            ui,
+            sink,
+            config,
+            sessions: HashMap::new(),
+            folders: HashMap::new(),
+            started: HashMap::new(),
+            agent_ids,
+            next: 0,
+        }
+    }
+
+    fn restore(&mut self) {
+        let kept = self.store.lock().unwrap().load().unwrap_or_default();
+        for (session, events) in kept {
+            self.next = self.next.max(session);
+            let Some(restored) = Restored::from(&events) else {
+                continue;
+            };
+            self.folders.insert(session, restored.new.cwd.clone());
+            self.started.insert(session, restored.new.clone());
+            if let Some(id) = &restored.resume {
+                self.agent_ids.lock().unwrap().insert(session, id.clone());
+            }
+            for event in events {
+                (self.ui)(event);
+            }
+            let Some(adapter) = adapter(&restored.new.agent) else {
+                continue;
+            };
+            let (tx, rx) = unbounded_channel();
+            let program = self.config.programs.get(&restored.new.agent).cloned();
+            let mut actor = Actor::new(
+                session,
+                restored.new,
+                adapter,
+                program,
+                tx.clone(),
+                self.sink.clone(),
+            );
+            actor.spec.resume = restored.resume;
+            actor.before = restored.before;
+            actor.shadow_root = self.config.snapshots.clone();
+            tokio::spawn(actor.run(rx));
+            self.sessions.insert(session, tx);
+            (self.ui)(Event::Status {
+                session,
+                status: SessionStatus::Exited,
+            });
+        }
+    }
+
+    /// Make a session and its actor. `about` are the events that describe it before it does
+    /// anything (what it was forked or started from); `fork_of` continues that session's
+    /// conversation.
+    async fn spawn(
+        &mut self,
+        new: NewSession,
+        about: impl FnOnce(SessionId) -> Vec<Event>,
+        fork_of: Option<SessionId>,
+    ) -> Option<SessionId> {
+        self.next += 1;
+        let id = self.next;
+        let Some(adapter) = adapter(&new.agent) else {
+            (self.sink)(Event::Status {
+                session: id,
+                status: SessionStatus::Failed(format!("no adapter for {}", new.agent)),
+            });
+            return None;
+        };
+        (self.sink)(Event::SessionCreated {
+            session: id,
+            agent: new.agent.clone(),
+            cwd: new.cwd.clone(),
+        });
+        for event in about(id) {
+            (self.sink)(event);
+        }
+        self.folders.insert(id, new.cwd.clone());
+        self.started.insert(id, new.clone());
+        let cwd = new.cwd.clone();
+        let branch = tokio::task::spawn_blocking(move || quill_git::branch(&cwd))
+            .await
+            .ok()
+            .flatten();
+        (self.sink)(Event::Environment {
+            session: id,
+            branch,
+        });
+        let (tx, rx) = unbounded_channel();
+        let program = self.config.programs.get(&new.agent).cloned();
+        let mut actor = Actor::new(id, new, adapter, program, tx.clone(), self.sink.clone());
+        actor.shadow_root = self.config.snapshots.clone();
+        if let Some(from) = fork_of {
+            // Without an id of its own yet, the parent has no conversation to continue.
+            actor.spec.resume = self.agent_ids.lock().unwrap().get(&from).cloned();
+            actor.spec.fork = actor.spec.resume.is_some();
+        }
+        tokio::spawn(actor.run(rx));
+        self.sessions.insert(id, tx);
+        Some(id)
+    }
+
+    fn tell(&self, session: SessionId, input: Input) {
+        if let Some(tx) = self.sessions.get(&session) {
+            let _ = tx.send(input);
+        }
+    }
+
+    async fn intent(&mut self, intent: Intent) {
         let (session, input) = match intent {
             Intent::NewSession(new) => {
-                next += 1;
-                let Some(adapter) = adapter(&new.agent) else {
-                    sink(Event::Status {
-                        session: next,
-                        status: SessionStatus::Failed(format!("no adapter for {}", new.agent)),
-                    });
-                    continue;
-                };
-                let (tx, rx) = unbounded_channel();
-                sink(Event::SessionCreated {
-                    session: next,
-                    agent: new.agent.clone(),
-                    cwd: new.cwd.clone(),
-                });
-                folders.insert(next, new.cwd.clone());
-                let cwd = new.cwd.clone();
-                let branch = tokio::task::spawn_blocking(move || quill_git::branch(&cwd))
-                    .await
-                    .ok()
-                    .flatten();
-                sink(Event::Environment {
-                    session: next,
-                    branch,
-                });
-                let program = config.programs.get(&new.agent).cloned();
-                let mut actor = Actor::new(next, new, adapter, program, tx.clone(), sink.clone());
-                actor.shadow_root = config.snapshots.clone();
-                tokio::spawn(actor.run(rx));
-                sessions.insert(next, tx);
-                continue;
+                self.spawn(new, |_| vec![], None).await;
+                return;
             }
             Intent::Send { session, text } => (session, Input::Send(text)),
             Intent::Decide {
@@ -207,9 +284,61 @@ async fn route(mut rx: UnboundedReceiver<Intent>, ui: Sink, config: Config) {
                 (session, Input::Command(AgentCommand::SetEffort(effort)))
             }
             Intent::Rewind { session, request } => (session, Input::Rewind(request)),
+            Intent::Rename { session, title } => {
+                (self.sink)(Event::Renamed { session, title });
+                return;
+            }
+            Intent::Pin { session, pinned } => {
+                (self.sink)(Event::Pinned { session, pinned });
+                return;
+            }
+            Intent::Archive { session, archived } => {
+                (self.sink)(Event::Archived { session, archived });
+                return;
+            }
+            Intent::MarkUnread { session, unread } => {
+                (self.sink)(Event::Unread { session, unread });
+                return;
+            }
+            Intent::Fork { session: from } => {
+                if let Some(new) = self.started.get(&from).cloned() {
+                    self.spawn(
+                        new,
+                        |id| vec![Event::Forked { session: id, from }],
+                        Some(from),
+                    )
+                    .await;
+                }
+                return;
+            }
+            // The agent is stopped first, so nothing it says lands after its record is gone.
+            Intent::Delete { session } => {
+                self.folders.remove(&session);
+                self.started.remove(&session);
+                self.agent_ids.lock().unwrap().remove(&session);
+                let (done, stopped) = tokio::sync::oneshot::channel();
+                let stopping = self
+                    .sessions
+                    .remove(&session)
+                    .is_some_and(|tx| tx.send(Input::Stop(done)).is_ok());
+                let (store, ui) = (self.store.clone(), self.ui.clone());
+                tokio::spawn(async move {
+                    if stopping {
+                        let _ = stopped.await;
+                    }
+                    match store.lock().unwrap().delete(session) {
+                        Ok(()) => ui(Event::Deleted { session }),
+                        Err(error) => ui(Event::Status {
+                            session,
+                            status: SessionStatus::Failed(format!("not deleted: {error}")),
+                        }),
+                    }
+                });
+                return;
+            }
             Intent::WorkingTree { session } => {
-                if let Some(cwd) = folders.get(&session).cloned() {
-                    let sink = sink.clone();
+                if let Some(cwd) = self.folders.get(&session).cloned() {
+                    let sink = self.sink.clone();
                     tokio::spawn(async move {
                         let files =
                             tokio::task::spawn_blocking(move || quill_git::working_changes(&cwd))
@@ -220,12 +349,10 @@ async fn route(mut rx: UnboundedReceiver<Intent>, ui: Sink, config: Config) {
                         sink(Event::WorkingTree { session, files });
                     });
                 }
-                continue;
+                return;
             }
         };
-        if let Some(tx) = sessions.get(&session) {
-            let _ = tx.send(input);
-        }
+        self.tell(session, input);
     }
 }
 
@@ -280,8 +407,16 @@ enum Input {
     Send(String),
     Rewind(RequestId),
     Command(AgentCommand),
-    Line { generation: u64, line: String },
-    Exited { generation: u64, code: Option<i32> },
+    Line {
+        generation: u64,
+        line: String,
+    },
+    Exited {
+        generation: u64,
+        code: Option<i32>,
+    },
+    /// End the actor and its agent, then say so.
+    Stop(tokio::sync::oneshot::Sender<()>),
 }
 
 struct Actor {
@@ -343,6 +478,34 @@ impl Actor {
             start: None,
             before: HashMap::new(),
         }
+    }
+
+    /// Send `text` as a new request.
+    async fn prompt(&mut self, text: String) {
+        if let Err(error) = self.ensure_running().await {
+            self.status(SessionStatus::Failed(error));
+            return;
+        }
+        let request = uuid::Uuid::new_v4().to_string();
+        // The first request in line starts from the folder as it is now; the
+        // ones queued behind it start where the turn before them ended.
+        if self.sent.is_empty() {
+            self.start = self.snapshot().await;
+        }
+        self.sent.push_back(request.clone());
+        (self.sink)(Event::Queued {
+            session: self.id,
+            request: request.clone(),
+            text: text.clone(),
+        });
+        self.write(AgentCommand::Prompt {
+            request,
+            text,
+            priority: None,
+        })
+        .await;
+        self.busy = true;
+        self.status(SessionStatus::Running);
     }
 
     /// The folder as it is now, off the actor's thread; `None` when files are not attributed.
@@ -424,34 +587,14 @@ impl Actor {
     }
 
     async fn run(mut self, mut rx: UnboundedReceiver<Input>) {
+        let mut stopped = None;
         while let Some(input) = rx.recv().await {
             match input {
-                Input::Send(text) => {
-                    if let Err(error) = self.ensure_running().await {
-                        self.status(SessionStatus::Failed(error));
-                        continue;
-                    }
-                    let request = uuid::Uuid::new_v4().to_string();
-                    // The first request in line starts from the folder as it is now; the
-                    // ones queued behind it start where the turn before them ended.
-                    if self.sent.is_empty() {
-                        self.start = self.snapshot().await;
-                    }
-                    self.sent.push_back(request.clone());
-                    (self.sink)(Event::Queued {
-                        session: self.id,
-                        request: request.clone(),
-                        text: text.clone(),
-                    });
-                    self.write(AgentCommand::Prompt {
-                        request,
-                        text,
-                        priority: None,
-                    })
-                    .await;
-                    self.busy = true;
-                    self.status(SessionStatus::Running);
+                Input::Stop(done) => {
+                    stopped = Some(done);
+                    break;
                 }
+                Input::Send(text) => self.prompt(text).await,
                 Input::Rewind(request) => self.rewind(request).await,
                 Input::Command(command) => {
                     let decided = match &command {
@@ -489,6 +632,9 @@ impl Actor {
         }
         if let Some((mut child, _)) = self.process.take() {
             let _ = child.kill().await;
+        }
+        if let Some(done) = stopped {
+            let _ = done.send(());
         }
     }
 
@@ -570,7 +716,11 @@ impl Actor {
         self.write_lines(decoded.replies).await;
         for event in decoded.events {
             match &event {
-                AgentEvent::Session { id } => self.spec.resume = Some(id.clone()),
+                AgentEvent::Session { id } => {
+                    self.spec.resume = Some(id.clone());
+                    // A fork has its own id now: what follows continues it, not its parent.
+                    self.spec.fork = false;
+                }
                 AgentEvent::Running { requests } => self.running = requests.last().cloned(),
                 // A prompt sent while the agent was starting keeps the session running.
                 AgentEvent::Ready { .. } if !self.busy => self.status(SessionStatus::Idle),

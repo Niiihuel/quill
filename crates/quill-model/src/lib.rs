@@ -82,6 +82,34 @@ pub enum Intent {
         session: SessionId,
         request: RequestId,
     },
+    /// The person's own name for the session, in place of the one its first message gave.
+    Rename {
+        session: SessionId,
+        title: String,
+    },
+    /// Keep the session at the top of the list, or stop keeping it there.
+    Pin {
+        session: SessionId,
+        pinned: bool,
+    },
+    /// Stop the session's agent and remove everything quill kept of it.
+    Delete {
+        session: SessionId,
+    },
+    /// Take the session out of the list, or put it back.
+    Archive {
+        session: SessionId,
+        archived: bool,
+    },
+    /// Mark the session as having news the person has not seen, or as seen.
+    MarkUnread {
+        session: SessionId,
+        unread: bool,
+    },
+    /// A new session that continues this one's conversation, leaving it as it was.
+    Fork {
+        session: SessionId,
+    },
 }
 
 /// Where a session's agent process is.
@@ -151,6 +179,31 @@ pub enum Event {
         request: RequestId,
         files: Vec<FileEffect>,
     },
+    Renamed {
+        session: SessionId,
+        title: String,
+    },
+    Pinned {
+        session: SessionId,
+        pinned: bool,
+    },
+    /// Nothing of the session is kept any more.
+    Deleted {
+        session: SessionId,
+    },
+    Archived {
+        session: SessionId,
+        archived: bool,
+    },
+    Unread {
+        session: SessionId,
+        unread: bool,
+    },
+    /// The session continues `from`'s conversation: what `from` showed until now is its start.
+    Forked {
+        session: SessionId,
+        from: SessionId,
+    },
 }
 
 impl Event {
@@ -164,7 +217,13 @@ impl Event {
             | Event::Rewound { session, .. }
             | Event::Decided { session, .. }
             | Event::WorkingTree { session, .. }
-            | Event::Environment { session, .. } => *session,
+            | Event::Environment { session, .. }
+            | Event::Renamed { session, .. }
+            | Event::Pinned { session, .. }
+            | Event::Deleted { session }
+            | Event::Archived { session, .. }
+            | Event::Unread { session, .. }
+            | Event::Forked { session, .. } => *session,
         }
     }
 }

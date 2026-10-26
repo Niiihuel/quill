@@ -216,6 +216,7 @@ impl eframe::App for App {
         let mut actions = vec![];
         let mut focus_terminal = false;
         let was_renaming = self.ui.terminal.renaming.is_some();
+        let was_titling = self.ui.title_edit.is_some();
         // Ctrl+` shows and hides the terminal, as in Desktop; limn has no key for it.
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Backtick)) {
             actions.push(limn::UiAction::Clicked {
@@ -250,6 +251,26 @@ impl eframe::App for App {
                 actions.push(limn::UiAction::Clicked {
                     id: quill_ui::view::NEW_SESSION.into(),
                 });
+                continue;
+            }
+            // Ctrl+B hides the sidebar and Ctrl+K opens the search, as Desktop's tooltips say;
+            // neither reaches past a dialog.
+            let dialog = self.ui.deleting.is_some() || self.ui.terminal.closing.is_some();
+            if let limn::UiEvent::Key {
+                key: key @ (limn::Key::B | limn::Key::K),
+                ctrl: true,
+                shift: false,
+            } = &event
+            {
+                if dialog {
+                    continue;
+                }
+                let id = if *key == limn::Key::B {
+                    quill_ui::view::SIDEBAR_TOGGLE
+                } else {
+                    quill_ui::view::SEARCH
+                };
+                actions.push(limn::UiAction::Clicked { id: id.into() });
                 continue;
             }
             // Ctrl+Shift+I and Ctrl+Shift+M open the model and mode menus, as in Desktop.
@@ -314,6 +335,16 @@ impl eframe::App for App {
                 if let Some(code) = id.strip_prefix(quill_ui::view::COPY_CODE) {
                     ctx.copy_text(code.to_owned());
                 }
+                // "Open in › File manager" shows the session's folder in the desktop's own.
+                if let Some(session) = id
+                    .strip_prefix("open-in:files:")
+                    .and_then(|s| s.parse().ok())
+                    .and_then(|s| self.store.session(s))
+                {
+                    let _ = std::process::Command::new("xdg-open")
+                        .arg(&session.cwd)
+                        .spawn();
+                }
                 match id.as_str() {
                     quill_ui::view::ATTACH_FILES => self.attach(&ctx, false),
                     quill_ui::view::ATTACH_FOLDER => self.attach(&ctx, true),
@@ -372,6 +403,16 @@ impl eframe::App for App {
         // A pill that just turned into a name field takes the keys.
         if !was_renaming && self.ui.terminal.renaming.is_some() {
             self.tree.focus(quill_ui::view::TERMINAL_RENAME);
+            frame = self.tree.layout(window);
+        }
+        // The title's field takes the keys with its text selected, as Desktop's does.
+        if !was_titling && self.ui.title_edit.is_some() {
+            self.tree.focus(quill_ui::view::TITLE_FIELD);
+            self.tree.handle_event(limn::UiEvent::Key {
+                key: limn::Key::A,
+                ctrl: true,
+                shift: false,
+            });
             frame = self.tree.layout(window);
         }
         // A pane just opened takes the keys; focus needs the laid-out tree.

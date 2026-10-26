@@ -924,3 +924,257 @@ fn accepting_a_plan_allows_it_and_sets_the_mode() {
         Some("# Plan")
     );
 }
+
+fn click(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
+    update(store, ui, &UiAction::Clicked { id: id.into() })
+}
+
+#[test]
+fn a_session_is_renamed_pinned_and_deleted_from_its_menus() {
+    let (mut store, mut ui) = store_with_session();
+    // Rename starts from the current title, and Enter sends what the field holds.
+    click(&store, &mut ui, "rename:1");
+    assert_eq!(ui.title_edit.as_deref(), Some("Fix the bug"));
+    let renamed = update(
+        &store,
+        &mut ui,
+        &UiAction::Submitted {
+            id: view::TITLE_FIELD.into(),
+            value: " Bug hunt ".into(),
+        },
+    );
+    assert_eq!(
+        renamed,
+        vec![Intent::Rename {
+            session: 1,
+            title: "Bug hunt".into()
+        }]
+    );
+    assert!(ui.title_edit.is_none());
+    store.apply(Event::Renamed {
+        session: 1,
+        title: "Bug hunt".into(),
+    });
+    assert_eq!(store.session(1).unwrap().title, "Bug hunt");
+
+    assert_eq!(
+        click(&store, &mut ui, "pin:1"),
+        vec![Intent::Pin {
+            session: 1,
+            pinned: true
+        }]
+    );
+    store.apply(Event::Pinned {
+        session: 1,
+        pinned: true,
+    });
+    assert_eq!(
+        click(&store, &mut ui, "pin:1"),
+        vec![Intent::Pin {
+            session: 1,
+            pinned: false
+        }]
+    );
+
+    // A delete asks first; only the confirm reaches the engine.
+    assert!(click(&store, &mut ui, "delete:1").is_empty());
+    assert_eq!(ui.deleting, Some(1));
+    assert!(click(&store, &mut ui, view::DELETE_CANCEL).is_empty());
+    click(&store, &mut ui, "delete:1");
+    assert_eq!(
+        click(&store, &mut ui, view::DELETE_CONFIRM),
+        vec![Intent::Delete { session: 1 }]
+    );
+    let deleted = Event::Deleted { session: 1 };
+    store.apply(deleted.clone());
+    ui.applied(&deleted);
+    assert!(store.sessions.is_empty());
+    assert_eq!(ui.selected, None);
+}
+
+#[test]
+fn search_lists_waiting_sessions_first_and_enter_opens_the_first() {
+    let mut store = Store::default();
+    for (session, title, status) in [
+        (1, "Fix login", SessionStatus::Idle),
+        (2, "Fix logout", SessionStatus::Awaiting),
+        (3, "Write docs", SessionStatus::Running),
+    ] {
+        store.apply(Event::SessionCreated {
+            session,
+            agent: "claude".into(),
+            cwd: "/work".into(),
+        });
+        store.apply(Event::Renamed {
+            session,
+            title: title.into(),
+        });
+        store.apply(Event::Status { session, status });
+    }
+    assert_eq!(view::found(&store, ""), vec![2, 3, 1]);
+    assert_eq!(view::found(&store, "FIX"), vec![2, 1]);
+    let mut ui = Ui::new("/work".into());
+    click(&store, &mut ui, view::SEARCH);
+    update(
+        &store,
+        &mut ui,
+        &UiAction::InputChanged {
+            id: view::SEARCH_FIELD.into(),
+            value: "login".into(),
+        },
+    );
+    update(
+        &store,
+        &mut ui,
+        &UiAction::Submitted {
+            id: view::SEARCH_FIELD.into(),
+            value: "login".into(),
+        },
+    );
+    assert_eq!(ui.selected, Some(1));
+    assert!(ui.search.is_none());
+}
+
+#[test]
+fn a_hidden_sidebar_gives_its_width_to_the_conversation() {
+    let (store, mut ui) = store_with_session();
+    let window = limn::Size::new(1408.0, 844.0);
+    let mut tree = UiTree::new(view(&store, &ui, window));
+    tree.layout(window);
+    click(&store, &mut ui, view::SIDEBAR_TOGGLE);
+    assert!(!ui.sidebar_open);
+    assert_eq!(view::sidebar_width(&ui), 0.0);
+    tree.set_root(view(&store, &ui, window));
+    tree.layout(window);
+}
+
+#[test]
+fn an_archived_session_leaves_the_list_and_the_search_still_finds_it() {
+    let (mut store, mut ui) = store_with_session();
+    assert_eq!(
+        click(&store, &mut ui, "archive:1"),
+        vec![Intent::Archive {
+            session: 1,
+            archived: true
+        }]
+    );
+    store.apply(Event::Archived {
+        session: 1,
+        archived: true,
+    });
+    let window = limn::Size::new(1408.0, 844.0);
+    let mut tree = UiTree::new(view(&store, &ui, window));
+    let frame = tree.layout(window);
+    assert!(!frame.regions.iter().any(|r| r.id == "session:1"));
+    assert_eq!(view::found(&store, "bug"), vec![1]);
+    assert_eq!(
+        click(&store, &mut ui, "archive:1"),
+        vec![Intent::Archive {
+            session: 1,
+            archived: false
+        }]
+    );
+}
+
+#[test]
+fn a_turn_that_ends_unseen_leaves_the_session_unread_until_it_is_opened() {
+    let (mut store, mut ui) = store_with_session();
+    let finished = Event::Agent {
+        session: 1,
+        request: Some("r1".into()),
+        event: AgentEvent::TurnFinished {
+            ok: true,
+            interrupted: false,
+            usage: Usage::default(),
+            error: None,
+        },
+    };
+    ui.selected = None;
+    // Read back at start, a finished turn is old news.
+    assert!(ui.applied(&finished).is_empty());
+    ui.applied(&Event::Status {
+        session: 1,
+        status: SessionStatus::Running,
+    });
+    assert_eq!(
+        ui.applied(&finished),
+        vec![Intent::MarkUnread {
+            session: 1,
+            unread: true
+        }]
+    );
+    store.apply(Event::Unread {
+        session: 1,
+        unread: true,
+    });
+    let opened = click(&store, &mut ui, "session:1");
+    assert!(opened.contains(&Intent::MarkUnread {
+        session: 1,
+        unread: false
+    }));
+}
+
+#[test]
+fn a_fork_starts_with_its_parents_conversation_and_opens() {
+    let (mut store, mut ui) = store_with_session();
+    assert_eq!(
+        click(&store, &mut ui, "fork:1"),
+        vec![Intent::Fork { session: 1 }]
+    );
+    let created = Event::SessionCreated {
+        session: 2,
+        agent: "claude".into(),
+        cwd: "/work".into(),
+    };
+    assert_eq!(
+        ui.applied(&created),
+        vec![Intent::WorkingTree { session: 2 }]
+    );
+    assert_eq!(ui.selected, Some(2));
+    store.apply(created);
+    store.apply(Event::Forked {
+        session: 2,
+        from: 1,
+    });
+    let fork = store.session(2).unwrap();
+    assert_eq!(fork.items, store.session(1).unwrap().items);
+    assert_eq!(fork.title, "Fix the bug (fork)");
+}
+
+#[test]
+fn the_list_groups_by_status_and_sorts_by_name() {
+    let mut store = Store::default();
+    for (session, title, status) in [
+        (1, "beta", SessionStatus::Idle),
+        (2, "alpha", SessionStatus::Awaiting),
+        (3, "gamma", SessionStatus::Idle),
+    ] {
+        store.apply(Event::SessionCreated {
+            session,
+            agent: "claude".into(),
+            cwd: "/work".into(),
+        });
+        store.apply(Event::Renamed {
+            session,
+            title: title.into(),
+        });
+        store.apply(Event::Status { session, status });
+    }
+    let mut ui = Ui::new("/work".into());
+    click(&store, &mut ui, "group-by:status");
+    click(&store, &mut ui, "sort-by:name");
+    click(&store, &mut ui, "sort-way:ascending");
+    let window = limn::Size::new(1408.0, 844.0);
+    let mut tree = UiTree::new(view(&store, &ui, window));
+    let frame = tree.layout(window);
+    let y = |id: &str| frame.regions.iter().find(|r| r.id == id).unwrap().rect.y;
+    // Blocked comes first, then Idle sorted A to Z.
+    assert!(y("group:status:Blocked") < y("session:2"));
+    assert!(y("session:2") < y("group:status:Idle"));
+    assert!(y("session:1") < y("session:3"));
+    click(&store, &mut ui, view::FILTER_RESET);
+    assert_eq!(
+        (ui.group_by, ui.sort_by, ui.ascending),
+        (GroupBy::Folder, SortBy::Updated, false)
+    );
+}

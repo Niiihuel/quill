@@ -321,3 +321,121 @@ fn a_request_is_attributed_and_its_undo_puts_files_back() {
     assert!(cwd.join(".fake-agent").exists());
     let _ = std::fs::remove_dir_all(&snapshots);
 }
+
+#[test]
+fn a_name_and_a_pin_are_kept_and_a_deleted_session_is_gone() {
+    let database = std::env::temp_dir().join(format!("quill-test-delete-{}.db", uuid_like()));
+    let start = || {
+        let (tx, rx) = channel();
+        let programs = HashMap::from([(
+            "claude".to_string(),
+            env!("CARGO_BIN_EXE_fake-agent").to_string(),
+        )]);
+        let config = quill_engine::Config {
+            programs,
+            database: Some(database.clone()),
+            snapshots: None,
+        };
+        (
+            Engine::start_with(move |event| drop(tx.send(event)), config),
+            rx,
+        )
+    };
+
+    let (engine, rx) = start();
+    new_session(&engine, "simple");
+    engine.send(Intent::Send {
+        session: 1,
+        text: "Reply with exactly the word: ok".into(),
+    });
+    until(&rx, |e| {
+        matches!(
+            e,
+            Event::Agent {
+                event: AgentEvent::TurnFinished { .. },
+                ..
+            }
+        )
+    });
+    engine.send(Intent::Rename {
+        session: 1,
+        title: "Mine".into(),
+    });
+    engine.send(Intent::Pin {
+        session: 1,
+        pinned: true,
+    });
+    engine.send(Intent::Archive {
+        session: 1,
+        archived: true,
+    });
+    engine.send(Intent::MarkUnread {
+        session: 1,
+        unread: true,
+    });
+    until(&rx, |e| matches!(e, Event::Unread { .. }));
+    // A fork continues the conversation as a new session that runs on its own.
+    engine.send(Intent::Fork { session: 1 });
+    let forked = until(&rx, |e| matches!(e, Event::Forked { .. }));
+    assert!(forked
+        .iter()
+        .any(|e| matches!(e, Event::SessionCreated { session: 2, .. })));
+    assert!(matches!(
+        forked.last(),
+        Some(Event::Forked {
+            session: 2,
+            from: 1
+        })
+    ));
+    engine.send(Intent::Send {
+        session: 2,
+        text: "again".into(),
+    });
+    until(&rx, |e| {
+        matches!(
+            e,
+            Event::Agent {
+                session: 2,
+                event: AgentEvent::TurnFinished { .. },
+                ..
+            }
+        )
+    });
+    engine.send(Intent::Delete { session: 2 });
+    until(&rx, |e| matches!(e, Event::Deleted { session: 2 }));
+    drop(engine);
+
+    let (engine, rx) = start();
+    let replayed = until(&rx, |e| matches!(e, Event::Status { session: 1, .. }));
+    assert!(replayed
+        .iter()
+        .any(|e| matches!(e, Event::Renamed { title, .. } if title == "Mine")));
+    assert!(replayed
+        .iter()
+        .any(|e| matches!(e, Event::Pinned { pinned: true, .. })));
+    assert!(replayed
+        .iter()
+        .any(|e| matches!(e, Event::Archived { archived: true, .. })));
+    assert!(replayed
+        .iter()
+        .any(|e| matches!(e, Event::Unread { unread: true, .. })));
+    // A running agent is stopped and its record removed.
+    engine.send(Intent::Send {
+        session: 1,
+        text: "again".into(),
+    });
+    engine.send(Intent::Delete { session: 1 });
+    until(&rx, |e| matches!(e, Event::Deleted { session: 1 }));
+    drop(engine);
+
+    let (engine, rx) = start();
+    new_session(&engine, "simple");
+    let events = until(&rx, |e| matches!(e, Event::SessionCreated { .. }));
+    assert_eq!(
+        events.len(),
+        1,
+        "nothing of the deleted session came back: {events:#?}"
+    );
+    drop(engine);
+    let _ = std::fs::remove_file(&database);
+}

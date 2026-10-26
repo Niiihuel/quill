@@ -45,6 +45,18 @@ pub const TERMINAL_NEW: &str = "terminal:new";
 pub const TERMINAL_RENAME: &str = "terminal:rename";
 pub const TERMINAL_CLOSE_CONFIRM: &str = "terminal:close-confirm";
 pub const TERMINAL_CLOSE_CANCEL: &str = "terminal:close-cancel";
+pub const SIDEBAR_TOGGLE: &str = "sidebar:toggle";
+pub const SEARCH: &str = "search";
+pub const SEARCH_FIELD: &str = "search:field";
+pub const SEARCH_CLOSE: &str = "search:close";
+pub const SEARCH_NEW: &str = "search:new";
+/// The chevron beside the session's title and the menu it opens.
+pub const TITLE_MENU: &str = "title-menu";
+/// The field the title turns into while the person renames the session.
+pub const TITLE_FIELD: &str = "title:field";
+pub const FILTER_RESET: &str = "filter:reset";
+pub const DELETE_CONFIRM: &str = "delete:confirm";
+pub const DELETE_CANCEL: &str = "delete:cancel";
 const TERMINAL_FONT: f32 = 12.0;
 /// The shell's text starts 12 px in and 8 px under the pane's header.
 const TERMINAL_PADDING: [f32; 2] = [12.0, 8.0];
@@ -80,7 +92,7 @@ struct Layout {
 
 fn layout(store: &Store, ui: &Ui, window: Size) -> Layout {
     let session = ui.selected.and_then(|id| store.session(id));
-    let rest = (window.width - look::SIDEBAR_WIDTH).max(0.0);
+    let rest = (window.width - sidebar_width(ui)).max(0.0);
     let panes: Vec<Pane> = ui
         .panes
         .iter()
@@ -138,6 +150,15 @@ pub const STACK_HANDLE: &str = "split:stack";
 const HANDLE: f32 = 2.0;
 
 /// The column's width for a share of the space right of the sidebar, within the minimums.
+/// The sidebar's width with its border, nothing while it is hidden.
+pub fn sidebar_width(ui: &Ui) -> f32 {
+    if ui.sidebar_open {
+        look::SIDEBAR_WIDTH
+    } else {
+        0.0
+    }
+}
+
 pub fn column_width(rest: f32, fraction: f32) -> f32 {
     (rest * fraction).round().clamp(
         MIN_COLUMN.min(rest),
@@ -311,17 +332,30 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
         Element::row(row).size(Some(rest), Some(below)),
     ])
     .size(Some(rest), Some(window.height));
-    let root = Element::row(vec![
-        sidebar(store, ui, window.height, palette),
-        vline(window.height),
-        content,
-    ])
-    .background(look::theme().background)
-    .size(Some(window.width), Some(window.height));
-    // Desktop's own wording for both closes (Ion `cccc2cf0a`,).
+    let mut root = vec![];
+    if ui.sidebar_open {
+        root.push(sidebar(store, ui, window.height, palette));
+        root.push(vline(window.height));
+    }
+    root.push(content);
+    let root = Element::row(root)
+        .background(look::theme().background)
+        .size(Some(window.width), Some(window.height));
+    let root = search_dialog(store, ui, root, palette);
+    // Desktop's own wording for both closes (Ion `cccc2cf0a`,) and for a delete
+    //, less its vendor's servers: quill forgets only its own record.
     let tabs = &ui.terminal.tabs;
-    let (title, description, confirm) = match ui.terminal.closing {
-        Some(crate::Closing::Others(keep)) => {
+    let deleting = ui.deleting.and_then(|id| store.session(id));
+    let (title, description, confirm) = match (ui.terminal.closing, deleting) {
+        (_, Some(session)) => (
+            "Delete session?",
+            format!(
+                "\u{201c}{}\u{201d} will be removed from quill. The agent's own transcript of it stays on this computer.",
+                session_title(session)
+            ),
+            "Delete",
+        ),
+        (Some(crate::Closing::Others(keep)), None) => {
             let busy = tabs
                 .iter()
                 .enumerate()
@@ -339,7 +373,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
                 "Close other terminals",
             )
         }
-        Some(crate::Closing::One(tab)) => (
+        (Some(crate::Closing::One(tab)), None) => (
             "Close terminal?",
             format!(
                 "A command is still running in {}. Closing the terminal stops it.",
@@ -347,15 +381,20 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
             ),
             "Close terminal",
         ),
-        None => ("", String::new(), ""),
+        (None, None) => ("", String::new(), ""),
+    };
+    let (confirm_id, cancel_id) = if deleting.is_some() {
+        (DELETE_CONFIRM, DELETE_CANCEL)
+    } else {
+        (TERMINAL_CLOSE_CONFIRM, TERMINAL_CLOSE_CANCEL)
     };
     limn::AlertDialog::new(
         root,
-        ui.terminal.closing.is_some(),
+        ui.terminal.closing.is_some() || deleting.is_some(),
         title,
         description,
-        TERMINAL_CLOSE_CONFIRM,
-        TERMINAL_CLOSE_CANCEL,
+        confirm_id,
+        cancel_id,
         // Cancel is filled with `raised`: Desktop's light gray.
         ComponentPalette {
             raised: look::cancel(),
@@ -454,7 +493,7 @@ fn terminal_pane(
         ])
         .gap(8.0);
         let label = match ui.terminal.renaming {
-            Some((0, ref name)) => rename_field(name, palette),
+            Some((0, ref name)) => rename_field(TERMINAL_RENAME, name, 160.0, palette),
             _ => tab_menu(0, 1, label, palette),
         };
         Element::row(vec![label, Element::spacer().size(Some(4.0), None), new]).gap(8.0)
@@ -465,7 +504,7 @@ fn terminal_pane(
             .map(|(i, tab)| {
                 if let Some((at, name)) = &ui.terminal.renaming {
                     if *at == i {
-                        return rename_field(name, palette);
+                        return rename_field(TERMINAL_RENAME, name, 160.0, palette);
                     }
                 }
                 // "Terminal 2  work ×": a named tab drops the folder.
@@ -543,11 +582,12 @@ fn tab_menu(tab: usize, count: usize, child: Element, palette: ComponentPalette)
     limn::ContextMenu::new(format!("terminal:menu:{tab}"), child, entries, palette).render()
 }
 
-/// The name field a pill turns into while the person renames it.
-fn rename_field(name: &str, palette: ComponentPalette) -> Element {
-    limn::TextField::new(TERMINAL_RENAME, name, "", palette)
+/// The name field a pill or the session's title turns into while the person renames it
+///.
+fn rename_field(id: &str, name: &str, width: f32, palette: ComponentPalette) -> Element {
+    limn::TextField::new(id, name, "", palette)
         .size(ControlSize::Compact)
-        .width(160.0)
+        .width(width)
         .render()
         .border(look::card_border(), 1.0)
         .focus_border(look::handle(), 1.0)
@@ -613,26 +653,118 @@ fn toggle(id: &str, icon: limn::Icon, label: &str, on: bool, shortcut: Option<&s
     tool_surface(id, icon, label, 26.0, fill, hover, shortcut).centered_y()
 }
 
+/// A session's name: the person's, the agent's or its first message, else "New session".
+fn session_title(session: &Session) -> String {
+    if session.title.is_empty() {
+        "New session".into()
+    } else {
+        session.title.clone()
+    }
+}
+
+/// The sidebar's toggle, "Hide sidebar Ctrl+B"; it stays at the bar's start while the sidebar
+/// is hidden, on the active fill.
+fn sidebar_toggle(ui: &Ui) -> Element {
+    toggle(
+        SIDEBAR_TOGGLE,
+        icons::of(icons::SIDEBAR),
+        if ui.sidebar_open {
+            "Hide sidebar"
+        } else {
+            "Show sidebar"
+        },
+        !ui.sidebar_open,
+        Some("Ctrl+B"),
+    )
+}
+
+/// "Open in ›": of Desktop's places, the one quill has, the desktop's
+/// file manager showing the session's folder.
+fn open_in(session: quill_model::SessionId) -> limn::DropdownMenuEntry {
+    limn::DropdownMenuItem::new(format!("open-in:{session}"), "Open in")
+        .submenu(vec![
+            limn::DropdownMenuEntry::Heading("Open in".into()),
+            limn::DropdownMenuItem::new(format!("open-in:files:{session}"), "File manager").into(),
+        ])
+        .into()
+}
+
+/// A session menu's last rows, Archive (or Unarchive) and the red Delete.
+fn archive_and_delete(session: &Session) -> [limn::DropdownMenuEntry; 2] {
+    [
+        lettered(
+            format!("archive:{}", session.id),
+            if session.archived {
+                "Unarchive"
+            } else {
+                "Archive"
+            },
+            "A",
+        )
+        .into(),
+        lettered(format!("delete:{}", session.id), "Delete", "D")
+            .destructive(look::danger_ink())
+            .into(),
+    ]
+}
+
+/// A menu row with Desktop's one-letter shortcut.
+fn lettered(id: String, label: &str, key: &str) -> limn::DropdownMenuItem {
+    limn::DropdownMenuItem::new(id, label).shortcut(key)
+}
+
 /// The session's title, Stop while it works, and the toggles of the panel and the panes
+///. The title's chevron opens its menu, and Rename turns it into a field
 ///.
 fn top_bar(session: Option<&Session>, ui: &Ui) -> Element {
     // An expanded pane leaves the bar empty, as Desktop's does.
     if ui.expanded_pane.is_some() {
         return Element::spacer().size(None, Some(look::TOP_BAR));
     }
-    let title = session.map_or("New session".to_string(), |s| {
-        if s.title.is_empty() {
-            "New session".into()
-        } else {
-            s.title.clone()
-        }
-    });
-    let title = if session.is_some() {
-        text(title)
+    let mut row = if ui.sidebar_open {
+        vec![hgap(16.0)]
     } else {
-        muted(title)
+        vec![hgap(9.0), sidebar_toggle(ui), hgap(12.0)]
     };
-    let mut row = vec![title.centered_y(), Element::spacer().flex(1.0)];
+    match (session, &ui.title_edit) {
+        (Some(_), Some(value)) => {
+            row.push(rename_field(TITLE_FIELD, value, 320.0, look::palette()))
+        }
+        (Some(s), None) => {
+            let title = session_title(s);
+            let open = ui.open_menu == Some(TITLE_MENU);
+            let chevron = tool_surface(
+                TITLE_MENU,
+                icons::of(icons::CARET_DOWN),
+                &format!("More options for {title}"),
+                22.0,
+                open.then(look::active),
+                look::tool_hover(),
+                None,
+            );
+            let mut entries = vec![open_in(s.id), limn::DropdownMenuEntry::Separator];
+            entries.extend([
+                lettered(format!("rename:{}", s.id), "Rename", "R").into(),
+                lettered(format!("fork:{}", s.id), "Fork", "F").into(),
+                limn::DropdownMenuEntry::Separator,
+            ]);
+            entries.extend(archive_and_delete(s));
+            row.push(text(title).centered_y());
+            row.push(
+                menu(
+                    chevron,
+                    entries,
+                    open,
+                    TITLE_MENU,
+                    160.0,
+                    limn::PopoverPlacement::BottomStart,
+                )
+                .centered_y(),
+            );
+        }
+        (None, _) => row.push(muted("New session").centered_y()),
+    }
+    row.push(Element::spacer().flex(1.0));
     // Stop lives in the composer, as in Desktop.
     if session.is_some() {
         let shown = ui.panel_open && ui.panes.is_empty();
@@ -647,6 +779,8 @@ fn top_bar(session: Option<&Session>, ui: &Ui) -> Element {
             shown,
             None,
         ));
+        // A hairline parts the rail's toggle from the panes'.
+        row.push(vline(16.0).centered_y());
     }
     row.push(toggle(
         TERMINAL_TOGGLE,
@@ -659,66 +793,265 @@ fn top_bar(session: Option<&Session>, ui: &Ui) -> Element {
         row.push(toggle(
             DIFF_TOGGLE,
             icons::of(icons::DIFF),
-            "Diff",
+            "Changes",
             ui.pane_open(Pane::Diff),
             Some("Ctrl+Shift+D"),
         ));
     }
-    row.insert(0, hgap(20.0));
     row.push(hgap(8.0));
     Element::row(row).gap(4.0).size(None, Some(look::TOP_BAR))
 }
 
-/// Desktop's sidebar: New, then the sessions under a header per folder that folds
-/// them, the folder with the newest session first.
+/// Desktop's sidebar: its toggle, New and Search, the pinned
+/// sessions, then the rest under a header per folder that folds them, the folder with the
+/// newest session first.
 fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> Element {
-    let mut rows = vec![
-        // Desktop keeps this band for its window controls; quill's window has its own.
-        Element::spacer().size(None, Some(look::TOP_BAR)),
+    let nav = |id: &str, icon: &'static str, label: &str, keys: &str, selected: bool| {
         side_row(
-            NEW_SESSION.into(),
+            id.into(),
             vec![
-                Element::icon(icons::of(icons::ADD))
+                Element::icon(icons::of(icon))
                     .foreground(look::palette().text)
                     .size(Some(16.0), Some(16.0))
                     .centered_y(),
-                text("New").centered_y(),
+                text(label).centered_y(),
                 Element::spacer().flex(1.0),
-                muted("Ctrl+N")
+                muted(keys)
                     .font_size(12.0)
                     .centered_y()
-                    .reveal_on_hover("new-session:keys"),
+                    .reveal_on_hover(format!("{id}:keys")),
             ],
-            false,
+            selected,
             palette,
+        )
+    };
+    let mut rows = vec![
+        // Desktop's band holds its menu, this toggle and its history; quill keeps the toggle,
+        // centered on the top bar's middle.
+        Element::row(vec![hgap(5.0), sidebar_toggle(ui)]).size(None, Some(look::TOP_BAR - 16.0)),
+        Element::spacer().size(None, Some(12.0)),
+        // New is filled while its page shows, as Desktop's is.
+        nav(
+            NEW_SESSION,
+            icons::ADD,
+            "New",
+            "Ctrl+N",
+            ui.selected.is_none(),
         ),
+        nav(SEARCH, icons::SEARCH, "Search", "Ctrl+K", false),
         Element::spacer().size(None, Some(16.0)),
     ];
-    let mut folders: Vec<&std::path::PathBuf> = vec![];
-    for session in store.sessions.iter().rev() {
-        if !folders.contains(&&session.cwd) {
-            folders.push(&session.cwd);
+    let listed = |pinned: bool| {
+        sorted(
+            store
+                .sessions
+                .iter()
+                .filter(|s| s.pinned == pinned && !s.archived)
+                .collect(),
+            ui,
+        )
+    };
+    let pinned = listed(true);
+    if !pinned.is_empty() {
+        // "Pinned" folds under the empty folder, which no session works in.
+        let key = std::path::PathBuf::new();
+        let open = !ui.collapsed.contains(&key);
+        rows.push(group_header("Pinned", &key, open, None, ui, palette));
+        if open {
+            rows.extend(pinned.iter().map(|s| session_row(s, ui, palette)));
+        }
+        rows.push(Element::spacer().size(None, Some(8.0)));
+    }
+    // Each group in the order of its first session, so the one with the newest leads.
+    let rest = listed(false);
+    let mut groups: Vec<(String, std::path::PathBuf, Option<&std::path::Path>)> = vec![];
+    for session in &rest {
+        let group = match ui.group_by {
+            crate::GroupBy::Folder => (
+                folder_name(&session.cwd),
+                session.cwd.clone(),
+                Some(session.cwd.as_path()),
+            ),
+            crate::GroupBy::Status => {
+                let label = status_group(session);
+                (label.into(), format!("status:{label}").into(), None)
+            }
+            // One header still holds the filter menu (inferred: Desktop's was not captured).
+            crate::GroupBy::None => ("Sessions".into(), "all:".into(), None),
+        };
+        if !groups.iter().any(|g| g.1 == group.1) {
+            groups.push(group);
         }
     }
-    for folder in folders {
-        let open = !ui.collapsed.contains(folder);
-        let caret = Element::icon(if open {
-            icons::of(icons::CARET_DOWN)
-        } else {
-            icons::of(icons::CARET_RIGHT)
-        })
-        .foreground(look::muted())
-        .size(Some(10.0), Some(10.0))
-        .centered_y();
-        // Under the pointer the header fills and offers a new session there.
-        let new_here = format!("new-in:{}", folder.display());
-        let header = Element::row(vec![
-            hgap(10.0),
-            muted(folder_name(folder)).font_size(SMALL).centered_y(),
-            caret,
-            Element::spacer().flex(1.0),
+    if ui.group_by == crate::GroupBy::Status {
+        groups.sort_by_key(|g| STATUS_GROUPS.iter().position(|s| g.0 == *s));
+    }
+    for (label, key, folder) in groups {
+        let open = !ui.collapsed.contains(&key);
+        rows.push(group_header(&label, &key, open, folder, ui, palette));
+        if !open {
+            continue;
+        }
+        rows.extend(
+            rest.iter()
+                .filter(|s| match ui.group_by {
+                    crate::GroupBy::Folder => s.cwd == key,
+                    crate::GroupBy::Status => status_group(s) == label,
+                    crate::GroupBy::None => true,
+                })
+                .map(|s| session_row(s, ui, palette)),
+        );
+    }
+    Element::column(rows)
+        .gap(2.0)
+        .padding(8.0)
+        .background(look::sidebar())
+        .size(Some(look::SIDEBAR_WIDTH - 1.0), Some(height))
+}
+
+/// Desktop's buckets when the list is grouped by status, in its order, less
+/// "done", which quill has no way to mark.
+const STATUS_GROUPS: [&str; 4] = ["Blocked", "Working", "Ready", "Idle"];
+
+fn status_group(session: &Session) -> &'static str {
+    match session.status {
+        SessionStatus::Awaiting => STATUS_GROUPS[0],
+        SessionStatus::Running | SessionStatus::Starting => STATUS_GROUPS[1],
+        _ if session.unread => STATUS_GROUPS[2],
+        _ => STATUS_GROUPS[3],
+    }
+}
+
+/// The sessions in the order the filter menu asks: by last change, by when they were made,
+/// or by name, newest or Z first unless ascending.
+fn sorted<'a>(mut list: Vec<&'a Session>, ui: &Ui) -> Vec<&'a Session> {
+    match ui.sort_by {
+        crate::SortBy::Updated => list.sort_by_key(|s| (s.touched, s.id)),
+        crate::SortBy::Created => list.sort_by_key(|s| s.id),
+        crate::SortBy::Name => list.sort_by_key(|s| session_title(s).to_lowercase()),
+    }
+    if !ui.ascending {
+        list.reverse();
+    }
+    list
+}
+
+/// The filter menu of a group's header: Group by, Sort by and Reset to
+/// defaults, with the current choices checked. Desktop's Show, New section and View all,
+/// and grouping by date or environment, are not here: quill keeps no dates or sections and
+/// runs on this computer only.
+fn filter_menu(key: &str, ui: &Ui) -> Element {
+    let id = format!("filter-menu:{key}");
+    let open = ui.filter_menu.as_deref() == Some(key);
+    let button = tool_surface(
+        &id,
+        icons::of(icons::FILTER),
+        "Group and sort",
+        22.0,
+        open.then(look::active),
+        look::tool_hover(),
+        None,
+    )
+    .centered_y();
+    let button = if open {
+        button
+    } else {
+        button.reveal_on_hover(format!("{id}:reveal"))
+    };
+    let check = |id: &str, label: &str, on: bool| {
+        limn::DropdownMenuEntry::from(limn::DropdownMenuItem::new(id, label).selected(on))
+    };
+    use crate::{GroupBy, SortBy};
+    let group = match ui.group_by {
+        GroupBy::Folder => "Folder",
+        GroupBy::Status => "Status",
+        GroupBy::None => "None",
+    };
+    let sort = match ui.sort_by {
+        SortBy::Updated => "Last updated",
+        SortBy::Created => "Date created",
+        SortBy::Name => "Name",
+    };
+    let entries = vec![
+        limn::DropdownMenuItem::new("filter:group", "Group by")
+            .annotation(group)
+            .submenu(vec![
+                check("group-by:status", "Status", ui.group_by == GroupBy::Status),
+                check("group-by:folder", "Folder", ui.group_by == GroupBy::Folder),
+                limn::DropdownMenuEntry::Separator,
+                check("group-by:none", "None", ui.group_by == GroupBy::None),
+            ])
+            .into(),
+        limn::DropdownMenuItem::new("filter:sort", "Sort by")
+            .annotation(sort)
+            .submenu(vec![
+                check(
+                    "sort-by:updated",
+                    "Last updated",
+                    ui.sort_by == SortBy::Updated,
+                ),
+                check(
+                    "sort-by:created",
+                    "Date created",
+                    ui.sort_by == SortBy::Created,
+                ),
+                check("sort-by:name", "Name", ui.sort_by == SortBy::Name),
+                limn::DropdownMenuEntry::Separator,
+                check("sort-way:descending", "Descending", !ui.ascending),
+                check("sort-way:ascending", "Ascending", ui.ascending),
+            ])
+            .into(),
+        limn::DropdownMenuEntry::Separator,
+        limn::DropdownMenuItem::new(FILTER_RESET, "Reset to defaults")
+            .enabled((ui.group_by, ui.sort_by, ui.ascending) != Default::default())
+            .into(),
+    ];
+    menu(
+        button,
+        entries,
+        open,
+        &id,
+        220.0,
+        // Its right edge under the button's, as Desktop's.
+        limn::PopoverPlacement::BottomEnd,
+    )
+    .centered_y()
+}
+
+/// A group's header, which folds it: under the pointer it fills, and offers its filter menu
+/// and, for a folder, a new session there.
+fn group_header(
+    label: &str,
+    key: &std::path::Path,
+    open: bool,
+    folder: Option<&std::path::Path>,
+    ui: &Ui,
+    palette: ComponentPalette,
+) -> Element {
+    let folder_key = key;
+    let caret = Element::icon(if open {
+        icons::of(icons::CARET_DOWN)
+    } else {
+        icons::of(icons::CARET_RIGHT)
+    })
+    .foreground(look::muted())
+    .size(Some(10.0), Some(10.0))
+    .centered_y();
+    let mut items = vec![
+        hgap(4.0),
+        muted(label).font_size(SMALL).centered_y(),
+        caret,
+        Element::spacer().flex(1.0),
+    ];
+    // Every header but Pinned's offers the list's filter menu.
+    if !key.as_os_str().is_empty() {
+        items.push(filter_menu(&key.display().to_string(), ui));
+    }
+    if let Some(folder) = folder {
+        let id = format!("new-in:{}", folder.display());
+        items.push(
             tool_surface(
-                &new_here,
+                &id,
                 icons::of(icons::ADD),
                 "New session",
                 22.0,
@@ -727,54 +1060,193 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
                 None,
             )
             .centered_y()
-            .reveal_on_hover(format!("{new_here}:reveal")),
-            hgap(4.0),
-        ])
-        .gap(6.0)
-        .size(None, Some(28.0));
-        let header_palette = ComponentPalette {
+            .reveal_on_hover(format!("{id}:reveal")),
+        );
+    }
+    items.push(hgap(4.0));
+    let header = Element::row(items).gap(6.0).size(None, Some(28.0));
+    ComponentPalette {
+        hover: look::row_hover(),
+        ..palette
+    }
+    .interactive_surface(Element::clickable(
+        format!("group:{}", folder_key.display()),
+        header,
+    ))
+    .radius(8.0)
+    .hover_region()
+}
+
+/// A session's row: its title, its status, and under the pointer "···" with Desktop's
+/// Pin, Rename and Delete.
+fn session_row(session: &Session, ui: &Ui, palette: ComponentPalette) -> Element {
+    let id = format!("row-menu:{}", session.id);
+    let open = ui.row_menu == Some(session.id);
+    let dots = tool_surface(
+        &id,
+        icons::of(icons::DOTS_HORIZONTAL),
+        "More options",
+        24.0,
+        open.then(look::active),
+        look::tool_hover(),
+        None,
+    );
+    let mut entries = vec![
+        open_in(session.id),
+        limn::DropdownMenuEntry::Separator,
+        lettered(
+            format!("pin:{}", session.id),
+            if session.pinned { "Unpin" } else { "Pin" },
+            "P",
+        )
+        .into(),
+        lettered(
+            format!("unread:{}", session.id),
+            if session.unread {
+                "Mark as read"
+            } else {
+                "Mark as unread"
+            },
+            "U",
+        )
+        .into(),
+        lettered(format!("rename:{}", session.id), "Rename", "R").into(),
+        lettered(format!("fork:{}", session.id), "Fork", "F").into(),
+        limn::DropdownMenuEntry::Separator,
+    ];
+    entries.extend(archive_and_delete(session));
+    let dots = menu(
+        dots,
+        entries,
+        open,
+        &id,
+        180.0,
+        limn::PopoverPlacement::BottomEnd,
+    )
+    .centered_y();
+    let dots = if open {
+        dots
+    } else {
+        dots.reveal_on_hover(format!("{id}:reveal"))
+    };
+    let title = Element::truncated_text(session_title(session))
+        .font_family(FontFamily::Sans)
+        .font_size(BODY)
+        .foreground(look::palette().text)
+        .flex(1.0)
+        .centered_y();
+    side_row_with(
+        format!("session:{}", session.id),
+        vec![title, status_dot(session), dots],
+        ui.selected == Some(session.id),
+        Some(&id),
+        palette,
+    )
+}
+
+/// The sessions whose title holds `query`, as the search lists them: those that need the
+/// person, those at work, then the rest, newest first.
+pub fn found(store: &Store, query: &str) -> Vec<quill_model::SessionId> {
+    let query = query.to_lowercase();
+    let mut found: Vec<&Session> = store
+        .sessions
+        .iter()
+        .rev()
+        .filter(|s| session_title(s).to_lowercase().contains(&query))
+        .collect();
+    found.sort_by_key(|s| search_section(s));
+    found.into_iter().map(|s| s.id).collect()
+}
+
+/// Where the search lists a session; an archived one is found only here, at the end.
+fn search_section(session: &Session) -> usize {
+    match session.status {
+        _ if session.archived => 3,
+        SessionStatus::Awaiting => 0,
+        SessionStatus::Running | SessionStatus::Starting => 1,
+        _ => 2,
+    }
+}
+
+/// Desktop's search, Ctrl+K: a field, the sessions under "Needs
+/// attention", "Active" and "Recents", and "New session"; Enter opens the first, marked ↵.
+fn search_dialog(store: &Store, ui: &Ui, base: Element, palette: ComponentPalette) -> Element {
+    let Some(query) = &ui.search else {
+        return base;
+    };
+    let field = limn::TextField::new(SEARCH_FIELD, query.as_str(), "Search", palette)
+        .render()
+        .size(None, Some(36.0));
+    let mut body = vec![field, Element::spacer().size(None, Some(6.0))];
+    let heading = |label: &str| {
+        pad(muted(label).font_size(SMALL), 12.0, 0.0)
+            .centered_y()
+            .size(None, Some(28.0))
+    };
+    let row = |id: String, label: String, first: bool| {
+        let mut items = vec![
+            hgap(12.0),
+            text(label).centered_y(),
+            Element::spacer().flex(1.0),
+        ];
+        if first {
+            items.push(
+                Element::icon(icons::of(icons::RETURN))
+                    .foreground(look::muted())
+                    .size(Some(14.0), Some(14.0))
+                    .centered_y(),
+            );
+        }
+        items.push(hgap(12.0));
+        let row = ComponentPalette {
             hover: look::row_hover(),
             ..palette
-        };
-        rows.push(
-            header_palette
-                .interactive_surface(Element::clickable(
-                    format!("group:{}", folder.display()),
-                    header,
-                ))
-                .radius(8.0)
-                .hover_region(),
-        );
-        if !open {
-            continue;
         }
-        for session in store.sessions.iter().rev().filter(|s| &s.cwd == folder) {
-            let title = if session.title.is_empty() {
-                "New session".to_string()
-            } else {
-                session.title.clone()
-            };
-            rows.push(side_row(
-                format!("session:{}", session.id),
-                vec![
-                    Element::truncated_text(title)
-                        .font_family(FontFamily::Sans)
-                        .font_size(BODY)
-                        .foreground(look::palette().text)
-                        .flex(1.0)
-                        .centered_y(),
-                    status_dot(&session.status),
-                ],
-                ui.selected == Some(session.id),
-                palette,
+        .interactive_surface(Element::clickable(
+            id,
+            Element::row(items).gap(8.0).size(None, Some(36.0)),
+        ))
+        .radius(8.0);
+        if first {
+            row.background(look::selected())
+        } else {
+            row
+        }
+    };
+    let found = found(store, query);
+    let mut section = None;
+    for (i, id) in found.iter().enumerate() {
+        let Some(session) = store.session(*id) else {
+            continue;
+        };
+        let at = search_section(session);
+        if section != Some(at) {
+            section = Some(at);
+            body.push(heading(
+                ["Needs attention", "Active", "Recents", "Archived"][at],
             ));
         }
+        body.push(row(format!("search:{id}"), session_title(session), i == 0));
     }
-    Element::column(rows)
-        .gap(2.0)
-        .padding(8.0)
-        .background(look::sidebar())
-        .size(Some(look::SIDEBAR_WIDTH - 1.0), Some(height))
+    body.push(heading("Actions"));
+    body.push(row(
+        SEARCH_NEW.into(),
+        "New session".into(),
+        found.is_empty(),
+    ));
+    let footer = Element::row(vec![
+        muted("Close").font_size(SMALL).centered_y(),
+        limn::Kbd::new("Esc", palette).render().centered_y(),
+    ])
+    .gap(6.0);
+    limn::Modal::new(base, true, "", "", SEARCH_CLOSE, palette)
+        .width(672.0)
+        .body(Element::column(body).gap(2.0))
+        .footer(footer)
+        .initial_focus(SEARCH_FIELD)
+        .backdrop_dismiss(true)
+        .scrim(look::scrim())
+        .render()
 }
 
 /// A sidebar row: 32 px tall, 10 px in, rounded, filled while selected.
@@ -784,9 +1256,22 @@ fn side_row(
     selected: bool,
     palette: ComponentPalette,
 ) -> Element {
-    let mut items = vec![hgap(10.0)];
+    side_row_with(id, content, selected, None, palette)
+}
+
+/// A sidebar row that stays lit while the pointer is on `peer`, its "···", as Desktop's
+/// keeps both the row and the button lit [the person, 2026-10-25].
+fn side_row_with(
+    id: String,
+    content: Vec<Element>,
+    selected: bool,
+    peer: Option<&str>,
+    palette: ComponentPalette,
+) -> Element {
+    // Empty ends: the row's own gap is the 10 px inset, as Desktop's.
+    let mut items = vec![hgap(0.0)];
     items.extend(content);
-    items.push(hgap(10.0));
+    items.push(hgap(0.0));
     let row = Element::row(items).gap(10.0).size(None, Some(32.0));
     // Under the pointer a row turns #EDEDED, a selected one from #E0E0E0 to #D5D5D5
     //.
@@ -798,10 +1283,13 @@ fn side_row(
         },
         ..palette
     };
-    let row = palette
-        .interactive_surface(Element::clickable(id, row))
-        .radius(8.0)
-        .hover_region();
+    let row = palette.interactive_surface(Element::clickable(id, row));
+    let row = match peer {
+        Some(peer) => row.hover_with(peer),
+        None => row,
+    }
+    .radius(8.0)
+    .hover_region();
     if selected {
         row.background(look::selected())
     } else {
@@ -810,11 +1298,14 @@ fn side_row(
 }
 
 /// Running and awaiting sessions carry a dot in the sidebar, as Desktop's rows do.
-fn status_dot(status: &SessionStatus) -> Element {
+fn status_dot(session: &Session) -> Element {
+    let status = &session.status;
     let color = match status {
         SessionStatus::Running | SessionStatus::Starting => look::running(),
         SessionStatus::Awaiting => look::awaiting(),
         SessionStatus::Failed(_) => look::removed(),
+        // Unread reads as a small gray dot.
+        _ if session.unread => look::muted(),
         _ => return Element::spacer().size(Some(6.0), Some(6.0)),
     };
     // A running session's dot pulses, as Desktop's does.
@@ -2699,8 +3190,24 @@ fn split_models(
     (latest, more)
 }
 
-/// The row a typed digit picks in the open mode or model menu, as Desktop's 1–4 do.
+/// The row a typed digit picks in the open mode or model menu, as Desktop's 1–4 do, or a
+/// typed letter in a session's menu, as its P, R and D.
 pub fn menu_digit(store: &Store, ui: &Ui, typed: &str) -> Option<String> {
+    let menu_session = ui
+        .row_menu
+        .or(ui.selected.filter(|_| ui.open_menu == Some(TITLE_MENU)));
+    if let Some(session) = menu_session {
+        let action = match typed {
+            "p" | "P" if ui.row_menu.is_some() => "pin",
+            "u" | "U" if ui.row_menu.is_some() => "unread",
+            "r" | "R" => "rename",
+            "f" | "F" => "fork",
+            "a" | "A" => "archive",
+            "d" | "D" => "delete",
+            _ => return None,
+        };
+        return Some(format!("{action}:{session}"));
+    }
     let n: usize = typed.parse().ok().filter(|n| (1..=9).contains(n))?;
     let session = ui.selected.and_then(|id| store.session(id));
     match ui.open_menu? {
