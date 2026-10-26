@@ -114,6 +114,12 @@ pub const QUESTION: &str = icon!(
     "<circle cx='10' cy='10' r='6.75'/><path d='M8.1 8.1a2 2 0 0 1 3.85.65c0 1.35-1.95 1.75-1.95 2.75'/><circle cx='10' cy='13.6' r='0.55' fill='currentColor'/>"
 );
 
+/// A session that needs the person: a triangle with a mark [the person's Desktop, 2026-10-25
+/// videos].
+pub const WARNING: &str = icon!(
+    "<path d='M10 3.75L17 16H3z' stroke-linejoin='round'/><path d='M10 8.5v3.5'/><circle cx='10' cy='14' r='0.55' fill='currentColor'/>"
+);
+
 /// A waiting task's dashed ring.
 pub const TASK_PENDING: &str =
     icon!("<circle cx='10' cy='10' r='6.5' stroke-dasharray='2.2 2.1'/>");
@@ -171,5 +177,6 @@ pub const ALL: &[(&str, &str)] = &[
     ("panel_right", PANEL_RIGHT),
     ("question", QUESTION),
     ("task_pending", TASK_PENDING),
+    ("warning", WARNING),
     ("spark", SPARK),
 ];

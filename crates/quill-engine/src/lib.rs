@@ -3,7 +3,9 @@
 //! reports [`Event`]s through the sink given to [`Engine::start`]. Nothing here blocks.
 
 use quill_agent::{AgentAdapter, AgentCommand, AgentEvent, SessionSpec};
-use quill_model::{Event, Intent, NewSession, RequestId, SessionId, SessionStatus};
+use quill_model::{
+    Event, Intent, NewSession, ProposalAnswer, ProposalOutcome, RequestId, SessionId, SessionStatus,
+};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -96,21 +98,47 @@ fn open_store(config: &Config, sink: &Sink) -> quill_store::Store {
     })
 }
 
+/// What actors tell the router, apart from the events everyone sees.
+enum Internal {
+    /// The agent called one of quill's own tools.
+    HostTool {
+        session: SessionId,
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    /// A turn began or the session stopped working.
+    Busy { session: SessionId, busy: bool },
+    /// A turn ended; `text` is the last thing the agent said in it.
+    TurnEnded { session: SessionId, text: String },
+}
+
+/// Hands each intent to its session's actor, creating sessions as asked. Sessions kept
+/// from earlier runs come back first, ready to continue their conversation.
 async fn route(mut rx: UnboundedReceiver<Intent>, ui: Sink, config: Config) {
-    let mut router = Router::new(ui, config);
+    let (internal, mut internal_rx) = unbounded_channel();
+    let mut router = Router::new(ui, config, internal);
     router.restore();
-    while let Some(intent) = rx.recv().await {
-        router.intent(intent).await;
+    loop {
+        tokio::select! {
+            intent = rx.recv() => match intent {
+                Some(intent) => router.intent(intent).await,
+                None => break,
+            },
+            Some(note) = internal_rx.recv() => router.internal(note).await,
+        }
     }
 }
 
-/// The engine's own state: each session's actor and how it started.
+/// The engine's own state: each session's actor and what quill knows of how sessions
+/// relate (which started which, what each proposed, what waits to be reported).
 struct Router {
     store: Arc<Mutex<quill_store::Store>>,
     ui: Sink,
     /// Every event is written before the UI sees it (spec.md D5).
     sink: Sink,
     config: Config,
+    internal: UnboundedSender<Internal>,
     sessions: HashMap<SessionId, UnboundedSender<Input>>,
     /// Each session's folder, for what is uncommitted in it.
     folders: HashMap<SessionId, std::path::PathBuf>,
@@ -119,10 +147,20 @@ struct Router {
     /// Each session's own id at its agent, which a fork continues from.
     agent_ids: Arc<Mutex<HashMap<SessionId, String>>>,
     next: SessionId,
+    /// The session that started each one, which it reports to.
+    parents: HashMap<SessionId, SessionId>,
+    /// A started session's name, for its reports.
+    titles: HashMap<SessionId, String>,
+    /// Proposals nobody answered yet, by the session that made them and their id.
+    proposals: HashMap<(SessionId, String), quill_model::Proposal>,
+    /// What started sessions said, waiting for their parent to be free to hear it.
+    reports: HashMap<SessionId, Vec<quill_model::Report>>,
+    /// Sessions in the middle of a turn.
+    busy: std::collections::HashSet<SessionId>,
 }
 
 impl Router {
-    fn new(ui: Sink, config: Config) -> Self {
+    fn new(ui: Sink, config: Config, internal: UnboundedSender<Internal>) -> Self {
         let store = Arc::new(Mutex::new(open_store(&config, &ui)));
         let agent_ids: Arc<Mutex<HashMap<SessionId, String>>> = Arc::default();
         let sink: Sink = {
@@ -150,11 +188,17 @@ impl Router {
             ui,
             sink,
             config,
+            internal,
             sessions: HashMap::new(),
             folders: HashMap::new(),
             started: HashMap::new(),
             agent_ids,
             next: 0,
+            parents: HashMap::new(),
+            titles: HashMap::new(),
+            proposals: HashMap::new(),
+            reports: HashMap::new(),
+            busy: Default::default(),
         }
     }
 
@@ -169,6 +213,16 @@ impl Router {
             self.started.insert(session, restored.new.clone());
             if let Some(id) = &restored.resume {
                 self.agent_ids.lock().unwrap().insert(session, id.clone());
+            }
+            if let Some(parent) = restored.parent {
+                self.parents.insert(session, parent);
+            }
+            if let Some(title) = restored.title.clone() {
+                self.titles.insert(session, title);
+            }
+            for proposal in restored.proposals.clone() {
+                self.proposals
+                    .insert((session, proposal.id.clone()), proposal);
             }
             for event in events {
                 (self.ui)(event);
@@ -189,6 +243,7 @@ impl Router {
             actor.spec.resume = restored.resume;
             actor.before = restored.before;
             actor.shadow_root = self.config.snapshots.clone();
+            actor.route = Some(self.internal.clone());
             tokio::spawn(actor.run(rx));
             self.sessions.insert(session, tx);
             (self.ui)(Event::Status {
@@ -239,6 +294,7 @@ impl Router {
         let program = self.config.programs.get(&new.agent).cloned();
         let mut actor = Actor::new(id, new, adapter, program, tx.clone(), self.sink.clone());
         actor.shadow_root = self.config.snapshots.clone();
+        actor.route = Some(self.internal.clone());
         if let Some(from) = fork_of {
             // Without an id of its own yet, the parent has no conversation to continue.
             actor.spec.resume = self.agent_ids.lock().unwrap().get(&from).cloned();
@@ -253,6 +309,46 @@ impl Router {
         if let Some(tx) = self.sessions.get(&session) {
             let _ = tx.send(input);
         }
+    }
+
+    /// Start a session for `proposal` under `parent`, which it reports back to, and send it
+    /// its brief: the prompt, with the background when it starts fresh.
+    async fn start_child(
+        &mut self,
+        parent: SessionId,
+        proposal: &quill_model::Proposal,
+    ) -> Option<SessionId> {
+        let new = self.started.get(&parent)?.clone();
+        let title = proposal.title.clone();
+        let child = self
+            .spawn(
+                new,
+                |id| {
+                    vec![
+                        Event::Linked {
+                            session: id,
+                            parent,
+                            side: false,
+                        },
+                        Event::Renamed {
+                            session: id,
+                            title: title.clone(),
+                        },
+                    ]
+                },
+                proposal.fork.then_some(parent),
+            )
+            .await?;
+        self.parents.insert(child, parent);
+        self.titles.insert(child, title);
+        let brief = match (&proposal.background, proposal.fork) {
+            (Some(background), false) if !background.trim().is_empty() => {
+                format!("{}\n\nBackground:\n{background}", proposal.prompt)
+            }
+            _ => proposal.prompt.clone(),
+        };
+        self.tell(child, Input::Send(brief));
+        Some(child)
     }
 
     async fn intent(&mut self, intent: Intent) {
@@ -285,6 +381,7 @@ impl Router {
             }
             Intent::Rewind { session, request } => (session, Input::Rewind(request)),
             Intent::Rename { session, title } => {
+                self.titles.insert(session, title.clone());
                 (self.sink)(Event::Renamed { session, title });
                 return;
             }
@@ -308,6 +405,42 @@ impl Router {
                         Some(from),
                     )
                     .await;
+                }
+                return;
+            }
+            Intent::AnswerProposal {
+                session,
+                task,
+                answer,
+            } => {
+                self.answer(session, task, answer).await;
+                return;
+            }
+            // Desktop's /btw forks the session as a side child (3.6556.2 `startBtwChild`,
+            // `forkSession(..., {btw: true})`); it is not a session that reports back.
+            Intent::SideChat { session, text } => {
+                let Some(new) = self.started.get(&session).cloned() else {
+                    return;
+                };
+                let title: String = text.chars().take(60).collect();
+                let side = self
+                    .spawn(
+                        new,
+                        |id| {
+                            vec![
+                                Event::Linked {
+                                    session: id,
+                                    parent: session,
+                                    side: true,
+                                },
+                                Event::Renamed { session: id, title },
+                            ]
+                        },
+                        Some(session),
+                    )
+                    .await;
+                if let Some(side) = side {
+                    self.tell(side, Input::Send(text));
                 }
                 return;
             }
@@ -357,6 +490,181 @@ impl Router {
         };
         self.tell(session, input);
     }
+
+    /// The person answered a proposal on its card.
+    async fn answer(&mut self, session: SessionId, task: String, answer: ProposalAnswer) {
+        let Some(proposal) = self.proposals.remove(&(session, task.clone())) else {
+            return;
+        };
+        let outcome = match answer {
+            ProposalAnswer::Start => match self.start_child(session, &proposal).await {
+                Some(child) => ProposalOutcome::Started { session: child },
+                None => return,
+            },
+            ProposalAnswer::Here => {
+                self.tell(session, Input::Send(proposal.prompt.clone()));
+                ProposalOutcome::Kept
+            }
+            ProposalAnswer::Dismiss => ProposalOutcome::Dismissed,
+        };
+        (self.sink)(Event::ProposalAnswered {
+            session,
+            task,
+            outcome,
+        });
+    }
+
+    async fn internal(&mut self, note: Internal) {
+        match note {
+            Internal::HostTool {
+                session,
+                id,
+                name,
+                input,
+            } => {
+                let (text, is_error) = self.host_tool(session, &name, &input).await;
+                self.tell(
+                    session,
+                    Input::Command(AgentCommand::HostToolResult { id, text, is_error }),
+                );
+            }
+            Internal::Busy { session, busy } => {
+                if busy {
+                    self.busy.insert(session);
+                } else {
+                    self.busy.remove(&session);
+                    self.flush(session);
+                }
+            }
+            Internal::TurnEnded { session, text } => {
+                self.busy.remove(&session);
+                if let Some(&parent) = self.parents.get(&session) {
+                    let title = self.titles.get(&session).cloned().unwrap_or_default();
+                    self.reports
+                        .entry(parent)
+                        .or_default()
+                        .push(quill_model::Report {
+                            from: session,
+                            title,
+                            text,
+                        });
+                    self.flush(parent);
+                }
+                self.flush(session);
+            }
+        }
+    }
+
+    /// Tell `parent` what the sessions it started said, once it is between turns and none of
+    /// them is still working, as Desktop continues a session when its side sessions end
+    /// (3.6556.2 `start_session`'s `wake_when_done`).
+    fn flush(&mut self, parent: SessionId) {
+        let working = self.busy.contains(&parent)
+            || self
+                .parents
+                .iter()
+                .any(|(child, p)| *p == parent && self.busy.contains(child));
+        if working {
+            return;
+        }
+        if let Some(reports) = self.reports.remove(&parent).filter(|r| !r.is_empty()) {
+            self.busy.insert(parent);
+            self.tell(parent, Input::Report(reports));
+        }
+    }
+
+    /// One of quill's own tools, called by `session`'s agent ([`quill_agent::HOST_TOOLS`]):
+    /// what to answer it, and whether that is an error.
+    async fn host_tool(
+        &mut self,
+        session: SessionId,
+        name: &str,
+        input: &serde_json::Value,
+    ) -> (String, bool) {
+        let field = |key: &str| {
+            input[key]
+                .as_str()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_owned)
+        };
+        match name {
+            "start_session" => {
+                if let Some(task) = field("proposal_id") {
+                    let Some(proposal) = self.proposals.get(&(session, task.clone())).cloned()
+                    else {
+                        return (
+                            "That task is not waiting: the user already started or dismissed it."
+                                .into(),
+                            true,
+                        );
+                    };
+                    self.answer(session, task, ProposalAnswer::Start).await;
+                    return (
+                        format!(
+                            "Started the session \u{201c}{}\u{201d}. It reports back here when its turn ends.",
+                            proposal.title
+                        ),
+                        false,
+                    );
+                }
+                let (Some(title), Some(prompt)) = (field("title"), field("prompt")) else {
+                    return ("start_session needs a title and a prompt.".into(), true);
+                };
+                let proposal = quill_model::Proposal {
+                    id: format!("task-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]),
+                    title,
+                    prompt,
+                    background: field("background"),
+                    fork: field("context").as_deref() == Some("fork"),
+                };
+                match field("initiation").as_deref() {
+                    Some("own_initiative") => {
+                        let id = proposal.id.clone();
+                        self.proposals.insert((session, id.clone()), proposal.clone());
+                        (self.sink)(Event::Proposed { session, proposal });
+                        (
+                            format!("Proposed as task {id}. The user sees it as a card and starts it there; nothing runs until then. If it goes stale, withdraw it with dismiss_task."),
+                            false,
+                        )
+                    }
+                    Some("user_asked") => match self.start_child(session, &proposal).await {
+                        Some(_) => (
+                            format!(
+                                "Started the session \u{201c}{}\u{201d}. It reports back here when its turn ends.",
+                                proposal.title
+                            ),
+                            false,
+                        ),
+                        None => ("The session could not be started.".into(), true),
+                    },
+                    _ => (
+                        "initiation must be \"user_asked\" or \"own_initiative\".".into(),
+                        true,
+                    ),
+                }
+            }
+            "dismiss_task" => {
+                let Some(task) = field("task_id") else {
+                    return ("dismiss_task needs a task_id.".into(), true);
+                };
+                if self.proposals.remove(&(session, task.clone())).is_none() {
+                    return (
+                        "That task is not waiting: the user already started or dismissed it."
+                            .into(),
+                        false,
+                    );
+                }
+                (self.sink)(Event::ProposalAnswered {
+                    session,
+                    task,
+                    outcome: ProposalOutcome::Dismissed,
+                });
+                ("Withdrawn.".into(), false)
+            }
+            other => (format!("quill has no tool named {other}."), true),
+        }
+    }
 }
 
 /// What a kept session needs to continue: how it started and the agent's own id for it.
@@ -365,6 +673,11 @@ struct Restored {
     resume: Option<String>,
     /// Each attributed request's snapshot from before it ran, for rewinds after a restart.
     before: HashMap<RequestId, String>,
+    /// The session that started it, and its name.
+    parent: Option<SessionId>,
+    title: Option<String>,
+    /// What it proposed that nobody answered.
+    proposals: Vec<quill_model::Proposal>,
 }
 
 impl Restored {
@@ -381,8 +694,17 @@ impl Restored {
         };
         let mut resume = None;
         let mut before = HashMap::new();
+        let (mut parent, mut title, mut proposals) = (None, None, vec![]);
         for event in events {
             match event {
+                Event::Linked {
+                    parent: p,
+                    side: false,
+                    ..
+                } => parent = Some(*p),
+                Event::Renamed { title: t, .. } => title = Some(t.clone()),
+                Event::Proposed { proposal, .. } => proposals.push(proposal.clone()),
+                Event::ProposalAnswered { task, .. } => proposals.retain(|p| p.id != *task),
                 Event::Agent {
                     event: AgentEvent::Session { id },
                     ..
@@ -401,6 +723,9 @@ impl Restored {
             new,
             resume,
             before,
+            parent,
+            title,
+            proposals,
         })
     }
 }
@@ -408,6 +733,8 @@ impl Restored {
 /// What reaches a session's actor: the UI's wishes and its process's output.
 enum Input {
     Send(String),
+    /// What sessions it started said: sent as one message that begins a turn.
+    Report(Vec<quill_model::Report>),
     Rewind(RequestId),
     Command(AgentCommand),
     Line {
@@ -445,6 +772,10 @@ struct Actor {
     start: Option<String>,
     /// Each attributed request's snapshot from before it ran.
     before: HashMap<RequestId, String>,
+    /// Where it tells the router of tool calls and turns.
+    route: Option<UnboundedSender<Internal>>,
+    /// The last thing the agent said in the turn under way, for its report.
+    last_text: String,
 }
 
 impl Actor {
@@ -480,13 +811,26 @@ impl Actor {
             sent: Default::default(),
             start: None,
             before: HashMap::new(),
+            route: None,
+            last_text: String::new(),
         }
     }
 
-    /// Send `text` as a new request.
-    async fn prompt(&mut self, text: String) {
+    fn tell(&self, note: Internal) {
+        if let Some(route) = &self.route {
+            let _ = route.send(note);
+        }
+    }
+
+    /// Send `text` as a new request; `reports` makes it the report of started sessions, which
+    /// the transcript shows as such rather than as the person's message.
+    async fn prompt(&mut self, text: String, reports: Option<Vec<quill_model::Report>>) {
         if let Err(error) = self.ensure_running().await {
             self.status(SessionStatus::Failed(error));
+            self.tell(Internal::Busy {
+                session: self.id,
+                busy: false,
+            });
             return;
         }
         let request = uuid::Uuid::new_v4().to_string();
@@ -496,10 +840,17 @@ impl Actor {
             self.start = self.snapshot().await;
         }
         self.sent.push_back(request.clone());
-        (self.sink)(Event::Queued {
-            session: self.id,
-            request: request.clone(),
-            text: text.clone(),
+        (self.sink)(match reports {
+            Some(reports) => Event::Reported {
+                session: self.id,
+                request: request.clone(),
+                reports,
+            },
+            None => Event::Queued {
+                session: self.id,
+                request: request.clone(),
+                text: text.clone(),
+            },
         });
         self.write(AgentCommand::Prompt {
             request,
@@ -508,6 +859,10 @@ impl Actor {
         })
         .await;
         self.busy = true;
+        self.tell(Internal::Busy {
+            session: self.id,
+            busy: true,
+        });
         self.status(SessionStatus::Running);
     }
 
@@ -597,7 +952,11 @@ impl Actor {
                     stopped = Some(done);
                     break;
                 }
-                Input::Send(text) => self.prompt(text).await,
+                Input::Send(text) => self.prompt(text, None).await,
+                Input::Report(reports) => {
+                    let text = report_text(&reports);
+                    self.prompt(text, Some(reports)).await
+                }
                 Input::Rewind(request) => self.rewind(request).await,
                 Input::Command(command) => {
                     let decided = match &command {
@@ -621,6 +980,10 @@ impl Actor {
                     self.process = None;
                     self.running = None;
                     self.busy = false;
+                    self.tell(Internal::Busy {
+                        session: self.id,
+                        busy: false,
+                    });
                     // Turns the agent never finished are not attributed.
                     self.sent.clear();
                     self.status(match code {
@@ -718,6 +1081,19 @@ impl Actor {
         let decoded = self.adapter.decode(line);
         self.write_lines(decoded.replies).await;
         for event in decoded.events {
+            // quill's own tools are the router's to run; the call itself shows as its step.
+            if let AgentEvent::HostTool { id, name, input } = event {
+                self.tell(Internal::HostTool {
+                    session: self.id,
+                    id,
+                    name,
+                    input,
+                });
+                continue;
+            }
+            if let AgentEvent::Text { text, parent: None } = &event {
+                self.last_text = text.clone();
+            }
             match &event {
                 AgentEvent::Session { id } => {
                     self.spec.resume = Some(id.clone());
@@ -741,7 +1117,27 @@ impl Actor {
                 self.running = None;
                 self.busy = false;
                 self.status(SessionStatus::Idle);
+                let text = std::mem::take(&mut self.last_text);
+                self.tell(Internal::TurnEnded {
+                    session: self.id,
+                    text,
+                });
             }
         }
     }
+}
+
+/// The message that tells a session what the sessions it started said, in quill's words for
+/// what Desktop sends (3.6556.2 `<side-sessions-event>`).
+fn report_text(reports: &[quill_model::Report]) -> String {
+    let mut text =
+        String::from("<sessions-report>\nSessions you started have finished their turn.\n");
+    for report in reports {
+        text.push_str(&format!(
+            "\n## {} (session {})\n{}\n",
+            report.title, report.from, report.text
+        ));
+    }
+    text.push_str("\nIf what the user asked you here has steps these results unblock, carry on with them; otherwise tell the user the outcome in a line or two.\n</sessions-report>");
+    text
 }

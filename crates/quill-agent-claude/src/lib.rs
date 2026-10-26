@@ -5,7 +5,7 @@
 use quill_agent::{
     AgentAdapter, AgentCapabilities, AgentCommand, AgentEvent, AgentId, CommandRun, Decision,
     Decoded, FileChange, LaunchPlan, ModelInfo, PlanLimits, SessionSpec, Suggestion, Usage,
-    UsageWindow,
+    UsageWindow, HOST_TOOLS,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -37,6 +37,9 @@ pub struct Claude {
     task_tokens: HashMap<String, u64>,
     /// The CLI's `/effort` takes `ultracode`: it is offered as the slider's last stop.
     ultracode: bool,
+    /// quill's tool calls waiting for the engine: the control request's id and the JSON-RPC id
+    /// the answer goes back under.
+    host_calls: HashMap<String, Value>,
 }
 
 impl Claude {
@@ -87,6 +90,20 @@ impl Claude {
     fn control_request(&mut self, id: Value, request: &Value, decoded: &mut Decoded) {
         let id_text = id.as_str().unwrap_or_default().to_owned();
         match request["subtype"].as_str() {
+            // quill's own tools are quill's to run: they never ask the person (an
+            // `own_initiative` call only proposes, and its card is where the person answers).
+            Some("can_use_tool")
+                if text(&request["tool_name"]).starts_with(&format!("mcp__{SERVER}__")) =>
+            {
+                decoded.replies.push(success(
+                    &id,
+                    json!({ "behavior": "allow", "updatedInput": request["input"],
+                        "toolUseID": request["tool_use_id"] }),
+                ));
+            }
+            Some("mcp_message") if request["server_name"] == SERVER => {
+                self.host_message(id, &request["message"], decoded)
+            }
             Some("can_use_tool") => {
                 let tool = text(&request["tool_name"]);
                 let input = request["input"].clone();
@@ -121,6 +138,43 @@ impl Claude {
                 );
             }
         }
+    }
+
+    /// One JSON-RPC message for quill's in-process MCP server: the handshake and the tool list
+    /// are answered here, a tool call goes to the engine (verified on CLI 2.1.310,
+    /// [F:sessions]; the protocol is the CLI's `mcp_message`, as `initialize.sdkMcpServers`
+    /// names the server).
+    fn host_message(&mut self, id: Value, message: &Value, decoded: &mut Decoded) {
+        let rpc = message["id"].clone();
+        let result = match message["method"].as_str() {
+            Some("initialize") => json!({
+                "protocolVersion": message["params"]["protocolVersion"],
+                "capabilities": { "tools": {} },
+                "serverInfo": { "name": SERVER, "version": env!("CARGO_PKG_VERSION") },
+            }),
+            Some("tools/list") => {
+                json!({ "tools": HOST_TOOLS.map(|(name, description, schema)| json!({
+                "name": name, "description": description,
+                "inputSchema": serde_json::from_str::<Value>(schema).unwrap_or_default(),
+            })) })
+            }
+            Some("tools/call") => {
+                let id_text = text(&id);
+                self.host_calls.insert(id_text.clone(), rpc);
+                decoded.events.push(AgentEvent::HostTool {
+                    id: id_text,
+                    name: text(&message["params"]["name"]),
+                    input: message["params"]["arguments"].clone(),
+                });
+                return;
+            }
+            // Notifications want only an acknowledgement.
+            _ => json!({}),
+        };
+        decoded.replies.push(success(
+            &id,
+            json!({ "mcp_response": { "jsonrpc": "2.0", "id": rpc, "result": result } }),
+        ));
     }
 
     fn tool_result(&mut self, block: &Value, structured: &Value) -> AgentEvent {
@@ -217,6 +271,8 @@ impl AgentAdapter for Claude {
                 let line = self.request(json!({
                     "subtype": "initialize",
                     "hooks": { "PostToolUse": [{ "hookCallbackIds": [POST_TOOL_HOOK] }] },
+                    "sdkMcpServers": [SERVER],
+                    "appendSystemPrompt": SESSIONS_GUIDE,
                 }));
                 self.initialize = Some(self.last_request_id());
                 vec![line]
@@ -264,6 +320,15 @@ impl AgentAdapter for Claude {
             AgentCommand::Rewind { request, dry_run } => vec![self.request(json!({
                 "subtype": "rewind_files", "user_message_id": request, "dry_run": dry_run,
             }))],
+            AgentCommand::HostToolResult { id, text, is_error } => {
+                let rpc = self.host_calls.remove(&id).unwrap_or_default();
+                vec![success(
+                    &Value::String(id),
+                    json!({ "mcp_response": { "jsonrpc": "2.0", "id": rpc, "result": {
+                        "content": [{ "type": "text", "text": text }], "isError": is_error,
+                    } } }),
+                )]
+            }
         }
     }
 
@@ -464,6 +529,15 @@ fn success(id: &Value, response: Value) -> String {
     json!({ "type": "control_response", "response": { "subtype": "success", "request_id": id, "response": response } })
         .to_string()
 }
+
+/// The in-process MCP server that carries quill's own tools ([`HOST_TOOLS`]); the agent sees
+/// them as `mcp__sessions__…`.
+const SERVER: &str = "sessions";
+
+/// When to start or propose another session, appended to the agent's system prompt. quill's
+/// words for what Desktop says in its own section on starting other sessions (3.6556.2
+/// `bundle` `bundle`).
+const SESSIONS_GUIDE: &str = "# Other sessions\n\nWith start_session you can start a separate session for a task of its own, or propose one. A session is for work that outlives this turn and ends in something of its own (a branch, a PR, a change elsewhere); searching or reading widely, independent parts of one change, and testing or checking what you built stay here or go to a subagent. When the user asks in words for separate, parallel or background work, start it (initiation \"user_asked\"). When your work turns up follow-up that belongs in its own session and the user has not asked for it, propose it (initiation \"own_initiative\") rather than only mentioning it: the user sees a card and starts it with a click. Give every session a brief that stands alone. Sessions you start report back to you in a message when their turn ends; then carry on with what their results unblock, or tell the user the outcome in a line or two. Start nothing the user did not ask for.";
 
 /// The effort level Desktop adds over the model's own, its slider's last stop
 /// ("Added Ultracode to the effort slider", 3.6556.2 `cb63ed069`).

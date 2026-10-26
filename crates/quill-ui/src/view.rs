@@ -59,6 +59,10 @@ pub const PR_CREATE: &str = "pr:create";
 pub const PR_MENU: &str = "pr-menu";
 pub const BAR_CLOSE: &str = "branch-bar:close";
 pub const FILTER_RESET: &str = "filter:reset";
+/// The reply field of a side chat's pane.
+pub const SIDE_FIELD: &str = "side:field";
+/// "Show more" under Completed.
+pub const SHOW_MORE: &str = "sidebar:show-more";
 /// The effort slider, its width, and the way its thumb travels.
 pub const EFFORT_SLIDER: &str = "effort:slider";
 const EFFORT_WIDTH: f32 = 192.0;
@@ -124,7 +128,7 @@ fn layout(store: &Store, ui: &Ui, window: Size) -> Layout {
     let fraction = match panes.first() {
         Some(Pane::Diff) => 0.6,
         // A helper agent and a plan open at a third too.
-        Some(Pane::Terminal | Pane::Agent | Pane::Plan) => 1.0 / 3.0,
+        Some(Pane::Terminal | Pane::Agent | Pane::Plan | Pane::Side) => 1.0 / 3.0,
         None => 0.0,
     };
     // Dragging the boundary sets the share, as in Desktop.
@@ -303,7 +307,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     if layout.main > 0.0 {
         let column = COLUMN.min(layout.main - 64.0).max(240.0);
         let body = match session {
-            Some(session) => transcript(session, ui, column, palette),
+            Some(session) => transcript(store, session, ui, column, palette),
             None => empty(ui, column),
         };
         row.push(
@@ -328,6 +332,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
                 Pane::Terminal => terminal_pane(session, ui, width, height, palette),
                 Pane::Agent => agent_pane(store, session, ui, width, height, palette),
                 Pane::Plan => plan_pane(session, ui, width, height),
+                Pane::Side => side_pane(store, ui, width, height, palette),
             });
         }
         if layout.main > 0.0 {
@@ -853,12 +858,17 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
         nav(SEARCH, icons::SEARCH, "Search", "Ctrl+K", false),
         Element::spacer().size(None, Some(16.0)),
     ];
+    // Sessions another one started are listed under it, not on their own.
     let listed = |pinned: bool| {
         sorted(
             store
                 .sessions
                 .iter()
-                .filter(|s| s.pinned == pinned && !s.archived)
+                .filter(|s| {
+                    s.pinned == pinned
+                        && !s.archived
+                        && s.parent.and_then(|p| store.session(p)).is_none()
+                })
                 .collect(),
             ui,
         )
@@ -870,7 +880,9 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
         let open = !ui.collapsed.contains(&key);
         rows.push(group_header("Pinned", &key, open, None, ui, palette));
         if open {
-            rows.extend(pinned.iter().map(|s| session_row(s, ui, palette)));
+            for s in &pinned {
+                rows.extend(with_children(store, s, ui, palette));
+            }
         }
         rows.push(Element::spacer().size(None, Some(8.0)));
     }
@@ -898,21 +910,50 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
     if ui.group_by == crate::GroupBy::Status {
         groups.sort_by_key(|g| STATUS_GROUPS.iter().position(|s| g.0 == *s));
     }
-    for (label, key, folder) in groups {
+    for (at, (label, key, folder)) in groups.into_iter().enumerate() {
         let open = !ui.collapsed.contains(&key);
+        // A little air between groups, as Desktop's.
+        if at > 0 {
+            rows.push(Element::spacer().size(None, Some(8.0)));
+        }
         rows.push(group_header(&label, &key, open, folder, ui, palette));
         if !open {
             continue;
         }
-        rows.extend(
-            rest.iter()
-                .filter(|s| match ui.group_by {
-                    crate::GroupBy::Folder => s.cwd == key,
-                    crate::GroupBy::Status => status_group(s) == label,
-                    crate::GroupBy::None => true,
-                })
-                .map(|s| session_row(s, ui, palette)),
-        );
+        let members: Vec<&&Session> = rest
+            .iter()
+            .filter(|s| match ui.group_by {
+                crate::GroupBy::Folder => s.cwd == key,
+                crate::GroupBy::Status => status_group(s) == label,
+                crate::GroupBy::None => true,
+            })
+            .collect();
+        // Completed shows its first few until "Show more" (inferred: five, as the videos
+        // show four or five before it).
+        let limited = ui.group_by == crate::GroupBy::Status
+            && label == STATUS_GROUPS[2]
+            && members.len() > COMPLETED_SHOWN;
+        let shown = if limited && !ui.show_more {
+            COMPLETED_SHOWN
+        } else {
+            members.len()
+        };
+        for s in &members[..shown] {
+            rows.extend(with_children(store, s, ui, palette));
+        }
+        if limited {
+            let label = if ui.show_more {
+                "Show less"
+            } else {
+                "Show more"
+            };
+            rows.push(side_row(
+                SHOW_MORE.into(),
+                vec![muted(label).centered_y()],
+                false,
+                palette,
+            ));
+        }
     }
     Element::column(rows)
         .gap(2.0)
@@ -921,17 +962,59 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
         .size(Some(look::SIDEBAR_WIDTH - 1.0), Some(height))
 }
 
-/// Desktop's buckets when the list is grouped by status, in its order, less
-/// "done", which quill has no way to mark.
-const STATUS_GROUPS: [&str; 4] = ["Blocked", "Working", "Ready", "Idle"];
+/// The groups when the list goes by status, in their order, as the person's newer Desktop
+/// names them [videos of 2026-10-25]: waiting for the person, at work, and the rest.
+const STATUS_GROUPS: [&str; 3] = ["Needs input", "Working", "Completed"];
+/// How many sessions Completed lists before "Show more".
+const COMPLETED_SHOWN: usize = 5;
 
 fn status_group(session: &Session) -> &'static str {
     match session.status {
         SessionStatus::Awaiting => STATUS_GROUPS[0],
         SessionStatus::Running | SessionStatus::Starting => STATUS_GROUPS[1],
-        _ if session.unread => STATUS_GROUPS[2],
-        _ => STATUS_GROUPS[3],
+        _ => STATUS_GROUPS[2],
     }
+}
+
+/// A session's row and, under it, the rows of the sessions it started, on a tree line that
+/// turns into the last of them [videos of 2026-10-25].
+fn with_children(
+    store: &Store,
+    session: &Session,
+    ui: &Ui,
+    palette: ComponentPalette,
+) -> Vec<Element> {
+    let mut rows = vec![session_row(session, 0, ui, palette)];
+    let children: Vec<&Session> = store
+        .sessions
+        .iter()
+        .filter(|s| s.parent == Some(session.id) && !s.archived)
+        .collect();
+    if children.is_empty() {
+        return rows;
+    }
+    let count = children.len();
+    let column: Vec<Element> = children
+        .iter()
+        .map(|child| session_row(child, 1, ui, palette))
+        .collect();
+    // The line runs down to the middle of the last row, then turns towards it.
+    let reach = (count - 1) as f32 * 34.0 + 16.0;
+    let tree = Element::column(vec![
+        Element::spacer()
+            .background(look::divider())
+            .size(Some(1.0), Some(reach)),
+        Element::spacer()
+            .background(look::divider())
+            .size(Some(6.0), Some(1.0)),
+    ])
+    .size(Some(6.0), None);
+    rows.push(Element::row(vec![
+        hgap(16.0),
+        tree,
+        Element::column(column).gap(2.0).flex(1.0),
+    ]));
+    rows
 }
 
 /// The sessions in the order the filter menu asks: by last change, by when they were made,
@@ -1049,12 +1132,22 @@ fn group_header(
     .foreground(look::muted())
     .size(Some(10.0), Some(10.0))
     .centered_y();
-    let mut items = vec![
-        hgap(4.0),
-        muted(label).font_size(SMALL).centered_y(),
-        caret,
-        Element::spacer().flex(1.0),
-    ];
+    // Status groups read as plain words, Folder ones as small gray names with a caret.
+    let status = key.to_string_lossy().starts_with("status:");
+    let mut items = if status {
+        vec![
+            hgap(4.0),
+            text(label).centered_y(),
+            Element::spacer().flex(1.0),
+        ]
+    } else {
+        vec![
+            hgap(4.0),
+            muted(label).font_size(SMALL).centered_y(),
+            caret,
+            Element::spacer().flex(1.0),
+        ]
+    };
     // Every header but Pinned's offers the list's filter menu.
     if !key.as_os_str().is_empty() {
         items.push(filter_menu(&key.display().to_string(), ui));
@@ -1090,8 +1183,11 @@ fn group_header(
 }
 
 /// A session's row: its title, its status, and under the pointer "···" with Desktop's
-/// Pin, Rename and Delete.
-fn session_row(session: &Session, ui: &Ui, palette: ComponentPalette) -> Element {
+/// Pin, Rename and Delete. As the newer Desktop draws them [videos of
+/// 2026-10-25]: a working session's title is gray with a light passing over it, an unread
+/// one is bold, one that needs the person ends in a warning, and a finished top-level one in
+/// the place it ran (this computer).
+fn session_row(session: &Session, depth: usize, ui: &Ui, palette: ComponentPalette) -> Element {
     let id = format!("row-menu:{}", session.id);
     let open = ui.row_menu == Some(session.id);
     let dots = tool_surface(
@@ -1141,15 +1237,43 @@ fn session_row(session: &Session, ui: &Ui, palette: ComponentPalette) -> Element
     } else {
         dots.reveal_on_hover(format!("{id}:reveal"))
     };
-    let title = Element::truncated_text(session_title(session))
-        .font_family(FontFamily::Sans)
-        .font_size(BODY)
-        .foreground(look::palette().text)
-        .flex(1.0)
-        .centered_y();
+    let working = matches!(
+        session.status,
+        SessionStatus::Running | SessionStatus::Starting
+    );
+    let title = if working {
+        Element::shimmer_truncated_text(
+            format!("row-shimmer:{}", session.id),
+            session_title(session),
+            look::palette().text,
+        )
+        .foreground(look::muted())
+    } else {
+        Element::truncated_text(session_title(session)).foreground(look::palette().text)
+    }
+    .font_family(if session.unread && !working {
+        FontFamily::SansBold
+    } else {
+        FontFamily::Sans
+    })
+    .font_size(BODY)
+    .flex(1.0)
+    .centered_y();
+    let mark = |icon: &'static str, color: limn::Color| {
+        Element::icon(icons::of(icon))
+            .foreground(color)
+            .size(Some(14.0), Some(14.0))
+            .centered_y()
+    };
+    let indicator = match session.status {
+        SessionStatus::Awaiting => mark(icons::WARNING, look::palette().text),
+        SessionStatus::Failed(_) => status_dot(session),
+        _ if depth == 0 && !working => mark(icons::LAPTOP, look::muted()),
+        _ => hgap(0.0),
+    };
     side_row_with(
         format!("session:{}", session.id),
-        vec![title, status_dot(session), dots],
+        vec![title, indicator, dots],
         ui.selected == Some(session.id),
         Some(&id),
         palette,
@@ -1351,7 +1475,13 @@ fn empty(ui: &Ui, column: f32) -> Element {
     ])
 }
 
-fn transcript(session: &Session, ui: &Ui, column: f32, palette: ComponentPalette) -> Element {
+fn transcript(
+    store: &Store,
+    session: &Session,
+    ui: &Ui,
+    column: f32,
+    palette: ComponentPalette,
+) -> Element {
     // Desktop opens a session with where it started.
     let mut items: Vec<Element> = vec![muted(format!(
         "Started on this computer · {}",
@@ -1362,7 +1492,7 @@ fn transcript(session: &Session, ui: &Ui, column: f32, palette: ComponentPalette
         session.status,
         SessionStatus::Starting | SessionStatus::Running | SessionStatus::Awaiting
     );
-    let (entries, running) = entries(session, &session.items, busy, ui, column, palette);
+    let (entries, running) = entries(store, session, &session.items, busy, ui, column, palette);
     items.extend(entries);
     // While the turn runs, its task list sits over the running line; it goes when the
     // turn ends.
@@ -1414,6 +1544,7 @@ fn transcript(session: &Session, ui: &Ui, column: f32, palette: ComponentPalette
 /// between them is gone, a waiting one ends the group. While `busy`, a last step still
 /// running leaves its group and is returned for the running line.
 fn entries<'a>(
+    store: &Store,
     session: &'a Session,
     list: &'a [Item],
     busy: bool,
@@ -1475,7 +1606,7 @@ fn entries<'a>(
                 if user && !items.is_empty() {
                     items.push(Element::spacer().size(None, Some(32.0)));
                 }
-                let element = self::item(other, session, ui, column, palette);
+                let element = self::item(other, store, session, ui, column, palette);
                 // Under a reply, its actions show while the pointer is on it.
                 let element = match other {
                     Item::Assistant {
@@ -1642,6 +1773,7 @@ pub fn tokens(count: u64) -> String {
 
 fn item(
     item: &Item,
+    store: &Store,
     session: &Session,
     ui: &Ui,
     column: f32,
@@ -1725,6 +1857,8 @@ fn item(
             files,
             rewound,
         } => changes_card(request, files, *rewound, column, palette),
+        Item::Proposals { tasks } => proposals_card(store, tasks, palette),
+        Item::Reports { request, reports } => reports_block(request, reports, session, ui, column),
     }
 }
 
@@ -1976,6 +2110,17 @@ fn step_label(step: &Step, done: bool) -> (String, String) {
         "Agent" | "Task" => ("Ran agent", "Running agent", said("description")),
         "Skill" => ("Ran skill", "Running skill", said("skill")),
         "ExitPlanMode" => ("Proposed plan", "Proposing plan", String::new()),
+        // quill's own session tools, in Desktop's words (3.6556.2 `c96d752d0`, `dZe`).
+        name if name.ends_with("sessions__start_session") => {
+            if input["initiation"] == "own_initiative" {
+                ("Suggested task", "Suggesting task", said("title"))
+            } else {
+                ("Started session", "Starting session", said("title"))
+            }
+        }
+        name if name.ends_with("sessions__dismiss_task") => {
+            ("Withdrew a task", "Withdrawing a task", String::new())
+        }
         "AskUserQuestion" => (
             "Asked",
             "Asking",
@@ -4443,7 +4588,7 @@ fn agent_pane(
     }
     let running = session.task_running(call);
     let helper = session.helpers.get(call).map_or(&[][..], Vec::as_slice);
-    body.extend(entries(session, helper, running, ui, inner, palette).0);
+    body.extend(entries(store, session, helper, running, ui, inner, palette).0);
     if running {
         body.push(
             Element::row(vec![
@@ -4495,4 +4640,310 @@ pub fn plan_text(items: &[Item], id: &str) -> Option<String> {
         }
         _ => None,
     })
+}
+
+/// What a session is doing now, as a card row under its title says it: the step it runs
+/// ("Reading CartLineItem.tsx"), or nothing once its turn is over [videos of 2026-10-25].
+fn activity(session: &Session) -> Option<String> {
+    match session.status {
+        SessionStatus::Running | SessionStatus::Starting => {}
+        // Inferred: the videos show no session waiting from a card.
+        SessionStatus::Awaiting => return Some("Needs your input".into()),
+        _ => return None,
+    }
+    let running = session.items.iter().rev().find_map(|item| match item {
+        Item::Tool {
+            call,
+            name,
+            input,
+            result: None,
+        } if !is_task_tool(name) => Some(Step {
+            call,
+            name,
+            input,
+            result: None,
+            running: true,
+        }),
+        _ => None,
+    });
+    Some(match running {
+        Some(step) => {
+            let (verb, object) = step_label(&step, false);
+            format!("{verb} {object}").trim_end().to_owned()
+        }
+        None if session.thinking => "Thinking".into(),
+        None => "Working".into(),
+    })
+}
+
+/// The card of the tasks a turn proposed for sessions of their own [videos of 2026-10-25]:
+/// "New session" over a single one, "3 suggested tasks" and "Start all" over several. A
+/// waiting task shows its title, its brief in two lines, a close, "Do it here" and "Start";
+/// a started one is a row that follows its session, with what it does now, and opens it.
+/// Desktop's "Options" (where and how it runs) is not here: quill starts every session on
+/// this computer, as the one that proposed it.
+fn proposals_card(
+    store: &Store,
+    tasks: &[(quill_model::Proposal, Option<quill_model::ProposalOutcome>)],
+    palette: ComponentPalette,
+) -> Element {
+    use quill_model::ProposalOutcome;
+    let width = 440.0;
+    let shown: Vec<_> = tasks
+        .iter()
+        .filter(|(_, outcome)| !matches!(outcome, Some(ProposalOutcome::Dismissed)))
+        .collect();
+    if shown.is_empty() {
+        return Element::spacer().size(None, Some(0.0));
+    }
+    let waiting: Vec<&str> = shown
+        .iter()
+        .filter(|(_, outcome)| outcome.is_none())
+        .map(|(p, _)| p.id.as_str())
+        .collect();
+    let started = shown
+        .iter()
+        .filter(|(_, o)| matches!(o, Some(ProposalOutcome::Started { .. })))
+        .count();
+    let mut head = vec![if shown.len() == 1 && started == 0 {
+        text("New session")
+    } else {
+        text(format!("{} suggested tasks", shown.len()))
+    }
+    .centered_y()];
+    if started > 0 {
+        head.push(muted(format!("{started} started")).centered_y());
+    }
+    head.push(Element::spacer().flex(1.0));
+    if waiting.len() > 1 {
+        head.push(
+            Element::clickable(
+                format!("proposal-all:{}", waiting.join(",")),
+                text("Start all").centered_y(),
+            )
+            .centered_y(),
+        );
+    }
+    let mut rows = vec![Element::row(head)
+        .gap(12.0)
+        .padding(14.0)
+        .size(Some(width), Some(42.0))
+        .background(look::command_box())];
+    for (at, (proposal, outcome)) in shown.iter().enumerate() {
+        if at > 0 {
+            rows.push(hline(width, look::divider()));
+        }
+        rows.push(match outcome {
+            None => {
+                let action = |what: &str| format!("proposal:{what}:{}", proposal.id);
+                Element::column(vec![
+                    Element::row(vec![
+                        text(proposal.title.clone()).flex(1.0),
+                        tool_surface(
+                            &action("dismiss"),
+                            icons::of(icons::CLOSE),
+                            "Dismiss",
+                            22.0,
+                            None,
+                            look::tool_hover(),
+                            None,
+                        ),
+                    ])
+                    .gap(8.0),
+                    // The brief in two lines at most, as Desktop's card cuts it.
+                    Element::formatted_text(vec![limn::TextSpan::new(
+                        proposal.prompt.clone(),
+                        look::muted(),
+                        BODY,
+                        FontFamily::Sans,
+                    )])
+                    .max_width(width - 28.0)
+                    .max_lines(2),
+                    Element::row(vec![
+                        Element::spacer().flex(1.0),
+                        Element::clickable(action("here"), text("Do it here").centered_y())
+                            .centered_y(),
+                        keyed_button(&action("start"), "Start", "", true, true, palette),
+                    ])
+                    .gap(16.0),
+                ])
+                .gap(6.0)
+                .padding(14.0)
+                .size(Some(width), None)
+            }
+            Some(ProposalOutcome::Started { session }) => {
+                let child = store.session(*session);
+                let doing = child.and_then(activity);
+                let mut lines = vec![text(proposal.title.clone())];
+                if let Some(doing) = &doing {
+                    lines.push(muted(doing.clone()).font_size(SMALL));
+                }
+                let mut row = vec![Element::column(lines).gap(2.0).flex(1.0).centered_y()];
+                if doing.is_some() {
+                    row.push(
+                        Element::spacer()
+                            .background(look::muted())
+                            .radius(2.5)
+                            .size(Some(5.0), Some(5.0))
+                            .centered_y(),
+                    );
+                }
+                row.push(
+                    Element::icon(icons::of(icons::CARET_RIGHT))
+                        .foreground(look::muted())
+                        .size(Some(14.0), Some(14.0))
+                        .centered_y(),
+                );
+                ComponentPalette {
+                    hover: look::row_hover(),
+                    ..palette
+                }
+                .interactive_surface(Element::clickable(
+                    format!("session:{session}"),
+                    Element::row(row)
+                        .gap(12.0)
+                        .padding(14.0)
+                        .size(Some(width), None),
+                ))
+            }
+            Some(ProposalOutcome::Kept) => Element::row(vec![
+                text(proposal.title.clone()).flex(1.0),
+                muted("Kept in this session").font_size(SMALL),
+            ])
+            .gap(12.0)
+            .padding(14.0)
+            .size(Some(width), None),
+            Some(ProposalOutcome::Dismissed) => Element::spacer(),
+        });
+    }
+    Element::column(rows)
+        .border(look::card_border(), 1.0)
+        .radius(12.0)
+        .clip_children()
+        .size(Some(width), None)
+}
+
+/// What the sessions it started said, as the session hears it [videos of 2026-10-25]:
+/// "Received message from" and the session's name, which opens it, and ▸ to read what it
+/// said. The newest shimmers while the session works on it.
+fn reports_block(
+    request: &str,
+    reports: &[quill_model::Report],
+    session: &Session,
+    ui: &Ui,
+    column: f32,
+) -> Element {
+    let working = matches!(
+        session.status,
+        SessionStatus::Running | SessionStatus::Starting
+    ) && session
+        .items
+        .iter()
+        .rev()
+        .find_map(|item| match item {
+            Item::Reports { request: r, .. } => Some(r == request),
+            Item::User { .. } => Some(false),
+            _ => None,
+        })
+        .unwrap_or(false);
+    let rows = reports
+        .iter()
+        .enumerate()
+        .map(|(at, report)| {
+            let key = format!("report:{request}:{at}");
+            let open = ui.expanded.contains(&key);
+            let lead = if working {
+                Element::shimmer_text(
+                    format!("report-shimmer:{request}:{at}"),
+                    "Received message from",
+                    look::palette().text,
+                )
+                .foreground(look::muted())
+                .font_family(FontFamily::Sans)
+                .font_size(CHAT)
+            } else {
+                muted("Received message from").font_size(CHAT)
+            };
+            let line = Element::row(vec![
+                lead.centered_y(),
+                // The session's name in the text's ink, underlined, opens it.
+                Element::formatted_text(vec![limn::TextSpan::new(
+                    report.title.clone(),
+                    look::palette().text,
+                    CHAT,
+                    FontFamily::Sans,
+                )
+                .underline()
+                .action(format!("session:{}", report.from))])
+                .centered_y(),
+                Element::clickable(key.clone(), caret(open)).centered_y(),
+            ])
+            .gap(8.0);
+            if !open {
+                return line;
+            }
+            Element::column(vec![
+                line,
+                Markdown::new(&report.text, look::palette())
+                    .width(column - 16.0)
+                    .font_size(BODY)
+                    .render()
+                    .element,
+            ])
+            .gap(8.0)
+        })
+        .collect();
+    Element::column(rows).gap(10.0)
+}
+
+/// A side chat (`/btw`) beside the session [videos of 2026-10-25]: its question as the
+/// title, with expand and close; its own transcript and running line; and "Reply in this
+/// session…" under it. The session it was asked from keeps working.
+fn side_pane(
+    store: &Store,
+    ui: &Ui,
+    width: f32,
+    height: f32,
+    palette: ComponentPalette,
+) -> Element {
+    let side = ui.side_chat.and_then(|id| store.session(id));
+    let title = side.map_or_else(|| "Side chat".to_owned(), session_title);
+    let lead = Element::truncated_text(title)
+        .font_family(FontFamily::Sans)
+        .font_size(BODY)
+        .foreground(look::palette().text)
+        .size(Some(width - 120.0), None)
+        .centered_y();
+    let header = pane_header(lead, pane_tools(Pane::Side, ui, palette), width);
+    let Some(side) = side else {
+        return Element::column(vec![header]).size(Some(width), Some(height));
+    };
+    let inner = width - 32.0;
+    let busy = matches!(
+        side.status,
+        SessionStatus::Starting | SessionStatus::Running | SessionStatus::Awaiting
+    );
+    let (mut body, running) = entries(store, side, &side.items, busy, ui, inner, palette);
+    if let Some(line) = status_line(side, running.as_ref(), ui, inner, palette) {
+        body.push(line);
+    }
+    let content = Element::column(body).gap(12.0).padding(16.0);
+    let scroll = Element::scroll(format!("side:{}:scroll", side.id), content);
+    let reply = limn::TextField::new(
+        SIDE_FIELD,
+        ui.side_reply.as_str(),
+        "Reply in this session…",
+        look::composer_palette(),
+    )
+    .render()
+    .border(look::composer_border(), 1.0)
+    .radius(12.0)
+    .size(Some(width - 24.0), Some(40.0));
+    Element::column(vec![
+        header,
+        scroll.flex(1.0),
+        Element::row(vec![hgap(12.0), reply]),
+        Element::spacer().size(None, Some(12.0)),
+    ])
+    .size(Some(width), Some(height))
 }

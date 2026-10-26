@@ -10,8 +10,8 @@ pub mod view;
 pub use view::{menu_digit, view};
 
 use quill_model::{
-    AgentCapabilities, AgentEvent, Decision, Event, FileEffect, Intent, NewSession, RequestId,
-    SessionId, SessionStatus, Suggestion,
+    AgentCapabilities, AgentEvent, Decision, Event, FileEffect, Intent, NewSession, ProposalAnswer,
+    RequestId, SessionId, SessionStatus, Suggestion,
 };
 use serde_json::Value;
 use std::path::PathBuf;
@@ -56,6 +56,16 @@ pub enum Item {
         request: RequestId,
         files: Vec<FileEffect>,
         rewound: bool,
+    },
+    /// Tasks the agent proposed for sessions of their own, on one card per turn, each with
+    /// what became of it.
+    Proposals {
+        tasks: Vec<(quill_model::Proposal, Option<quill_model::ProposalOutcome>)>,
+    },
+    /// What sessions it started said, sent to the agent as `request`.
+    Reports {
+        request: RequestId,
+        reports: Vec<quill_model::Report>,
     },
 }
 
@@ -113,6 +123,8 @@ pub struct Session {
     pub unread: bool,
     /// When it last changed in this run, for "Last updated".
     pub touched: u64,
+    /// The session that started it, which it reports to and is nested under.
+    pub parent: Option<SessionId>,
 }
 
 /// Work the agent runs beside its turns, as Desktop counts "1 running task".
@@ -192,6 +204,7 @@ impl Store {
                 archived: false,
                 unread: false,
                 touched: 0,
+                parent: None,
             }),
             Event::Status { session, status } => {
                 if let Some(s) = self.session_mut(session) {
@@ -327,6 +340,62 @@ impl Store {
             }
             // A fork starts as its parent was: its conversation, under the parent's name
             // marked as a fork (inferred: Desktop's name for a fork was not captured).
+            Event::Proposed { session, proposal } => {
+                if let Some(s) = self.session_mut(session) {
+                    // A turn's proposals share one card [videos of 2026-10-25].
+                    let turn = s
+                        .items
+                        .iter()
+                        .rposition(|i| matches!(i, Item::User { .. } | Item::Reports { .. }))
+                        .map_or(0, |at| at + 1);
+                    let card = s.items[turn..]
+                        .iter_mut()
+                        .rev()
+                        .find_map(|item| match item {
+                            Item::Proposals { tasks } => Some(tasks),
+                            _ => None,
+                        });
+                    match card {
+                        Some(tasks) => tasks.push((proposal, None)),
+                        None => s.items.push(Item::Proposals {
+                            tasks: vec![(proposal, None)],
+                        }),
+                    }
+                }
+            }
+            Event::ProposalAnswered {
+                session,
+                task,
+                outcome,
+            } => {
+                if let Some(s) = self.session_mut(session) {
+                    for item in &mut s.items {
+                        if let Item::Proposals { tasks } = item {
+                            for (proposal, answered) in tasks.iter_mut() {
+                                if proposal.id == task {
+                                    *answered = Some(outcome.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Event::Reported {
+                session,
+                request,
+                reports,
+            } => {
+                if let Some(s) = self.session_mut(session) {
+                    s.items.push(Item::Reports { request, reports });
+                }
+            }
+            Event::Linked {
+                session, parent, ..
+            } => {
+                if let Some(s) = self.session_mut(session) {
+                    s.parent = Some(parent);
+                }
+            }
             Event::Forked { session, from } => {
                 let parent = self
                     .session(from)
@@ -618,6 +687,13 @@ pub struct Ui {
     pub filter_menu: Option<String>,
     /// A fork was asked for: the session the engine makes next is it, and opens.
     pub waiting_fork: bool,
+    /// The Completed group shows every session, not its first few.
+    pub show_more: bool,
+    /// The side chat its pane shows, one asked for that the engine is making, and what its
+    /// reply field holds.
+    pub side_chat: Option<SessionId>,
+    pub side_waiting: bool,
+    pub side_reply: String,
     /// The effort slider's thumb in pixels along its travel: where the pointer holds it,
     /// then the spring that carries it to its stop once let go.
     pub effort_thumb: Option<limn::ScalarSpring>,
@@ -631,8 +707,10 @@ pub struct Ui {
 /// The sidebar's groups: by folder, Desktop's default, by status, or one list.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum GroupBy {
-    #[default]
     Folder,
+    /// Needs input, Working and Completed, as the person's newer Desktop lists sessions by
+    /// default [videos of 2026-10-25].
+    #[default]
     Status,
     None,
 }
@@ -781,6 +859,48 @@ fn session_clicked(store: &Store, ui: &mut Ui, id: &str) -> Option<Vec<Intent>> 
     } else if let Some(way) = id.strip_prefix("sort-way:") {
         ui.filter_menu = None;
         ui.ascending = way == "ascending";
+    } else if let Some((what, task)) = id
+        .strip_prefix("proposal:")
+        .and_then(|rest| rest.split_once(':'))
+    {
+        let answer = match what {
+            "start" => ProposalAnswer::Start,
+            "here" => ProposalAnswer::Here,
+            _ => ProposalAnswer::Dismiss,
+        };
+        return Some(
+            ui.selected
+                .map(|session| {
+                    vec![Intent::AnswerProposal {
+                        session,
+                        task: task.to_owned(),
+                        answer,
+                    }]
+                })
+                .unwrap_or_default(),
+        );
+    } else if let Some(tasks) = id.strip_prefix("proposal-all:") {
+        return Some(
+            ui.selected
+                .map(|session| {
+                    tasks
+                        .split(',')
+                        .map(|task| Intent::AnswerProposal {
+                            session,
+                            task: task.to_owned(),
+                            answer: ProposalAnswer::Start,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        );
+    } else if id.starts_with("report:") {
+        match ui.expanded.iter().position(|k| k == id) {
+            Some(at) => drop(ui.expanded.remove(at)),
+            None => ui.expanded.push(id.to_owned()),
+        }
+    } else if id == view::SHOW_MORE {
+        ui.show_more = !ui.show_more;
     } else if id == view::FILTER_RESET {
         ui.filter_menu = None;
         (ui.group_by, ui.sort_by, ui.ascending) = Default::default();
@@ -847,10 +967,18 @@ pub enum Pane {
     Agent,
     /// The plan `Ui::plan` names.
     Plan,
+    /// The side chat `Ui::side_chat` names: a `/btw` question beside the session.
+    Side,
 }
 
 impl Pane {
-    pub const ALL: [Pane; 4] = [Pane::Diff, Pane::Terminal, Pane::Agent, Pane::Plan];
+    pub const ALL: [Pane; 5] = [
+        Pane::Diff,
+        Pane::Terminal,
+        Pane::Agent,
+        Pane::Plan,
+        Pane::Side,
+    ];
 
     pub fn key(self) -> &'static str {
         match self {
@@ -858,6 +986,7 @@ impl Pane {
             Pane::Terminal => "terminal",
             Pane::Agent => "agent",
             Pane::Plan => "plan",
+            Pane::Side => "side",
         }
     }
 }
@@ -951,6 +1080,10 @@ impl Ui {
             live: Default::default(),
             filter_menu: None,
             waiting_fork: false,
+            show_more: false,
+            side_chat: None,
+            side_waiting: false,
+            side_reply: String::new(),
             effort_thumb: None,
             effort_dragging: false,
             effort_samples: vec![],
@@ -1004,6 +1137,7 @@ impl Ui {
             Pane::Diff => self.diff = None,
             Pane::Agent => self.helper = None,
             Pane::Plan => self.plan = None,
+            Pane::Side => self.side_chat = None,
             Pane::Terminal => {}
         }
     }
@@ -1020,6 +1154,12 @@ impl Ui {
             }
         }
         if let Event::SessionCreated { session, .. } = event {
+            // A side chat opens in its pane; the session in view stays.
+            if std::mem::take(&mut self.side_waiting) {
+                self.side_chat = Some(*session);
+                self.open_pane(Pane::Side);
+                return vec![];
+            }
             if std::mem::take(&mut self.waiting_fork) {
                 self.selected = Some(*session);
                 self.title_edit = None;
@@ -1052,7 +1192,9 @@ impl Ui {
             ..
         } = event
         {
-            if self.selected != Some(*session) && self.live.contains(session) {
+            // A side chat open in its pane is in view too.
+            let seen = self.selected == Some(*session) || self.side_chat == Some(*session);
+            if !seen && self.live.contains(session) {
                 return vec![Intent::MarkUnread {
                     session: *session,
                     unread: true,
@@ -1159,12 +1301,37 @@ pub fn update(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Intent
             ui.prompt = value.clone();
             vec![]
         }
+        UiAction::InputChanged { id, value } if id == view::SIDE_FIELD => {
+            ui.side_reply = value.clone();
+            vec![]
+        }
+        UiAction::Submitted { id, value } if id == view::SIDE_FIELD => {
+            let text = value.trim().to_owned();
+            ui.side_reply.clear();
+            match ui.side_chat {
+                Some(session) if !text.is_empty() => vec![Intent::Send { session, text }],
+                _ => vec![],
+            }
+        }
         UiAction::Submitted { id, value } if id == view::COMPOSER => {
             let text = value.trim().to_owned();
             if text.is_empty() {
                 return vec![];
             }
             ui.prompt.clear();
+            // "/btw …" asks a side question beside the session [videos of 2026-10-25].
+            if let (Some(question), Some(session)) = (
+                text.strip_prefix("/btw ")
+                    .map(str::trim)
+                    .filter(|q| !q.is_empty()),
+                ui.selected,
+            ) {
+                ui.side_waiting = true;
+                return vec![Intent::SideChat {
+                    session,
+                    text: question.to_owned(),
+                }];
+            }
             match ui.selected {
                 Some(session) => vec![Intent::Send { session, text }],
                 None => {
@@ -1392,6 +1559,25 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
             return vec![Intent::WorkingTree { session }];
         }
         return vec![];
+    }
+    // Closing a side chat puts it away once it is between turns, as Desktop archives a
+    // settled one (3.6556.2 `closeBtwChild`).
+    if id == "pane:side:close" {
+        let settled = ui.side_chat.and_then(|s| store.session(s)).filter(|s| {
+            !matches!(
+                s.status,
+                SessionStatus::Running | SessionStatus::Starting | SessionStatus::Awaiting
+            )
+        });
+        ui.close_pane(Pane::Side);
+        return settled
+            .map(|s| {
+                vec![Intent::Archive {
+                    session: s.id,
+                    archived: true,
+                }]
+            })
+            .unwrap_or_default();
     }
     if let Some(rest) = id.strip_prefix("pane:") {
         for pane in Pane::ALL {

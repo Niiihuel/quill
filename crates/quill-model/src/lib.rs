@@ -121,6 +121,58 @@ pub enum Intent {
     Fork {
         session: SessionId,
     },
+    /// A side question (`/btw`): a fork of the session, opened beside it, that answers without
+    /// adding to its conversation.
+    SideChat {
+        session: SessionId,
+        text: String,
+    },
+    /// The person's answer to a task the session proposed: start it, do it here, or not.
+    AnswerProposal {
+        session: SessionId,
+        task: String,
+        answer: ProposalAnswer,
+    },
+}
+
+/// What the person does with a proposed task.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum ProposalAnswer {
+    /// In a session of its own, which reports back to the one that proposed it.
+    Start,
+    /// In the session that proposed it: its brief is sent there.
+    Here,
+    Dismiss,
+}
+
+/// A task a session proposed to run in a session of its own; nothing runs until the person
+/// starts it.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Proposal {
+    pub id: String,
+    pub title: String,
+    /// The brief the new session starts from.
+    pub prompt: String,
+    /// The goal, decisions and constraints so far, for a session that starts fresh.
+    pub background: Option<String>,
+    /// The new session continues this whole conversation instead of starting fresh.
+    pub fork: bool,
+}
+
+/// What became of a proposal.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum ProposalOutcome {
+    Started { session: SessionId },
+    Kept,
+    Dismissed,
+}
+
+/// What a session another one started said when its turn ended.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Report {
+    pub from: SessionId,
+    pub title: String,
+    pub text: String,
 }
 
 /// Where a session's agent process is.
@@ -217,6 +269,31 @@ pub enum Event {
         session: SessionId,
         from: SessionId,
     },
+    /// The session was started by `parent`, which it reports back to: the sidebar nests it
+    /// there. A side chat (`/btw`) reports nothing: it is the person's own aside.
+    Linked {
+        session: SessionId,
+        parent: SessionId,
+        #[serde(default)]
+        side: bool,
+    },
+    /// The agent proposed a task for a session of its own.
+    Proposed {
+        session: SessionId,
+        proposal: Proposal,
+    },
+    ProposalAnswered {
+        session: SessionId,
+        task: String,
+        outcome: ProposalOutcome,
+    },
+    /// Sessions it started finished their turn; what they said is sent to the session as
+    /// `request`, which begins a turn of its own.
+    Reported {
+        session: SessionId,
+        request: RequestId,
+        reports: Vec<Report>,
+    },
 }
 
 impl Event {
@@ -236,7 +313,11 @@ impl Event {
             | Event::Deleted { session }
             | Event::Archived { session, .. }
             | Event::Unread { session, .. }
-            | Event::Forked { session, .. } => *session,
+            | Event::Forked { session, .. }
+            | Event::Linked { session, .. }
+            | Event::Proposed { session, .. }
+            | Event::ProposalAnswered { session, .. }
+            | Event::Reported { session, .. } => *session,
         }
     }
 }

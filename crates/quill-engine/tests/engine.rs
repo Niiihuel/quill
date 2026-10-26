@@ -439,3 +439,97 @@ fn a_name_and_a_pin_are_kept_and_a_deleted_session_is_gone() {
     drop(engine);
     let _ = std::fs::remove_file(&database);
 }
+
+#[test]
+fn a_proposed_task_starts_a_linked_session_that_reports_back() {
+    let (engine, rx) = engine();
+    new_session(&engine, "sessions");
+    engine.send(Intent::Send {
+        session: 1,
+        text: "Propose a README task".into(),
+    });
+    // The agent's start_session call becomes a proposal; nothing runs yet.
+    let events = until(&rx, |e| matches!(e, Event::Proposed { session: 1, .. }));
+    let Some(Event::Proposed { proposal, .. }) = events.last() else {
+        unreachable!()
+    };
+    assert_eq!(proposal.title, "Add a README");
+    let task = proposal.id.clone();
+    until(&rx, |e| {
+        matches!(
+            e,
+            Event::Agent {
+                session: 1,
+                event: AgentEvent::TurnFinished { .. },
+                ..
+            }
+        )
+    });
+    // Started, it is a session of its own under the one that proposed it.
+    engine.send(Intent::AnswerProposal {
+        session: 1,
+        task: task.clone(),
+        answer: quill_model::ProposalAnswer::Start,
+    });
+    let events = until(&rx, |e| matches!(e, Event::ProposalAnswered { .. }));
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::Linked {
+            session: 2,
+            parent: 1,
+            side: false
+        }
+    )));
+    assert!(matches!(
+        events.last(),
+        Some(Event::ProposalAnswered {
+            session: 1,
+            outcome: quill_model::ProposalOutcome::Started { session: 2 },
+            ..
+        })
+    ));
+    // When its turn ends, what it said goes back to the one that started it.
+    let events = until(&rx, |e| matches!(e, Event::Reported { session: 1, .. }));
+    let Some(Event::Reported { reports, .. }) = events.last() else {
+        unreachable!()
+    };
+    assert_eq!(reports[0].from, 2);
+    assert_eq!(reports[0].title, "Add a README");
+    assert_eq!(reports[0].text, "done");
+}
+
+#[test]
+fn a_side_question_forks_the_session_beside_it() {
+    let (engine, rx) = engine();
+    new_session(&engine, "simple");
+    engine.send(Intent::Send {
+        session: 1,
+        text: "Reply with exactly the word: ok".into(),
+    });
+    until(&rx, |e| {
+        matches!(
+            e,
+            Event::Agent {
+                session: 1,
+                event: AgentEvent::TurnFinished { .. },
+                ..
+            }
+        )
+    });
+    engine.send(Intent::SideChat {
+        session: 1,
+        text: "what is this?".into(),
+    });
+    let events = until(&rx, |e| matches!(e, Event::Queued { session: 2, .. }));
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::Linked {
+            session: 2,
+            parent: 1,
+            side: true
+        }
+    )));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, Event::Renamed { session: 2, title } if title == "what is this?")));
+}

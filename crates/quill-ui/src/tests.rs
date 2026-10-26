@@ -417,6 +417,7 @@ fn the_sidebar_groups_sessions_by_folder_and_folds_a_group() {
         });
     }
     let mut ui = Ui::new("/work".into());
+    ui.group_by = GroupBy::Folder;
     let window = limn::Size::new(1408.0, 844.0);
     let ids = |store: &Store, ui: &Ui| -> Vec<String> {
         let frame = UiTree::new(view(store, ui, window)).layout(window);
@@ -1171,14 +1172,14 @@ fn the_list_groups_by_status_and_sorts_by_name() {
     let mut tree = UiTree::new(view(&store, &ui, window));
     let frame = tree.layout(window);
     let y = |id: &str| frame.regions.iter().find(|r| r.id == id).unwrap().rect.y;
-    // Blocked comes first, then Idle sorted A to Z.
-    assert!(y("group:status:Blocked") < y("session:2"));
-    assert!(y("session:2") < y("group:status:Idle"));
+    // Needs input comes first, then Completed sorted A to Z.
+    assert!(y("group:status:Needs input") < y("session:2"));
+    assert!(y("session:2") < y("group:status:Completed"));
     assert!(y("session:1") < y("session:3"));
     click(&store, &mut ui, view::FILTER_RESET);
     assert_eq!(
         (ui.group_by, ui.sort_by, ui.ascending),
-        (GroupBy::Folder, SortBy::Updated, false)
+        (GroupBy::Status, SortBy::Updated, false)
     );
 }
 
@@ -1238,4 +1239,149 @@ fn the_effort_thumb_follows_a_drag_and_springs_to_the_level_let_go_at() {
     assert!(!ui.effort_dragging);
     assert!(ui.animating());
     assert_eq!(ui.effort_thumb.unwrap().target(), view::EFFORT_TRAVEL);
+}
+
+#[test]
+fn a_started_session_is_nested_under_its_parent_and_completed_shows_five_first() {
+    let mut store = Store::default();
+    for session in 1..=8 {
+        store.apply(Event::SessionCreated {
+            session,
+            agent: "claude".into(),
+            cwd: "/work".into(),
+        });
+        store.apply(Event::Status {
+            session,
+            status: SessionStatus::Idle,
+        });
+    }
+    store.apply(Event::Linked {
+        session: 8,
+        parent: 1,
+        side: false,
+    });
+    let mut ui = Ui::new("/work".into());
+    let window = limn::Size::new(1408.0, 844.0);
+    let regions = |store: &Store, ui: &Ui| {
+        let mut tree = UiTree::new(view(store, ui, window));
+        tree.layout(window)
+            .regions
+            .iter()
+            .map(|r| (r.id.clone(), r.rect))
+            .collect::<Vec<_>>()
+    };
+    let shown = regions(&store, &ui);
+    let at = |id: &str| shown.iter().find(|r| r.0 == id).map(|r| r.1);
+    // Seven top-level sessions: the five newest, then "Show more"; 1 is among those left.
+    assert!(at("session:7").is_some() && at("session:3").is_some());
+    assert!(at("session:2").is_none() && at("session:1").is_none());
+    assert!(at(view::SHOW_MORE).is_some());
+    click(&store, &mut ui, view::SHOW_MORE);
+    let shown = regions(&store, &ui);
+    let at = |id: &str| shown.iter().find(|r| r.0 == id).map(|r| r.1).unwrap();
+    // The child sits right under its parent, further in.
+    let (parent, child) = (at("session:1"), at("session:8"));
+    assert!(child.y > parent.y && child.y < parent.y + 40.0);
+    assert!(child.x > parent.x);
+}
+
+#[test]
+fn proposals_share_a_card_that_starts_them_and_reports_read_back() {
+    let (mut store, mut ui) = store_with_session();
+    let proposal = |id: &str| quill_model::Proposal {
+        id: id.into(),
+        title: format!("Task {id}"),
+        prompt: "Do it".into(),
+        background: None,
+        fork: false,
+    };
+    for id in ["a", "b"] {
+        store.apply(Event::Proposed {
+            session: 1,
+            proposal: proposal(id),
+        });
+    }
+    let cards: Vec<_> = store
+        .session(1)
+        .unwrap()
+        .items
+        .iter()
+        .filter(|i| matches!(i, Item::Proposals { .. }))
+        .collect();
+    assert!(matches!(cards.as_slice(), [Item::Proposals { tasks }] if tasks.len() == 2));
+    // Start all asks for each waiting task.
+    assert_eq!(
+        click(&store, &mut ui, "proposal-all:a,b"),
+        ["a", "b"]
+            .map(|task| Intent::AnswerProposal {
+                session: 1,
+                task: task.into(),
+                answer: quill_model::ProposalAnswer::Start,
+            })
+            .to_vec()
+    );
+    store.apply(Event::ProposalAnswered {
+        session: 1,
+        task: "a".into(),
+        outcome: quill_model::ProposalOutcome::Started { session: 2 },
+    });
+    store.apply(Event::Reported {
+        session: 1,
+        request: "r2".into(),
+        reports: vec![quill_model::Report {
+            from: 2,
+            title: "Task a".into(),
+            text: "All done".into(),
+        }],
+    });
+    let window = limn::Size::new(1408.0, 844.0);
+    let mut tree = UiTree::new(view(&store, &ui, window));
+    let frame = tree.layout(window);
+    // The started task follows its session; its report opens it and unfolds.
+    assert!(frame.regions.iter().any(|r| r.id == "session:2"));
+    assert!(frame.regions.iter().any(|r| r.id == "report:r2:0"));
+    click(&store, &mut ui, "report:r2:0");
+    assert!(ui.expanded.contains(&"report:r2:0".to_string()));
+}
+
+#[test]
+fn btw_asks_beside_the_session_and_closing_puts_it_away() {
+    let (mut store, mut ui) = store_with_session();
+    let asked = update(
+        &store,
+        &mut ui,
+        &UiAction::Submitted {
+            id: view::COMPOSER.into(),
+            value: "/btw what does it do?".into(),
+        },
+    );
+    assert_eq!(
+        asked,
+        vec![Intent::SideChat {
+            session: 1,
+            text: "what does it do?".into()
+        }]
+    );
+    let created = Event::SessionCreated {
+        session: 2,
+        agent: "claude".into(),
+        cwd: "/work".into(),
+    };
+    // It opens in its pane; the session in view stays.
+    assert!(ui.applied(&created).is_empty());
+    store.apply(created);
+    assert_eq!((ui.selected, ui.side_chat), (Some(1), Some(2)));
+    assert!(ui.pane_open(Pane::Side));
+    store.apply(Event::Status {
+        session: 2,
+        status: SessionStatus::Idle,
+    });
+    assert_eq!(
+        click(&store, &mut ui, "pane:side:close"),
+        vec![Intent::Archive {
+            session: 2,
+            archived: true
+        }]
+    );
+    assert!(!ui.pane_open(Pane::Side));
 }

@@ -213,6 +213,13 @@ pub enum AgentEvent {
     /// A line the adapter does not understand, kept whole.
     /// How much of the plan's usage windows is spent.
     Limits(PlanLimits),
+    /// The agent calls one of quill's own tools, the ones that start and propose other
+    /// sessions ([`HOST_TOOLS`]). The engine answers with [`AgentCommand::HostToolResult`].
+    HostTool {
+        id: String,
+        name: String,
+        input: Value,
+    },
     Unknown(Value),
 }
 
@@ -251,7 +258,28 @@ pub enum AgentCommand {
         request: String,
         dry_run: bool,
     },
+    /// The answer to an [`AgentEvent::HostTool`] call.
+    HostToolResult {
+        id: String,
+        text: String,
+        is_error: bool,
+    },
 }
+
+/// quill's own tools, which an adapter offers its agent where the agent can take tools from
+/// its host: a tool's name, what it is for, and the JSON schema of its input.
+pub const HOST_TOOLS: [(&str, &str, &str); 2] = [
+    (
+        "start_session",
+        "Start a separate session for a task of its own while you stay with the user, or propose one. `initiation` says who wants it: \"user_asked\" (the user asked in words for separate, parallel or background work) starts it now; \"own_initiative\" (follow-up work you noticed or that your own work turned up, which the user has not asked for) shows the user a card, and nothing runs until they start it there. Both need `prompt`: the brief, standing alone (the task, the files or area, what done looks like). context \"fresh\" (default) gives the new session your `prompt` and `background` only, so `background` is required: the goal, decisions and constraints so far, for someone who has not seen this conversation; \"fork\" gives it this whole conversation and your `prompt`. A session you start reports back to you when its turn ends. A session is for a task of its own that ends in something of its own; searching, independent parts of one change, and checking what you built stay here or go to a subagent. Start nothing the user did not ask for.",
+        r#"{"type":"object","properties":{"initiation":{"type":"string","enum":["user_asked","own_initiative"]},"title":{"type":"string","description":"Under 60 characters; names the task on its row or card."},"prompt":{"type":"string","description":"The brief: the task, the files or area, what done looks like."},"context":{"type":"string","enum":["fresh","fork"]},"background":{"type":"string","description":"With fresh: the goal, decisions and constraints so far."},"proposal_id":{"type":"string","description":"Start a proposal the user told you to start, exactly as proposed: its task id and nothing else."}}}"#,
+    ),
+    (
+        "dismiss_task",
+        "Withdraw a proposal you made with start_session (initiation \"own_initiative\") that the user has not started, when it went stale: the work was done here after all, it turned out unnecessary, or you proposed a better one.",
+        r#"{"type":"object","properties":{"task_id":{"type":"string"}},"required":["task_id"]}"#,
+    ),
+];
 
 /// What one line from the agent became.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]

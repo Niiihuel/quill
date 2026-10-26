@@ -390,3 +390,45 @@ fn a_turn_counts_its_tokens_as_it_goes() {
     assert!(counts.len() >= 2 && counts[0] > 0, "{counts:?}");
     assert_eq!(counts.last().copied(), output);
 }
+
+#[test]
+fn quills_own_tools_are_served_in_process_and_never_ask() {
+    let (mut claude, events, replies) = replay("sessions");
+    // The handshake and the tool list are answered by the adapter itself.
+    let answered = |method: &str| {
+        replies.iter().any(|line| {
+            let reply: Value = serde_json::from_str(line).unwrap();
+            let result = &reply["response"]["response"]["mcp_response"]["result"];
+            match method {
+                "initialize" => result["serverInfo"]["name"] == "sessions",
+                _ => result["tools"][0]["name"] == "start_session",
+            }
+        })
+    };
+    assert!(answered("initialize") && answered("tools/list"));
+    // The call goes to the engine; the permission it would need is granted at once.
+    let Some(AgentEvent::HostTool { id, name, input }) = events
+        .iter()
+        .find(|e| matches!(e, AgentEvent::HostTool { .. }))
+    else {
+        panic!("no HostTool")
+    };
+    assert_eq!(name, "start_session");
+    assert_eq!(input["initiation"], "own_initiative");
+    assert!(!events.iter().any(|e| matches!(
+        e,
+        AgentEvent::PermissionRequest { tool, .. } if tool.starts_with("mcp__sessions__")
+    )));
+    // The engine's answer goes back under the call's JSON-RPC id.
+    let line = claude
+        .encode(AgentCommand::HostToolResult {
+            id: id.clone(),
+            text: "Proposed".into(),
+            is_error: false,
+        })
+        .remove(0);
+    let reply: Value = serde_json::from_str(&line).unwrap();
+    let response = &reply["response"]["response"]["mcp_response"];
+    assert_eq!(response["id"], 2);
+    assert_eq!(response["result"]["content"][0]["text"], "Proposed");
+}
