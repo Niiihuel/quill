@@ -40,16 +40,14 @@ struct App {
     pinned_theme: bool,
     /// Where the browser leaves its pages' frames, presented each frame.
     frames: quill_engine::Frames,
+    /// The texture each surface shows from the GPU, as registered with egui's renderer.
+    textures: HashMap<String, (egui::TextureId, eframe::wgpu::Texture)>,
     /// The page's share of the window's input.
     page: page::Page,
     /// The tab on screen and its size, as last told to the engine.
     browser_shown: Option<(SessionId, quill_model::BrowserView)>,
     /// What the address bar was last set to.
     address: Option<String>,
-    /// Chromium inside the window: its tabs are native windows placed over the pane.
-    native: Option<quill_engine::Native>,
-    /// The browser's own chords a native tab passed on, carried out with the page's.
-    native_asks: Vec<page::Ask>,
 }
 
 impl App {
@@ -304,70 +302,6 @@ impl App {
             self.engine.send(intent);
             self.browser_shown = shown;
         }
-        if let Some(native) = &self.native {
-            // The tab shows where its surface is laid out, unless something of quill's is
-            // drawn over it or the panes move: its last frame stands in then.
-            let surface = self
-                .browser_shown
-                .map(|(session, view)| quill_ui::view::browser_surface(session, view.tab));
-            // A boundary dragged over the tab would lose the pointer to it, as Desktop hides its
-            // view while resizing (3.6556.2 `shared-16`, `isResizing`): from a press on one
-            // until the button is let go, wherever the boundary has moved by then.
-            let (pressed, down, origin_at) = ctx.input(|i| {
-                (
-                    i.pointer.any_pressed(),
-                    i.pointer.any_down(),
-                    i.pointer.press_origin(),
-                )
-            });
-            if pressed {
-                self.page.resizing = origin_at.is_some_and(|at| {
-                    let at = limn::Point::new(at.x - origin.x, at.y - origin.y);
-                    frame
-                        .press_region(at)
-                        .is_some_and(|r| r.id.starts_with("split:"))
-                });
-            }
-            self.page.resizing &= down;
-            let resizing = self.page.resizing;
-            // Over a boundary already, so the tab is gone by the press, however fast it is.
-            let near = self
-                .ui
-                .hovered
-                .as_deref()
-                .is_some_and(|id| id.starts_with("split:"));
-            let covered = self.ui.animating()
-                || resizing
-                || near
-                || surface
-                    .as_deref()
-                    .is_none_or(|surface| frame.drawn_over(surface));
-            let ppp = ctx.pixels_per_point();
-            let at = region.filter(|_| !covered).map(|rect| {
-                [
-                    ((origin.x + rect.x) * ppp).round() as i32,
-                    ((origin.y + rect.y) * ppp).round() as i32,
-                    (rect.width * ppp).round() as i32,
-                    (rect.height * ppp).round() as i32,
-                ]
-            });
-            // A boundary's drag would reach the tab at its first move: it goes at once.
-            if native.place(at, resizing) {
-                ctx.request_repaint_after(std::time::Duration::from_millis(260));
-            }
-            // The pointer back over quill's own, from the tab, which takes it while over it:
-            // the tab's frame is taken now, while it is fresh.
-            let away = ctx.input(|i| i.pointer.hover_pos()).is_none();
-            if self.page.away && !away {
-                native.warm();
-            }
-            self.page.away = away;
-            // A press quill sees is outside the tab: the keys come back to quill.
-            if ctx.input(|i| i.pointer.any_pressed()) {
-                native.blur();
-            }
-            return;
-        }
         let Some(rect) = region else {
             return;
         };
@@ -412,35 +346,34 @@ impl App {
         }
     }
 
-    /// The browser's chords a native tab passed on while it had the keys, carried out as the
-    /// page's would be; quill's own reach it as if pressed in its window.
-    fn native_keys(&mut self, ctx: &egui::Context) {
-        let Some(native) = &self.native else {
-            return;
-        };
-        for quill_engine::native::Key { code, ctrl, shift } in native.take_keys() {
-            let Some(key) = page::egui_key(code) else {
-                continue;
-            };
-            let modifiers = egui::Modifiers {
-                ctrl,
-                command: ctrl,
-                shift,
-                ..Default::default()
-            };
-            match page::shortcut(key, modifiers) {
-                Some(ask) => self.native_asks.push(ask),
-                None => ctx.input_mut(|i| {
-                    i.events.push(egui::Event::Key {
-                        key,
-                        physical_key: None,
-                        pressed: true,
-                        repeat: false,
-                        modifiers,
-                    })
-                }),
-            }
+    /// The id egui's renderer draws `texture` by, for the surface `id`: a texture it already
+    /// has is drawn again as is, as a page's paints are written into it.
+    fn register(
+        &mut self,
+        render: &eframe::egui_wgpu::RenderState,
+        id: &str,
+        texture: eframe::wgpu::Texture,
+    ) -> egui::TextureId {
+        if let Some((known, _)) = self.textures.get(id).filter(|(_, t)| *t == texture) {
+            return *known;
         }
+        let view = texture.create_view(&Default::default());
+        let filter = eframe::wgpu::FilterMode::Linear;
+        let mut renderer = render.renderer.write();
+        let known = match self.textures.get(id) {
+            Some((known, _)) => {
+                renderer.update_egui_texture_from_wgpu_texture(
+                    &render.device,
+                    &view,
+                    filter,
+                    *known,
+                );
+                *known
+            }
+            None => renderer.register_native_texture(&render.device, &view, filter),
+        };
+        self.textures.insert(id.to_owned(), (known, texture));
+        known
     }
 
     /// The session on screen, its number of items and the length of a reply being written.
@@ -522,13 +455,12 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, host: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         if !self.fonts_attached {
             limn_egui::attach_fonts(&mut self.tree, &ctx);
             self.fonts_attached = true;
         }
-        self.native_keys(&ctx);
         // Desktop opens a session at its end and follows it while the person stays there.
         let at_end = self
             .transcript
@@ -683,31 +615,21 @@ impl eframe::App for App {
         self.frames.set_scale(ctx.pixels_per_point());
         for (id, frame) in self.frames.take() {
             let size = [frame.width, frame.height];
-            if let Some(surface) = limn_egui::SurfaceFrame::from_rgb(size, &frame.rgb, frame.scale)
-            {
-                limn_egui::present_surface(&ctx, &id, surface);
+            match frame.pixels {
+                quill_engine::Pixels::Rgba(rgba) => {
+                    if let Some(surface) = surface_frame(size, rgba, frame.scale) {
+                        limn_egui::present_surface(&ctx, &id, surface);
+                    }
+                }
+                quill_engine::Pixels::Texture(texture) => {
+                    if let Some(render) = host.wgpu_render_state() {
+                        let texture = self.register(render, &id, texture);
+                        limn_egui::present_surface_texture(&ctx, &id, texture, size, frame.scale);
+                    }
+                }
             }
         }
-        // A native tab takes the pointer itself, and the keys while the pointer is over it;
-        // while it has the keys, those quill's window gets are sent to it.
-        let (asks, taken) = if let Some(native) = self.native.clone() {
-            let events = ctx.input(|i| i.events.clone());
-            let (asks, taken) = self
-                .page
-                .route(&events, |_| None, None, native.keys_on_page());
-            let mut passed = std::mem::take(&mut self.native_asks);
-            passed.extend(asks);
-            // The address takes the keys from the page.
-            if passed
-                .iter()
-                .any(|ask| matches!(ask, page::Ask::FocusAddress))
-            {
-                native.blur();
-            }
-            (passed, taken)
-        } else {
-            self.route_page(&ctx, area.min)
-        };
+        let (asks, taken) = self.route_page(&ctx, area.min);
         for ask in asks {
             actions.extend(self.page_asked(ask, window));
         }
@@ -1070,29 +992,14 @@ fn main() -> eframe::Result {
         .unwrap_or_else(|| ".".into());
     let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
     let native = native_browser(&saved_settings());
-    // On XWayland the compositor scales quill's window itself: without a scale of the
-    // person's own (Xft.dpi, WINIT_X11_SCALE_FACTOR), winit's guess from the screen's size
-    // would scale it a second time.
-    let set = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
-    if native
-        && set("WAYLAND_DISPLAY")
-        && !set("WINIT_X11_SCALE_FACTOR")
-        && quill_engine::native::xft_dpi().is_none()
-    {
-        std::env::set_var("WINIT_X11_SCALE_FACTOR", "1");
-    }
     let started: Arc<Mutex<Option<quill_engine::Native>>> = Arc::default();
     let keep = started.clone();
     let options = eframe::NativeOptions {
-        // Native tabs are X11 windows, children of quill's: in a Wayland session quill runs
-        // on XWayland for them.
-        event_loop_builder: native.then(|| -> eframe::EventLoopBuilderHook {
-            Box::new(|builder| {
-                use winit::platform::x11::EventLoopBuilderExtX11;
-                builder.with_x11();
-            })
-        }),
         renderer: eframe::Renderer::Wgpu,
+        wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
+            wgpu_setup: wgpu_setup(native),
+            ..Default::default()
+        },
         viewport: egui::ViewportBuilder::default()
             .with_title("quill")
             .with_app_id("quill")
@@ -1133,7 +1040,11 @@ fn main() -> eframe::Result {
             let frames = quill_engine::Frames::default();
             let ctx = creation.egui_ctx.clone();
             frames.on_frame(move || ctx.request_repaint());
-            let native = native.then(|| start_native(creation, &frames)).flatten();
+            let gpu = creation
+                .wgpu_render_state
+                .as_ref()
+                .map(|render| (render.device.clone(), render.queue.clone()));
+            let native = native.then(|| start_native(&frames, gpu)).flatten();
             *keep.lock().unwrap() = native.clone();
             let engine = match std::env::var("QUILL_PROGRAMS") {
                 Ok(programs) => Engine::start_with(
@@ -1180,11 +1091,10 @@ fn main() -> eframe::Result {
                 applied: None,
                 pinned_theme: std::env::var_os("QUILL_THEME").is_some(),
                 frames,
+                textures: HashMap::new(),
                 page: page::Page::default(),
                 browser_shown: None,
                 address: None,
-                native,
-                native_asks: Vec::new(),
                 fonts_attached: false,
             }))
         }),
@@ -1196,16 +1106,41 @@ fn main() -> eframe::Result {
     result
 }
 
-/// Whether the browser's tabs are native windows inside quill's: on X11, in an X11 session
-/// or, when Settings asks, in a Wayland one through XWayland. `QUILL_BROWSER=native` or
-/// `headless` decides instead.
+/// A page's frame as egui holds pixels: they are already in its form, so the buffer is
+/// taken as it is rather than converted again on the UI thread.
+fn surface_frame(size: [usize; 2], rgba: Vec<u8>, scale: f32) -> Option<limn_egui::SurfaceFrame> {
+    let pixels: Vec<egui::Color32> = bytemuck::allocation::try_cast_vec(rgba)
+        .unwrap_or_else(|(_, rgba)| bytemuck::cast_slice(&rgba).to_vec());
+    if pixels.len() != size[0] * size[1] {
+        return None;
+    }
+    limn_egui::SurfaceFrame::from_image(egui::ColorImage::new(size, pixels), scale)
+}
+
+/// eframe's device; for native tabs, one that can take in Chromium's GPU buffers (dmabufs),
+/// where the driver can, so their paints never leave the GPU.
+fn wgpu_setup(native: bool) -> eframe::egui_wgpu::WgpuSetup {
+    let mut setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+    if native {
+        let base = setup.device_descriptor.clone();
+        setup.device_descriptor = Arc::new(move |adapter| {
+            let mut descriptor = base(adapter);
+            descriptor.required_features |=
+                adapter.features() & eframe::wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF;
+            descriptor
+        });
+    }
+    eframe::egui_wgpu::WgpuSetup::CreateNew(setup)
+}
+
+/// Whether the browser's pages are drawn by Chromium in quill's own process, rather than by
+/// a headless one's screencast: when Settings asks. `QUILL_BROWSER=native` or `headless`
+/// decides instead.
 fn native_browser(settings: &quill_model::Settings) -> bool {
-    let set = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
-    let x11 = set("DISPLAY");
     match std::env::var("QUILL_BROWSER").as_deref() {
-        Ok("native") => x11,
+        Ok("native") => true,
         Ok("headless") => false,
-        _ => x11 && (!set("WAYLAND_DISPLAY") || settings.browser_native),
+        _ => settings.browser_native,
     }
 }
 
@@ -1218,26 +1153,17 @@ fn saved_settings() -> quill_model::Settings {
         .unwrap_or_default()
 }
 
-/// Start Chromium inside the window just made, for native tabs; `None` keeps the headless one.
+/// Start Chromium in quill's process, for native tabs, its paints copied on the window's
+/// `gpu` where it can; `None` keeps the headless one.
 fn start_native(
-    creation: &eframe::CreationContext,
     frames: &quill_engine::Frames,
+    gpu: Option<(eframe::wgpu::Device, eframe::wgpu::Queue)>,
 ) -> Option<quill_engine::Native> {
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    let parent = match creation.window_handle().ok()?.as_raw() {
-        RawWindowHandle::Xlib(window) => window.window,
-        RawWindowHandle::Xcb(window) => u64::from(window.window.get()),
-        _ => return None,
-    };
-    let scale = creation
-        .egui_ctx
-        .native_pixels_per_point()
-        .unwrap_or_else(|| creation.egui_ctx.pixels_per_point());
     let data = quill_engine::Config::default_database()
         .database
         .and_then(|db| db.parent().map(|dir| dir.join("chromium")))
         .unwrap_or_else(|| std::env::temp_dir().join("quill-chromium"));
-    match quill_engine::Native::start(parent, scale, &data, frames.clone()) {
+    match quill_engine::Native::start(&data, frames.clone(), gpu) {
         Ok(native) => Some(native),
         Err(error) => {
             eprintln!("quill: the browser draws without native tabs: {error}");

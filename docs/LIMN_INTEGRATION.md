@@ -19,7 +19,9 @@ When they are all merged, point `Cargo.toml` back at `../lienzo` and drop the br
 | — | `feat/modal-flush-body` | Settings' modal, a body without padding | local, not pushed |
 | — | `feat/select-plain` | Settings' plain selects | local, not pushed |
 | — | `feat/focus-area` | the browser pane's input surface (`Element::focus_area` public) | local, not pushed |
-| — | `feat/drawn-over` | the browser's native tabs: `Frame::drawn_over(id)` says when quill draws over a page, which then shows its last frame | local, not pushed |
+| — | `feat/surface-image` | the browser's native frames handed to egui as they are (`SurfaceFrame::from_image`) | local, not pushed |
+| — | `feat/surface-texture` | the browser's GPU frames drawn from a texture quill registered with egui-wgpu (`present_surface_texture`) | local, not pushed |
+| — | `feat/drawn-over` | no longer used: native tabs now paint into their surface, so nothing has to step aside for quill (docs/browser.md §8) | local, not pushed; can be dropped |
 
 Updating the branch: `git -C ../limn-quill-integration merge <branch>`; the only conflicts so
 far were rows added side by side in `docs/components.md`, `CHANGELOG.md` and `lib.rs`, and

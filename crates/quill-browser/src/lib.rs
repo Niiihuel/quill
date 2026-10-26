@@ -11,7 +11,7 @@ pub mod native;
 pub mod tools;
 
 pub use cdp::Error;
-pub use frames::{decode, Frame, Frames};
+pub use frames::{decode, Frame, Frames, Pixels};
 pub use native::Native;
 
 use cdp::{Cdp, Message};
@@ -72,8 +72,8 @@ pub struct Options {
     pub frames: Frames,
     /// Asks the person before the agent opens or uses a site that is not local nor allowed.
     pub permit: Permit,
-    /// Chromium inside quill's window, when the host started it: tabs are native windows
-    /// the person uses directly, and no Chromium is launched.
+    /// Chromium in quill's own process, when the host started it: tabs paint into their
+    /// surfaces directly, and no Chromium is launched.
     pub native: Option<Native>,
 }
 
@@ -614,20 +614,18 @@ impl Browser {
                 json!({ "enabled": true }),
             ),
         ];
-        // A native tab has the window's focus and its own size; a headless one has neither.
+        // A page that thinks it has the focus shows its caret and :focus styles.
+        setup.push((
+            "Emulation.setFocusEmulationEnabled",
+            json!({ "enabled": true }),
+        ));
+        // A native tab is drawn at its own size, which an emulated one would fight.
         if run.native.is_none() {
-            setup.extend([
-                // A page that thinks it has the focus shows its caret and :focus styles.
-                (
-                    "Emulation.setFocusEmulationEnabled",
-                    json!({ "enabled": true }),
-                ),
-                (
-                    "Emulation.setDeviceMetricsOverride",
-                    json!({ "width": DEFAULT_VIEW.0, "height": DEFAULT_VIEW.1,
-                            "deviceScaleFactor": 0, "mobile": false }),
-                ),
-            ]);
+            setup.push((
+                "Emulation.setDeviceMetricsOverride",
+                json!({ "width": DEFAULT_VIEW.0, "height": DEFAULT_VIEW.1,
+                        "deviceScaleFactor": 0, "mobile": false }),
+            ));
         }
         for (method, params) in setup {
             run.cdp
@@ -820,19 +818,21 @@ impl Browser {
                 .and_then(|(o, t)| state.session(o, t));
             (before, session, size)
         };
-        // A native tab draws itself where the host places it; its last frame is shown in
-        // the surface only while something covers it.
-        if let Some(native) = &run.native {
-            native.show(session.zip(view.map(|v| surface(owner, v.tab))));
-            return;
-        }
-        if let Some(before) = before {
+        if let (Some(before), None) = (before, &run.native) {
             run.cdp
                 .send("Page.stopScreencast", json!({}), Some(&before));
         }
         let Some(session) = session else {
+            if let Some(native) = &run.native {
+                native.show(None);
+            }
             return;
         };
+        // A native tab paints into its surface itself, at the size it is given.
+        if let Some(native) = &run.native {
+            native.show(view.map(|v| (session, surface(owner, v.tab), size)));
+            return;
+        }
         let _ = run
             .cdp
             .call(
@@ -903,17 +903,20 @@ impl Browser {
             (page.session.clone(), page.size())
         };
         let mobile = size.is_some_and(|(w, _)| w <= 480);
-        // A native tab is drawn at its window's size unless a size was asked for.
-        if run.native.is_some() && size.is_none() {
-            run.cdp
-                .call(
-                    "Emulation.clearDeviceMetricsOverride",
-                    json!({}),
-                    Some(&session),
-                )
-                .await
-                .map_err(|e| e.0)?;
-            return Ok(shown);
+        // A native tab is drawn at the size asked for, or the pane's; only a phone is emulated.
+        if let Some(native) = &run.native {
+            native.resize(session.clone(), shown);
+            if !mobile {
+                run.cdp
+                    .call(
+                        "Emulation.clearDeviceMetricsOverride",
+                        json!({}),
+                        Some(&session),
+                    )
+                    .await
+                    .map_err(|e| e.0)?;
+                return Ok(shown);
+            }
         }
         run.cdp
             .call(

@@ -16,10 +16,7 @@ quill-engine = { path = "../../crates/quill-engine" }
 # The platform's own folder dialog, through the desktop portal (no GTK linked in).
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 quill-pty = { path = "../../crates/quill-pty" }
+# The browser's frames, handed to egui as its own pixels without a copy (already in the tree).
+bytemuck = { version = "1", features = ["extern_crate_alloc"] }
 # `quill --open-url`, the agents' $BROWSER, speaks a line of JSON to the window's bridge.
 serde_json.workspace = true
-# eframe's own; for its X11 window, which the browser's native tabs are children of, in a
-# Wayland session too.
-winit = { version = "0.30", default-features = false, features = ["x11"] }
-# The window's X11 id, which the native tabs are made children of.
-raw-window-handle = "0.6"

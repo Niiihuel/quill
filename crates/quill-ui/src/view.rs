@@ -6959,7 +6959,7 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
                     setting(
                         "Native view",
                         "Pages draw in quill's window as they would in Chromium's, with no delay. \
-                         In a Wayland session quill then runs on XWayland. From quill's next start.",
+                         From quill's next start.",
                         setting_switch("browser_native", s.browser_native, palette),
                     ),
                 ],

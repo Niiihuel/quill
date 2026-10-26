@@ -82,8 +82,8 @@ pub struct Settings {
     /// The Chromium the built-in browser runs; `None` takes `QUILL_CHROME` or the first on
     /// `PATH`.
     pub browser_program: Option<String>,
-    /// In a Wayland session, run quill on XWayland so the browser's pages are native windows
-    /// inside quill's, without delay; in an X11 session they always are. From the next start.
+    /// Draw the browser's pages with Chromium in quill's own process, without the headless
+    /// one's delay. From the next start.
     pub browser_native: bool,
     /// Each agent's own, by its id.
     pub agents: std::collections::BTreeMap<String, AgentSettings>,

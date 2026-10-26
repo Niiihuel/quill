@@ -3224,6 +3224,7 @@ dependencies = [
 name = "quill"
 version = "0.0.1"
 dependencies = [
+ "bytemuck",
  "eframe",
  "limn",
  "limn-egui",
@@ -3231,10 +3232,8 @@ dependencies = [
  "quill-model",
  "quill-pty",
  "quill-ui",
- "raw-window-handle",
  "rfd",
  "serde_json",
- "winit",
 ]
 
 [[package]]
@@ -3258,12 +3257,13 @@ name = "quill-browser"
 version = "0.0.1"
 dependencies = [
  "base64 0.22.1",
+ "bytemuck",
  "cef",
  "libc",
  "quill-model",
  "serde_json",
  "tokio",
- "x11-dl",
+ "wgpu",
  "zune-core",
  "zune-jpeg",
 ]
