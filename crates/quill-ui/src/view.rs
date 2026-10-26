@@ -10,6 +10,7 @@ use limn::{
 };
 use quill_model::{ChangeKind, FileEffect, SessionStatus};
 use serde_json::Value;
+use std::time::Instant;
 
 pub const COMPOSER: &str = "composer";
 pub const NEW_SESSION: &str = "new-session";
@@ -137,12 +138,8 @@ fn layout(store: &Store, ui: &Ui, window: Size) -> Layout {
     } else {
         column_width(rest, ui.column_fraction.unwrap_or(fraction))
     };
-    let panel = if panes.is_empty()
-        && ui.panel_open
-        && session.is_some()
-        && rest - look::PANEL_WIDTH >= COLUMN
-    {
-        look::PANEL_WIDTH
+    let panel = if panes.is_empty() && session.is_some() && rest - look::PANEL_WIDTH >= COLUMN {
+        ui.panel_shown.value(Instant::now()).round()
     } else {
         0.0
     };
@@ -166,13 +163,10 @@ pub const STACK_HANDLE: &str = "split:stack";
 const HANDLE: f32 = 2.0;
 
 /// The column's width for a share of the space right of the sidebar, within the minimums.
-/// The sidebar's width with its border, nothing while it is hidden.
+/// The sidebar's width with its border as it is drawn now: nothing while it is hidden, less
+/// than all of it while it slides.
 pub fn sidebar_width(ui: &Ui) -> f32 {
-    if ui.sidebar_open {
-        look::SIDEBAR_WIDTH
-    } else {
-        0.0
-    }
+    ui.sidebar_shown.value(Instant::now()).round()
 }
 
 pub fn column_width(rest: f32, fraction: f32) -> f32 {
@@ -341,7 +335,18 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
         row.push(Element::column(stack).size(Some(width), Some(below)));
     }
     if let (Some(session), true) = (session, layout.panel > 0.0) {
-        row.push(right_panel(session, ui, layout.panel, below, palette));
+        // Laid out at its full width and cut to what has slid in, so nothing in it rewraps.
+        row.push(
+            Element::row(vec![right_panel(
+                session,
+                ui,
+                look::PANEL_WIDTH,
+                below,
+                palette,
+            )])
+            .size(Some(layout.panel), Some(below))
+            .clip_children(),
+        );
     }
     let content = Element::column(vec![
         top_bar(session, ui),
@@ -350,9 +355,18 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     ])
     .size(Some(rest), Some(window.height));
     let mut root = vec![];
-    if ui.sidebar_open {
-        root.push(sidebar(store, ui, window.height, palette));
-        root.push(vline(window.height));
+    let shown = sidebar_width(ui);
+    if shown > 0.0 {
+        // Full width, moved left by what is still hidden, so its right edge leads.
+        root.push(
+            Element::row(vec![
+                sidebar(store, ui, window.height, palette),
+                vline(window.height),
+            ])
+            .translate(limn::Point::new(shown - look::SIDEBAR_WIDTH, 0.0))
+            .size(Some(shown), Some(window.height))
+            .clip_children(),
+        );
     }
     root.push(content);
     let root = Element::row(root)

@@ -1047,7 +1047,11 @@ fn a_hidden_sidebar_gives_its_width_to_the_conversation() {
     tree.layout(window);
     click(&store, &mut ui, view::SIDEBAR_TOGGLE);
     assert!(!ui.sidebar_open);
-    assert_eq!(view::sidebar_width(&ui), 0.0);
+    // It slides away on a spring and has nothing left in a second.
+    ui.tick(&store);
+    let later = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    assert_eq!(ui.sidebar_shown.target(), 0.0);
+    assert_eq!(ui.sidebar_shown.value(later), 0.0);
     tree.set_root(view(&store, &ui, window));
     tree.layout(window);
 }

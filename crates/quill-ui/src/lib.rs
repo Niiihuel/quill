@@ -664,6 +664,10 @@ pub struct Ui {
     pub terminal: TerminalPane,
     /// Whether the sidebar shows; Ctrl+B hides it, as in Desktop.
     pub sidebar_open: bool,
+    /// The widths the sidebar and the right panel are drawn at, on springs to 0 or their
+    /// own width as they close and open.
+    pub sidebar_shown: limn::ScalarSpring,
+    pub panel_shown: limn::ScalarSpring,
     /// The session whose sidebar row has its "···" menu open.
     pub row_menu: Option<SessionId>,
     /// The selected session's title while the person renames it in the top bar.
@@ -1068,6 +1072,8 @@ impl Ui {
             revision: String::new(),
             terminal: TerminalPane::default(),
             sidebar_open: true,
+            sidebar_shown: limn::ScalarSpring::new(look::SIDEBAR_WIDTH, std::time::Instant::now()),
+            panel_shown: limn::ScalarSpring::new(look::PANEL_WIDTH, std::time::Instant::now()),
             row_menu: None,
             title_edit: None,
             deleting: None,
@@ -1093,8 +1099,10 @@ impl Ui {
 
     /// Something the UI moves itself is still moving, so the host keeps painting.
     pub fn animating(&self) -> bool {
-        self.effort_thumb
-            .is_some_and(|thumb| thumb.is_active(std::time::Instant::now()))
+        let now = std::time::Instant::now();
+        self.effort_thumb.is_some_and(|thumb| thumb.is_active(now))
+            || self.sidebar_shown.is_active(now)
+            || self.panel_shown.is_active(now)
     }
 
     /// When the host should paint again for what moves on its own: at once for a moving
@@ -1108,8 +1116,20 @@ impl Ui {
         }
     }
 
-    /// Before each frame: the Ultracode field starts over each time the slider reaches it.
+    /// Before each frame: the sidebar and the panel head for where they were toggled to, and
+    /// the Ultracode field starts over each time the slider reaches it.
     pub fn tick(&mut self, store: &Store) {
+        let now = std::time::Instant::now();
+        // The pace of limn's own opening and closing slots, one and a half `move_ms`;
+        // Desktop's own timing is not measured.
+        let motion = limn::SpringMotion::settling_in(std::time::Duration::from_millis(
+            u64::from(limn::tokens().motion.move_ms) * 3 / 2,
+        ));
+        let open = |open: bool, width: f32| if open { width } else { 0.0 };
+        self.sidebar_shown
+            .launch(open(self.sidebar_open, look::SIDEBAR_WIDTH), motion, now);
+        self.panel_shown
+            .launch(open(self.panel_open, look::PANEL_WIDTH), motion, now);
         let ultra = view::effort_shown(store, self).as_deref() == Some("ultracode");
         match (ultra, self.ultra_since) {
             (true, None) => self.ultra_since = Some(std::time::Instant::now()),
