@@ -2,6 +2,7 @@
 
 pub mod icons;
 pub mod look;
+pub mod pieces;
 
 /// The system's sans and monospace faces, as Desktop's Code surface draws in: it sets
 /// `--font-anthropic-sans` to the system fallbacks, which fontconfig resolves (DejaVu on

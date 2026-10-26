@@ -1,0 +1,16 @@
+[package]
+name = "quill-ide"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "quill-ide: a native code reader and editor in quill's look, drawn with limn."
+
+[dependencies]
+limn.workspace = true
+limn-egui.workspace = true
+limn-editor.workspace = true
+eframe.workspace = true
+quill-components = { path = "../../crates/quill-components" }
+# Lists a folder as git sees it, .gitignore and all, as ripgrep does.
+ignore = "0.4"
