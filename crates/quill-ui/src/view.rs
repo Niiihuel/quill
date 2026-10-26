@@ -456,7 +456,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
         );
     }
     let content = Element::column(vec![
-        top_bar(session, ui, layout.main),
+        top_bar(session, ui, layout.main, layout.shown + layout.panel),
         hline(rest, look::theme().background),
         Element::row(row).size(Some(rest), Some(below)),
     ])
@@ -837,7 +837,8 @@ fn browser_pane(
         palette,
     )
     .size(ControlSize::Compact)
-    .width((width - 198.0).max(80.0))
+    // What the buttons leave, so the field ends 8 px from the pane's edge, as back starts.
+    .width((width - 176.0).max(80.0))
     .render()
     .border(look::card_border(), 1.0)
     .focus_border(look::handle(), 1.0)
@@ -873,6 +874,7 @@ fn browser_pane(
                 browser.selecting,
                 None,
             ),
+            hgap(4.0),
         ])
         .gap(4.0)
         .size(Some(width), Some(40.0)),
@@ -1078,13 +1080,16 @@ fn lettered(id: String, label: &str, key: &str) -> limn::DropdownMenuItem {
     limn::DropdownMenuItem::new(id, label).shortcut(key)
 }
 
+/// The width of the top bar's toggles at its end, with their margin.
+const TOP_TOOLS: f32 = 148.0;
+
 /// The session's title, Stop while it works, and the toggles of the panel and the panes
 ///. The title's chevron opens its menu, and Rename turns it into a field
 ///.
 /// The top bar: the session's title centered over the conversation, between the sidebars
 /// that are open, and its tools at the ends. No line under it: the transcript fades out
 /// beneath it instead.
-fn top_bar(session: Option<&Session>, ui: &Ui, main: f32) -> Element {
+fn top_bar(session: Option<&Session>, ui: &Ui, main: f32, beside: f32) -> Element {
     // An expanded pane leaves the bar empty, as Desktop's does.
     if ui.expanded_pane.is_some() {
         return Element::spacer().size(None, Some(look::TOP_BAR));
@@ -1118,7 +1123,19 @@ fn top_bar(session: Option<&Session>, ui: &Ui, main: f32) -> Element {
                 limn::DropdownMenuEntry::Separator,
             ]);
             entries.extend(archive_and_delete(s));
-            heading.push(text(title).centered_y());
+            // Centered, the title stays clear of the tools at either end: the sidebar's
+            // toggle, and the toggles that sit over the conversation when nothing is beside it.
+            let left: f32 = if ui.sidebar_open { 16.0 } else { 47.0 };
+            let right = (TOP_TOOLS - beside).max(0.0);
+            let room = (main - 2.0 * left.max(right) - 26.0).max(48.0);
+            heading.push(
+                Element::truncated_text(title)
+                    .font_family(FontFamily::Sans)
+                    .font_size(BODY)
+                    .foreground(look::palette().text)
+                    .max_width(room)
+                    .centered_y(),
+            );
             heading.push(
                 menu(
                     chevron,
@@ -1908,30 +1925,43 @@ fn transcript(
         .size(Some(outer), None)
         .padding(16.0)
         .centered_x();
+    // What runs under the composer fades out over 48 px, as above Desktop's (3.6556.2
+    // `c9e81e7b9`, `page-fade-b h-12`).
     let scroll = Element::scroll(format!("transcript:{}", session.id), content)
-        .top_fade(look::theme().background, 24.0);
+        .top_fade(look::theme().background, 24.0)
+        .bottom_fade(look::theme().background, 48.0);
     if ui.at_end {
         return scroll;
     }
-    // Away from the end, Desktop floats a round "↓" over the conversation.
+    // Away from the end, Desktop floats a round "↓" over the conversation: 36 px,
+    // 20 px over the composer (3.6556.2 `cf854d0e8` `size-9`, `ca2ef848d` `bottom-5`). Desktop
+    // blurs what scrolls under its translucent fill, which limn does not: here a halo of the
+    // page's color fades the text out around it instead, so no line runs through it. The
+    // arrow is centered by hand, as `tool_surface` does.
+    let arrow = Element::icon(icons::of(icons::ARROW_DOWN))
+        .foreground(look::palette().text)
+        .size(Some(16.0), Some(16.0))
+        .centered();
     let down = ComponentPalette {
         hover: look::tool_hover(),
         ..palette
     }
-    .interactive_surface(Element::icon_button(
-        SCROLL_END,
-        icons::of(icons::ARROW_DOWN),
-        "Scroll to bottom",
-    ))
-    .foreground(look::palette().text)
-    .radius(16.0)
-    .size(Some(32.0), Some(32.0));
-    // The page's fill on a disc of its own, so what scrolls under it does not show through.
+    .interactive_surface(
+        Element::clickable(SCROLL_END, arrow).accessibility_label("Scroll to bottom"),
+    )
+    .radius(18.0)
+    .size(Some(36.0), Some(36.0));
     let down = Element::row(vec![down])
         .background(look::theme().background)
         .border(look::card_border(), 1.0)
-        .radius(16.0)
-        .size(Some(32.0), Some(32.0));
+        .radius(18.0)
+        .size(Some(36.0), Some(36.0))
+        .shadow(
+            look::theme().background,
+            limn::Point::new(0.0, 0.0),
+            16.0,
+            12.0,
+        );
     let float = Element::column(vec![
         Element::spacer().flex(1.0),
         Element::row(vec![
@@ -1939,7 +1969,7 @@ fn transcript(
             down,
             Element::spacer().flex(1.0),
         ]),
-        Element::spacer().size(None, Some(12.0)),
+        Element::spacer().size(None, Some(20.0)),
     ]);
     Element::overlay(scroll, float)
 }

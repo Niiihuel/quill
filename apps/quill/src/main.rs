@@ -258,6 +258,8 @@ impl App {
         if self.address.as_ref() != Some(&url) {
             self.tree
                 .set_input_value(quill_ui::view::BROWSER_URL, url.clone());
+            // An address longer than the field shows its start, as a browser's does.
+            self.tree.set_input_cursor(quill_ui::view::BROWSER_URL, 0);
             self.address = Some(url);
         }
     }
