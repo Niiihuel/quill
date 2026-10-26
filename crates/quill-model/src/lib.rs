@@ -76,6 +76,9 @@ pub struct Settings {
     pub pr_draft: bool,
     /// Start quill when the person logs in.
     pub open_at_login: bool,
+    /// Sites the agents may use in the built-in browser without asking; local addresses
+    /// never ask (docs/browser.md §5).
+    pub browser_sites: Vec<String>,
     /// Each agent's own, by its id.
     pub agents: std::collections::BTreeMap<String, AgentSettings>,
 }
@@ -94,6 +97,7 @@ impl Default for Settings {
             attention: true,
             pr_draft: false,
             open_at_login: false,
+            browser_sites: vec![],
             agents: Default::default(),
         }
     }
@@ -271,6 +275,10 @@ pub enum Intent {
     },
 }
 
+/// The tool a site permission's card names: the built-in browser asks, not the agent, before
+/// the agent opens or uses a site that is not local nor allowed (docs/browser.md §5).
+pub const SITE_PERMISSION: &str = "quill.browser.site";
+
 /// What the person does in a session's browser.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum BrowserOp {
@@ -315,6 +323,19 @@ pub enum BrowserOp {
     /// Copy what is selected in the page to the clipboard (`BrowserUpdate::Copied`).
     Copy {
         tab: u32,
+    },
+    /// Pick an element of the page to tell the agent about, or stop picking (Desktop's
+    /// "Select element"): the pick comes back as `BrowserUpdate::Selected`.
+    Select {
+        tab: u32,
+        on: bool,
+    },
+    /// The files the person chose for the page's file field `node`
+    /// (`BrowserUpdate::ChooseFiles`); none leaves it as it was.
+    Files {
+        tab: u32,
+        node: i64,
+        paths: Vec<PathBuf>,
     },
 }
 
@@ -407,6 +428,13 @@ pub enum BrowserUpdate {
     Notice(String),
     /// The browser could not start or stopped.
     Failed(String),
+    /// Whether the page waits for the person to pick an element.
+    Selecting(bool),
+    /// The element the person picked, as words for the message being written.
+    Selected(String),
+    /// The page asks for files: the host shows the desktop's file dialog and answers with
+    /// `BrowserOp::Files`.
+    ChooseFiles { tab: u32, node: i64, multiple: bool },
 }
 
 /// What the person does with a proposed task.

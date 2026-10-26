@@ -1112,6 +1112,8 @@ pub struct SessionBrowser {
     pub cursor: String,
     /// Why it could not start or stopped, until a tab opens again.
     pub failed: Option<String>,
+    /// The page waits for the person to pick an element.
+    pub selecting: bool,
 }
 
 impl SessionBrowser {
@@ -1128,7 +1130,11 @@ impl SessionBrowser {
             BrowserUpdate::Cursor(cursor) => self.cursor = cursor,
             BrowserUpdate::Failed(error) => self.failed = Some(error),
             // The view keeps notices until dismissed; the host puts copies on the clipboard.
-            BrowserUpdate::Notice(_) | BrowserUpdate::Copied(_) => {}
+            BrowserUpdate::Selecting(on) => self.selecting = on,
+            BrowserUpdate::Notice(_)
+            | BrowserUpdate::Copied(_)
+            | BrowserUpdate::Selected(_)
+            | BrowserUpdate::ChooseFiles { .. } => {}
         }
     }
 
@@ -1940,6 +1946,11 @@ fn browser_clicked(store: &Store, ui: &mut Ui, id: &str) -> Option<Vec<Intent>> 
         .and_then(|t| t.parse().ok())
     {
         BrowserOp::CloseTab { tab }
+    } else if id == view::BROWSER_SELECT {
+        BrowserOp::Select {
+            tab: tab?,
+            on: !browser.selecting,
+        }
     } else if id == view::BROWSER_BACK {
         BrowserOp::Back { tab: tab? }
     } else if id == view::BROWSER_FORWARD {
@@ -2623,6 +2634,7 @@ fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
             ("motion", "reduced") => settings.motion = Motion::Reduced,
             ("motion", "full") => settings.motion = Motion::Full,
             ("pr_kind", value) => settings.pr_draft = value == "draft",
+            ("browser_site_remove", site) => settings.browser_sites.retain(|s| s != site),
             (name, value) => {
                 let (agent, field) = name.strip_prefix("agent:")?.rsplit_once(':')?;
                 let entry = settings.agents.entry(agent.to_owned()).or_default();

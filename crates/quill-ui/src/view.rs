@@ -194,6 +194,7 @@ pub const BROWSER_BACK: &str = "browser:back";
 pub const BROWSER_FORWARD: &str = "browser:forward";
 pub const BROWSER_RELOAD: &str = "browser:reload";
 pub const BROWSER_STOP: &str = "browser:stop";
+pub const BROWSER_SELECT: &str = "browser:select";
 pub const BROWSER_NOTICE_CLOSE: &str = "browser:notice:close";
 
 /// The surface a session's tab is drawn on; the host presents its frames there.
@@ -808,7 +809,7 @@ fn browser_pane(
         palette,
     )
     .size(ControlSize::Compact)
-    .width((width - 130.0).max(80.0))
+    .width((width - 166.0).max(80.0))
     .render()
     .border(look::card_border(), 1.0)
     .focus_border(look::handle(), 1.0)
@@ -831,6 +832,18 @@ fn browser_pane(
             ),
             reload,
             address,
+            // Desktop's "Select element" / "Exit selection mode".
+            toggle(
+                BROWSER_SELECT,
+                icons::of(icons::CURSOR),
+                if browser.selecting {
+                    "Exit selection mode"
+                } else {
+                    "Select element"
+                },
+                browser.selecting,
+                None,
+            ),
         ])
         .gap(4.0)
         .size(Some(width), Some(40.0)),
@@ -2053,6 +2066,12 @@ fn entries<'a>(
 /// What a permission card asks, in Desktop's words: Bash by what it runs, an edit by its
 /// file.
 fn permission_heading(tool: &str, input: &Value) -> String {
+    // The browser's own question, Desktop's site card [notes], less the agent's
+    // name.
+    if tool == quill_model::SITE_PERMISSION {
+        let site = input["site"].as_str().unwrap_or_default();
+        return format!("Allow the agent to use the browser on {site}?");
+    }
     let path = input["file_path"]
         .as_str()
         .or(input["notebook_path"].as_str());
@@ -3559,6 +3578,9 @@ fn permission(item: &Item, ui: &Ui, column: f32, palette: ComponentPalette) -> E
     let width = column.min(480.0);
     let inner = width - 32.0;
     let wrapped = |e: Element| e.size(Some(inner), None);
+    if tool == quill_model::SITE_PERMISSION {
+        return site_permission(id, input, ui, width, palette);
+    }
     let command = input["command"].as_str();
     // Bash says what it runs in its own words: "Run saludo.py".
     let what = input["description"].as_str();
@@ -3779,18 +3801,83 @@ fn plan_card(
 
 /// Deny, then the last way of allowing as the main button with its keys, and the other way
 /// in its menu.
+/// The browser asks before the agent opens or uses a site that is not local nor allowed, as
+/// Desktop's site card [notes]: "Allow once", "Always allow for this website" (kept in
+/// Settings › Browser), "Don't allow".
+fn site_permission(
+    id: &str,
+    input: &Value,
+    ui: &Ui,
+    width: f32,
+    palette: ComponentPalette,
+) -> Element {
+    let inner = width - 32.0;
+    let rows = vec![
+        text(permission_heading(quill_model::SITE_PERMISSION, input))
+            .font_family(FontFamily::SansBold)
+            .size(Some(inner), None),
+        muted(
+            input["url"]
+                .as_str()
+                .unwrap_or_default()
+                .chars()
+                .take(200)
+                .collect::<String>(),
+        )
+        .font_size(SMALL)
+        .size(Some(inner), None),
+        actions(
+            id,
+            true,
+            (
+                "Always allow for this website",
+                "Adds it to Settings \u{203a} Browser",
+            ),
+            "Don't allow",
+            ui,
+            palette,
+        ),
+    ];
+    Element::panel(Element::column(rows).gap(12.0))
+        .background(palette.surface)
+        .border(look::card_border(), 1.0)
+        .radius(12.0)
+        .padding(16.0)
+        .size(Some(width), None)
+}
+
 fn permission_actions(id: &str, can_always: bool, ui: &Ui, palette: ComponentPalette) -> Element {
+    actions(
+        id,
+        can_always,
+        ("Always allow", "Saves to local project settings"),
+        "Deny",
+        ui,
+        palette,
+    )
+}
+
+/// A permission's answers: deny, and a split button of allowing once or always, the person's
+/// last choice first.
+fn actions(
+    id: &str,
+    can_always: bool,
+    (always_label, always_says): (&str, &str),
+    deny_label: &str,
+    ui: &Ui,
+    palette: ComponentPalette,
+) -> Element {
     let menu_open = ui.perm_menu.as_deref() == Some(id);
     let always_first = can_always && ui.last_allow == crate::Allow::Always;
     let once =
         limn::DropdownMenuItem::new(format!("perm:{id}:once"), "Allow once").shortcut("Ctrl+Enter");
-    let always = limn::DropdownMenuItem::new(format!("perm:{id}:always"), "Always allow")
-        .description("Saves to local project settings")
+    let always = limn::DropdownMenuItem::new(format!("perm:{id}:always"), always_label)
+        .description(always_says)
         .shortcut("Ctrl+Shift+Enter");
     let (main, label, keys, others): (_, _, &[&str], Vec<_>) = if always_first {
         (
             "always",
-            "Always allow",
+            always_label,
             &["Ctrl", "Shift", "⏎"],
             vec![once.into()],
         )
@@ -3811,7 +3898,7 @@ fn permission_actions(id: &str, can_always: bool, ui: &Ui, palette: ComponentPal
     }
     let deny = Button::new(
         format!("perm:{id}:deny"),
-        "Deny",
+        deny_label,
         ComponentPalette {
             raised: look::cancel(),
             ..palette
@@ -5590,10 +5677,15 @@ fn usage_rows(store: &Store, ui: &Ui, width: f32) -> Option<Vec<Element>> {
                         ])
                         .gap(5.0),
                         Element::spacer().flex(1.0),
-                        muted(resets_in(w.resets_at, now, ui.utc_offset))
+                        // What does not fit beside the name and share is cut.
+                        Element::truncated_text(resets_in(w.resets_at, now, ui.utc_offset))
+                            .font_family(FontFamily::Sans)
                             .font_size(SMALL)
+                            .foreground(look::muted())
+                            .max_width((width - 130.0).max(60.0))
                             .centered_y(),
                     ])
+                    .gap(8.0)
                     .size(Some(width), Some(20.0)),
                     usage_bar(spent(&w, now), width),
                 ])
@@ -6661,6 +6753,32 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
             ],
         },
     ];
+    // The sites the agent may use without asking, which "Always allow for this website" adds
+    // to [notes "Manage allowed sites…"].
+    let sites: Vec<Setting> = if s.browser_sites.is_empty() {
+        vec![setting(
+            "No allowed sites yet.",
+            "The agent asks before it opens or uses a site. Local addresses never ask.",
+            Element::spacer().size(Some(0.0), Some(0.0)),
+        )]
+    } else {
+        s.browser_sites
+            .iter()
+            .map(|site| {
+                setting(
+                    site,
+                    "",
+                    setting_button(&format!("set:browser_site_remove={site}"), "Remove"),
+                )
+            })
+            .collect()
+    };
+    pages.push(SettingsPage {
+        key: "browser".into(),
+        title: "Browser".into(),
+        icon: icons::GLOBE,
+        groups: vec![("Allowed sites".into(), sites)],
+    });
     for agent in &ui.agents {
         pages.push(agent_page(store, ui, agent, palette));
     }

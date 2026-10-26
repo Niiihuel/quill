@@ -26,8 +26,34 @@ pub type Owner = u64;
 /// Where updates go, for the engine to pass to the UI.
 pub type Updates = Arc<dyn Fn(Owner, BrowserUpdate) + Send + Sync>;
 
+/// The person's answer to an agent wanting a site.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Grant {
+    Once,
+    /// From now on: the site joins the allowed ones.
+    Always,
+    No,
+}
+
+/// Asks the person whether `owner`'s agent may open or use the site `host` (`url` is what it
+/// wants); the answer comes on the receiver. Desktop's card [notes]: "Allow once",
+/// "Always allow for this website", "Don't allow".
+pub type Permit =
+    Arc<dyn Fn(Owner, SiteAsk) -> tokio::sync::oneshot::Receiver<Grant> + Send + Sync>;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SiteAsk {
+    pub host: String,
+    pub url: String,
+    /// Opening the site, or acting in a tab already on it.
+    pub opening: bool,
+}
+
 /// Desktop stops at nine tabs counting its seed tab [notes].
 pub const MAX_TABS: usize = 8;
+/// How long Chromium runs with no tab open before it is closed, as Desktop destroys a hidden
+/// pane's views after 5 minutes.
+const IDLE: Duration = Duration::from_secs(5 * 60);
 /// A tab's view until the pane shows it.
 const DEFAULT_VIEW: (u32, u32) = (1280, 800);
 /// How much of a page's console and network a tab keeps for the agent.
@@ -42,6 +68,8 @@ pub struct Options {
     /// Where downloads are saved.
     pub downloads: PathBuf,
     pub frames: Frames,
+    /// Asks the person before the agent opens or uses a site that is not local nor allowed.
+    pub permit: Permit,
 }
 
 #[derive(Clone)]
@@ -57,11 +85,17 @@ struct Inner {
     launching: tokio::sync::Mutex<()>,
     /// What the person did, carried out in order (`Browser::send`).
     ops: tokio::sync::mpsc::UnboundedSender<(Owner, BrowserOp)>,
+    /// Sites the agent may use without asking, from Settings and "Always allow".
+    allowed: Mutex<Vec<String>>,
+    /// Since when no session has a tab open, while Chromium runs.
+    idle_since: Mutex<Option<Instant>>,
 }
 
 /// A running Chromium.
 pub(crate) struct Run {
     pub(crate) cdp: Cdp,
+    /// Closed on purpose: its going is not a failure to report.
+    closing: std::sync::atomic::AtomicBool,
     pub(crate) state: Mutex<State>,
     child: Mutex<std::process::Child>,
     decode: std::sync::mpsc::Sender<Shot>,
@@ -157,8 +191,29 @@ impl Browser {
                 run: Mutex::new(None),
                 launching: tokio::sync::Mutex::new(()),
                 ops,
+                allowed: Mutex::default(),
+                idle_since: Mutex::default(),
             }),
         };
+        // Chromium goes once nothing has used it for a while.
+        let weak = Arc::downgrade(&browser.inner);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                let Some(inner) = weak.upgrade() else {
+                    return;
+                };
+                let idle = inner
+                    .idle_since
+                    .lock()
+                    .unwrap()
+                    .is_some_and(|since| since.elapsed() >= IDLE);
+                if idle {
+                    *inner.idle_since.lock().unwrap() = None;
+                    Browser { inner }.shutdown().await;
+                }
+            }
+        });
         let weak = Arc::downgrade(&browser.inner);
         tokio::spawn(async move {
             while let Some((owner, op)) = queue.recv().await {
@@ -183,6 +238,51 @@ impl Browser {
             }
         });
         browser
+    }
+
+    /// The sites the agent may use without asking, as Settings has them.
+    pub fn allow_sites(&self, sites: Vec<String>) {
+        *self.inner.allowed.lock().unwrap() = sites;
+    }
+
+    /// May the agent open or use `url`? Local pages always; another site when it, or a
+    /// domain it is under, is allowed, or when the person says so now. `file:` and other
+    /// schemes never: the agent's pages are web pages.
+    pub(crate) async fn may(&self, owner: Owner, url: &str, opening: bool) -> Result<(), String> {
+        let host = match site(url) {
+            Site::Local => return Ok(()),
+            Site::Other(scheme) => {
+                return Err(format!(
+                    "The agent's browser opens web pages only, not {scheme}: addresses."
+                ))
+            }
+            Site::Web(host) => host,
+        };
+        let allowed = self
+            .inner
+            .allowed
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|site| host == *site || host.ends_with(&format!(".{site}")));
+        if allowed {
+            return Ok(());
+        }
+        let ask = SiteAsk {
+            host: host.clone(),
+            url: url.to_owned(),
+            opening,
+        };
+        match (self.inner.options.permit)(owner, ask).await {
+            Ok(Grant::Once) => Ok(()),
+            Ok(Grant::Always) => {
+                self.inner.allowed.lock().unwrap().push(host);
+                Ok(())
+            }
+            _ => Err(format!(
+                "The user did not allow the browser on {host}. Do not try it again unless they ask."
+            )),
+        }
     }
 
     /// Carry out `op` after what the person did before it; input goes to the page at once.
@@ -251,6 +351,7 @@ impl Browser {
             .map_err(|e| e.to_string())?;
         let run = Arc::new(Run {
             cdp,
+            closing: Default::default(),
             state: Mutex::default(),
             child: Mutex::new(process.child),
             decode: decoder,
@@ -342,6 +443,53 @@ impl Browser {
                     }
                 }
             }
+            BrowserOp::Files { tab, node, paths } => {
+                let Some(session) = run.session(owner, tab) else {
+                    return Ok(());
+                };
+                if !paths.is_empty() {
+                    let files: Vec<String> =
+                        paths.iter().map(|p| p.display().to_string()).collect();
+                    run.cdp
+                        .call(
+                            "DOM.setFileInputFiles",
+                            json!({ "files": files, "backendNodeId": node }),
+                            Some(&session),
+                        )
+                        .await
+                        .map_err(|e| e.0)?;
+                }
+            }
+            // Chromium's own inspect mode highlights what is under the pointer and reports
+            // the element pressed (`Overlay.inspectNodeRequested`).
+            BrowserOp::Select { tab, on } => {
+                let Some(session) = run.session(owner, tab) else {
+                    return Ok(());
+                };
+                if on {
+                    for method in ["DOM.enable", "Overlay.enable"] {
+                        run.cdp
+                            .call(method, json!({}), Some(&session))
+                            .await
+                            .map_err(|e| e.0)?;
+                    }
+                    run.cdp
+                        .call(
+                            "Overlay.setInspectMode",
+                            json!({ "mode": "searchForNode", "highlightConfig": {
+                                "showInfo": true,
+                                "contentColor": { "r": 37, "g": 125, "b": 224, "a": 0.18 },
+                                "borderColor": { "r": 37, "g": 125, "b": 224, "a": 0.9 },
+                            } }),
+                            Some(&session),
+                        )
+                        .await
+                        .map_err(|e| e.0)?;
+                } else {
+                    stop_inspecting(&run, &session);
+                }
+                self.tell(owner, BrowserUpdate::Selecting(on));
+            }
         }
         Ok(())
     }
@@ -402,6 +550,11 @@ impl Browser {
             ("Page.enable", json!({})),
             ("Runtime.enable", json!({})),
             ("Network.enable", json!({})),
+            // A page's file field asks quill, which shows the desktop's dialog.
+            (
+                "Page.setInterceptFileChooserDialog",
+                json!({ "enabled": true }),
+            ),
             // Headless pages never have the window's focus; a page that thinks it has
             // shows its caret and :focus styles.
             (
@@ -705,6 +858,7 @@ impl Browser {
         let Some(run) = self.inner.run.lock().unwrap().take() else {
             return;
         };
+        run.closing.store(true, std::sync::atomic::Ordering::SeqCst);
         let _ = run
             .cdp
             .call_within("Browser.close", json!({}), None, Duration::from_secs(2))
@@ -717,6 +871,13 @@ impl Browser {
     pub(crate) fn publish(&self, run: &Arc<Run>, owner: Owner) {
         let update = {
             let state = run.state.lock().unwrap();
+            let open = state.owners.values().any(|o| !o.tabs.is_empty());
+            let mut idle = self.inner.idle_since.lock().unwrap();
+            *idle = if open {
+                None
+            } else {
+                idle.or(Some(Instant::now()))
+            };
             let Some(owned) = state.owners.get(&owner) else {
                 return;
             };
@@ -812,6 +973,60 @@ impl State {
     }
 }
 
+/// What kind of place a URL is, for the agent's permissions.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Site {
+    /// This computer, or a page with no site (about:blank, data:).
+    Local,
+    Web(String),
+    /// A scheme the agent may not open, such as `file`.
+    Other(String),
+}
+
+/// Whether `url` is a page of this computer (localhost, 127.0.0.1…) with no credentials in
+/// it: what a session's tools may open in its browser through `$BROWSER`.
+pub fn is_local(url: &str) -> bool {
+    let authority = url.split_once("://").map_or("", |(_, rest)| rest);
+    let authority = authority.split(['/', '?', '#']).next().unwrap_or_default();
+    (url.starts_with("http://") || url.starts_with("https://"))
+        && !authority.contains('@')
+        && site(url) == Site::Local
+}
+
+pub(crate) fn site(url: &str) -> Site {
+    let url = address(url);
+    let Some((scheme, rest)) = url.split_once(':') else {
+        return Site::Local;
+    };
+    match scheme {
+        "about" | "data" | "blob" => return Site::Local,
+        "http" | "https" => {}
+        other => return Site::Other(other.to_owned()),
+    }
+    let rest = rest.trim_start_matches('/');
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+    let host = if host.starts_with('[') {
+        host.split(']')
+            .next()
+            .map(|h| format!("{h}]"))
+            .unwrap_or_default()
+    } else {
+        host.split(':').next().unwrap_or_default().to_owned()
+    }
+    .to_lowercase();
+    let local = host == "localhost"
+        || host.ends_with(".localhost")
+        || host == "[::1]"
+        || host == "0.0.0.0"
+        || host.starts_with("127.");
+    if local {
+        Site::Local
+    } else {
+        Site::Web(host.strip_prefix("www.").unwrap_or(&host).to_owned())
+    }
+}
+
 /// What the person typed in the address bar, as a URL: a scheme is kept, a local address
 /// gets http, something with a dot gets https, anything else is searched for.
 pub fn address(typed: &str) -> String {
@@ -869,7 +1084,10 @@ async fn listen(
                 active: None,
             },
         );
-        browser.tell(owner, BrowserUpdate::Failed("The browser stopped.".into()));
+        // Closed on purpose, there is nothing to tell beyond that.
+        if !run.closing.load(std::sync::atomic::Ordering::SeqCst) {
+            browser.tell(owner, BrowserUpdate::Failed("The browser stopped.".into()));
+        }
     }
 }
 
@@ -972,6 +1190,31 @@ fn on_event(browser: &Browser, run: &Arc<Run>, message: Message, scale: f32) {
                 ),
             }
         }
+        "Page.fileChooserOpened" => {
+            let session = message.session.unwrap_or_default();
+            let found = run
+                .state
+                .lock()
+                .unwrap()
+                .by_session(&session)
+                .map(|(o, t)| (o, t.id));
+            if let Some((owner, tab)) = found {
+                browser.tell(
+                    owner,
+                    BrowserUpdate::ChooseFiles {
+                        tab,
+                        node: params["backendNodeId"].as_i64().unwrap_or_default(),
+                        multiple: params["mode"] == "selectMultiple",
+                    },
+                );
+            }
+        }
+        "Overlay.inspectNodeRequested" => {
+            let (browser, run) = (browser.clone(), run.clone());
+            let session = message.session.unwrap_or_default();
+            let node = params["backendNodeId"].as_i64().unwrap_or_default();
+            tokio::spawn(async move { picked(&browser, &run, &session, node).await });
+        }
         // The person sees what a page says; nothing waits on an answer (Desktop suppresses
         // dialogs for the agent, notes).
         "Page.javascriptDialogOpening" => {
@@ -1047,6 +1290,105 @@ fn on_event(browser: &Browser, run: &Arc<Run>, message: Message, scale: f32) {
     if let Some(owner) = changed {
         browser.publish(run, owner);
     }
+}
+
+fn stop_inspecting(run: &Run, session: &str) {
+    run.cdp.send(
+        "Overlay.setInspectMode",
+        json!({ "mode": "none", "highlightConfig": {} }),
+        Some(session),
+    );
+}
+
+/// The element the person picked, for the message they write: what it is, its HTML and a
+/// picture of it, as Desktop's pick carries; the picture is a file the agent
+/// reads, as the message is text.
+async fn picked(browser: &Browser, run: &Arc<Run>, session: &str, node: i64) {
+    let owner = run
+        .state
+        .lock()
+        .unwrap()
+        .by_session(session)
+        .map(|(o, t)| (o, t.url.clone()));
+    let Some((owner, url)) = owner else {
+        return;
+    };
+    stop_inspecting(run, session);
+    browser.tell(owner, BrowserUpdate::Selecting(false));
+    let Ok(object) = run
+        .cdp
+        .call(
+            "DOM.resolveNode",
+            json!({ "backendNodeId": node }),
+            Some(session),
+        )
+        .await
+    else {
+        return;
+    };
+    let read = "function() { const r = this.getBoundingClientRect(); return {         x: r.left + scrollX, y: r.top + scrollY, w: r.width, h: r.height,         tag: this.tagName.toLowerCase(), text: (this.innerText || '').trim().slice(0, 200),         html: this.outerHTML } }";
+    let Ok(info) = run
+        .cdp
+        .call(
+            "Runtime.callFunctionOn",
+            json!({ "objectId": object["object"]["objectId"], "functionDeclaration": read,
+                    "returnByValue": true }),
+            Some(session),
+        )
+        .await
+    else {
+        return;
+    };
+    let info = &info["result"]["value"];
+    let html: String = info["html"]
+        .as_str()
+        .unwrap_or_default()
+        .chars()
+        .take(3000)
+        .collect();
+    let mut block = format!(
+        "<selected_element page=\"{url}\">\n{} {}\n```html\n{html}\n```\n",
+        info["tag"].as_str().unwrap_or("element"),
+        info["text"]
+            .as_str()
+            .map(|t| format!("\"{t}\""))
+            .unwrap_or_default(),
+    );
+    let (w, h) = (
+        info["w"].as_f64().unwrap_or(0.0),
+        info["h"].as_f64().unwrap_or(0.0),
+    );
+    if w >= 1.0 && h >= 1.0 {
+        let shot = run
+            .cdp
+            .call(
+                "Page.captureScreenshot",
+                json!({ "format": "png", "clip": { "x": info["x"], "y": info["y"],
+                        "width": w, "height": h, "scale": 1 } }),
+                Some(session),
+            )
+            .await;
+        if let Some(path) = shot.ok().and_then(|shot| keep_pick(shot["data"].as_str()?)) {
+            block.push_str(&format!("A picture of it: @{}\n", path.display()));
+        }
+    }
+    block.push_str("</selected_element>\n");
+    browser.tell(owner, BrowserUpdate::Selected(block));
+}
+
+/// A picked element's picture, kept where the agent can read it.
+fn keep_pick(png: &str) -> Option<PathBuf> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(png).ok()?;
+    let dir = std::env::temp_dir().join(format!("quill-picks-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).ok()?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis();
+    let path = dir.join(format!("element-{stamp}.png"));
+    std::fs::write(&path, bytes).ok()?;
+    Some(path)
 }
 
 /// A tab's address, title and history asked again, for the person's toolbar.
@@ -1163,5 +1505,31 @@ mod tests {
             address("rust borrow checker"),
             "https://duckduckgo.com/?q=rust+borrow+checker"
         );
+    }
+
+    #[test]
+    fn only_local_web_pages_come_through_browser() {
+        assert!(is_local("http://localhost:5173/"));
+        assert!(is_local("http://127.0.0.1:8000/a?b"));
+        assert!(!is_local("https://github.com/login/device"));
+        assert!(!is_local("http://user:pw@localhost:3000/"));
+        assert!(!is_local("file:///tmp/x.html"));
+    }
+
+    #[test]
+    fn local_pages_never_ask_and_other_schemes_are_refused() {
+        assert_eq!(site("localhost:3000/a"), Site::Local);
+        assert_eq!(site("http://127.0.0.1:8080"), Site::Local);
+        assert_eq!(site("http://app.localhost/"), Site::Local);
+        assert_eq!(site("about:blank"), Site::Local);
+        assert_eq!(
+            site("https://www.Example.com/x"),
+            Site::Web("example.com".into())
+        );
+        assert_eq!(
+            site("https://user:pw@docs.rs/serde"),
+            Site::Web("docs.rs".into())
+        );
+        assert_eq!(site("file:///etc/passwd"), Site::Other("file".into()));
     }
 }

@@ -1,6 +1,6 @@
 //! Against the Chromium on this machine; skipped where there is none.
 
-use quill_browser::{Browser, Frames, Options};
+use quill_browser::{Browser, Frames, Grant, Options, Permit};
 use quill_model::{BrowserInput, BrowserOp, BrowserUpdate, BrowserView, Modifiers, PointerButton};
 use std::io::{BufRead, BufReader, Write};
 use std::sync::{Arc, Mutex};
@@ -10,6 +10,15 @@ const PAGE: &str = "<!doctype html><title>Acme</title><body style='margin:0'>\
 <input id=email style='position:absolute;left:10px;top:10px;width:200px;height:30px'>\
 <p id=words style='position:absolute;top:80px'>hello quill</p>\
 <script>console.log('ready', 42)</script></body>";
+
+/// The person allows every site once.
+fn allow_once() -> Permit {
+    Arc::new(|_, _| {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = tx.send(Grant::Once);
+        rx
+    })
+}
 
 /// A one-page server on a free local port.
 fn serve() -> u16 {
@@ -59,6 +68,7 @@ async fn a_session_opens_a_page_sees_its_frames_and_types_into_it() {
             profile: dir.join("profile"),
             downloads: dir.join("downloads"),
             frames: frames.clone(),
+            permit: allow_once(),
         },
         Arc::new(move |owner, update| log.lock().unwrap().push((owner, update))),
     );
@@ -230,6 +240,7 @@ async fn the_agent_reads_fills_clicks_and_sees_a_page() {
             profile: dir.join("profile"),
             downloads: dir.join("downloads"),
             frames: Frames::default(),
+            permit: allow_once(),
         },
         Arc::new(|_, _| {}),
     );
@@ -329,6 +340,73 @@ async fn the_agent_reads_fills_clicks_and_sees_a_page() {
         batch.contains("2. form_input failed") && !batch.contains("3. tabs_context"),
         "{batch}"
     );
+    browser.shutdown().await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pages_file_field_asks_for_files_and_takes_the_ones_chosen() {
+    use serde_json::json;
+    let dir = std::env::temp_dir().join(format!("quill-browser-files-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("logo.txt");
+    std::fs::write(&file, "acme").unwrap();
+    let heard: Arc<Mutex<Vec<BrowserUpdate>>> = Arc::default();
+    let log = heard.clone();
+    let browser = Browser::new(
+        Options {
+            program: None,
+            profile: dir.join("profile"),
+            downloads: dir.join("downloads"),
+            frames: Frames::default(),
+            permit: allow_once(),
+        },
+        Arc::new(move |_, update| log.lock().unwrap().push(update)),
+    );
+    let port = serve_page("<!doctype html><input type=file id=f>");
+    let (opened, failed) = browser
+        .tool(9, "navigate", json!({ "url": format!("localhost:{port}") }))
+        .await;
+    if failed && words(&opened).starts_with("No Chromium") {
+        eprintln!("no Chromium here: skipped");
+        return;
+    }
+    let (page, _) = browser.tool(9, "find", json!({ "query": "button" })).await;
+    let reference = words(&page)
+        .split('[')
+        .nth(1)
+        .and_then(|r| r.split(']').next())
+        .unwrap_or_else(|| panic!("no field in {}", words(&page)))
+        .to_owned();
+    browser
+        .tool(
+            9,
+            "computer",
+            json!({ "action": "left_click", "ref": reference }),
+        )
+        .await;
+    let (tab, node) = until("the page to ask for files", || {
+        heard.lock().unwrap().iter().find_map(|u| match u {
+            BrowserUpdate::ChooseFiles { tab, node, .. } => Some((*tab, *node)),
+            _ => None,
+        })
+    })
+    .await;
+    browser
+        .apply(
+            9,
+            BrowserOp::Files {
+                tab,
+                node,
+                paths: vec![file.clone()],
+            },
+        )
+        .await;
+    let name = browser
+        .evaluate(9, tab, "f.files[0] && f.files[0].name")
+        .await
+        .unwrap();
+    assert_eq!(name.as_str(), Some("logo.txt"));
     browser.shutdown().await;
     let _ = std::fs::remove_dir_all(dir);
 }

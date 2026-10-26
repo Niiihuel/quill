@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 
+mod bridge;
+
 pub use quill_browser::{Frame, Frames};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -18,6 +20,10 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 /// Where events go; the app wakes its window from here.
 pub type Sink = Arc<dyn Fn(Event) + Send + Sync>;
+
+/// Site permissions the browser waits on: by card, the site and where the answer goes.
+type SiteWaits =
+    Arc<Mutex<HashMap<String, (String, tokio::sync::oneshot::Sender<quill_browser::Grant>)>>>;
 
 /// The agents quill has adapters for, as Settings lists them.
 const AGENTS: [&str; 1] = ["claude"];
@@ -188,6 +194,12 @@ struct Router {
     busy: std::collections::HashSet<SessionId>,
     /// The built-in browser, shared by every session (each in a context of its own).
     browser: quill_browser::Browser,
+    /// Site permissions the browser waits on, by the card's id: the site and where the
+    /// answer goes.
+    site_waits: SiteWaits,
+    /// What the agents' `$BROWSER` hands back; `None` when the person has a `BROWSER` of
+    /// their own or there is no private folder for it.
+    bridge: Option<bridge::Bridge>,
     /// The reply being read aloud: what stops it, and the task that ends once it stopped.
     reading: Option<(
         tokio::sync::oneshot::Sender<()>,
@@ -222,6 +234,39 @@ impl Router {
                 ui(event);
             })
         };
+        let site_waits: SiteWaits = Arc::default();
+        // A site the agent wants is asked about on a card, as a permission is.
+        let permit: quill_browser::Permit = {
+            let (sink, ui, waits) = (sink.clone(), ui.clone(), site_waits.clone());
+            Arc::new(move |session, ask: quill_browser::SiteAsk| {
+                let (answer, heard) = tokio::sync::oneshot::channel();
+                let id = format!("site-{}", uuid::Uuid::new_v4().simple());
+                waits
+                    .lock()
+                    .unwrap()
+                    .insert(id.clone(), (ask.host.clone(), answer));
+                sink(Event::Agent {
+                    session,
+                    request: None,
+                    event: AgentEvent::PermissionRequest {
+                        id,
+                        call: None,
+                        tool: quill_model::SITE_PERMISSION.into(),
+                        input: serde_json::json!({
+                            "site": ask.host, "url": ask.url, "opening": ask.opening,
+                        }),
+                        title: None,
+                        interactive: false,
+                        suggestions: vec![],
+                    },
+                });
+                ui(Event::Status {
+                    session,
+                    status: SessionStatus::Awaiting,
+                });
+                heard
+            })
+        };
         let browser = {
             let ui = ui.clone();
             let home = std::env::var_os("HOME")
@@ -235,6 +280,7 @@ impl Router {
                     }),
                     downloads: home.join("Downloads"),
                     frames: config.frames.clone(),
+                    permit,
                 },
                 // What the browser shows is the UI's only: never stored.
                 Arc::new(move |session, update| ui(Event::Browser { session, update })),
@@ -246,7 +292,9 @@ impl Router {
             sink,
             config,
             internal,
+            bridge: bridge::Bridge::start(browser.clone()),
             browser,
+            site_waits,
             sessions: HashMap::new(),
             folders: HashMap::new(),
             started: HashMap::new(),
@@ -265,6 +313,8 @@ impl Router {
 
     /// The settings in force and the agents quill can run, for the UI.
     fn announce_settings(&self) {
+        self.browser
+            .allow_sites(self.settings.browser_sites.clone());
         let agents = AGENTS
             .iter()
             .filter_map(|id| adapter(id))
@@ -358,6 +408,11 @@ impl Router {
             );
             actor.spec.resume = restored.resume;
             actor.spec.allow_unsafe = allow_unsafe;
+            actor.env = self
+                .bridge
+                .as_ref()
+                .map(|b| b.env(session))
+                .unwrap_or_default();
             // A fork that has said nothing yet still continues where it was forked from.
             if let (None, Some((from, at))) = (&actor.spec.resume, restored.forked) {
                 let mut ids = self.agent_ids.lock().unwrap();
@@ -423,6 +478,7 @@ impl Router {
         let allow_unsafe = self.settings.agent(&new.agent).allow_unsafe;
         let mut actor = Actor::new(id, new, adapter, program, tx.clone(), self.sink.clone());
         actor.spec.allow_unsafe = allow_unsafe;
+        actor.env = self.bridge.as_ref().map(|b| b.env(id)).unwrap_or_default();
         actor.shadow_root = self.config.snapshots.clone();
         actor.route = Some(self.internal.clone());
         if let Some((from, at)) = fork_of {
@@ -487,7 +543,78 @@ impl Router {
         Some(child)
     }
 
+    /// Keep `settings` and act on them; the UI hears what is in force either way.
+    async fn save_settings(&mut self, settings: quill_model::Settings) {
+        let path = self.config.settings.clone();
+        let (kept, login) = (settings.clone(), settings.open_at_login);
+        let saved = tokio::task::spawn_blocking(move || {
+            write_settings(path.as_deref(), &kept)?;
+            start_at_login(login)
+        })
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()));
+        if let Err(error) = saved {
+            (self.ui)(Event::Status {
+                session: 0,
+                status: SessionStatus::Failed(format!("settings not saved: {error}")),
+            });
+            // What is in force stays as it was, and the UI hears it again.
+            self.announce_settings();
+            return;
+        }
+        self.settings = settings;
+        self.hold_awake();
+        self.announce_settings();
+    }
+
+    /// The person answered a site permission the browser asked for: the answer is the
+    /// browser's, not the agent's. "Always allow" keeps the site in Settings.
+    async fn site_decided(
+        &mut self,
+        session: SessionId,
+        permission: String,
+        decision: quill_model::Decision,
+    ) -> bool {
+        let Some((host, answer)) = self.site_waits.lock().unwrap().remove(&permission) else {
+            return false;
+        };
+        let grant = match &decision {
+            quill_model::Decision::Allow => quill_browser::Grant::Once,
+            quill_model::Decision::AllowAlways(_) => quill_browser::Grant::Always,
+            _ => quill_browser::Grant::No,
+        };
+        (self.sink)(Event::Decided {
+            session,
+            permission,
+            decision,
+        });
+        (self.ui)(Event::Status {
+            session,
+            status: SessionStatus::Running,
+        });
+        if grant == quill_browser::Grant::Always && !self.settings.browser_sites.contains(&host) {
+            let mut settings = self.settings.clone();
+            settings.browser_sites.push(host);
+            self.save_settings(settings).await;
+        }
+        let _ = answer.send(grant);
+        true
+    }
+
     async fn intent(&mut self, intent: Intent) {
+        if let Intent::Decide {
+            session,
+            permission,
+            decision,
+        } = &intent
+        {
+            if self
+                .site_decided(*session, permission.clone(), decision.clone())
+                .await
+            {
+                return;
+            }
+        }
         let (session, input) = match intent {
             Intent::NewSession(new) => {
                 self.spawn(new, |_| vec![], None).await;
@@ -618,26 +745,7 @@ impl Router {
                 return;
             }
             Intent::SaveSettings(settings) => {
-                let path = self.config.settings.clone();
-                let (kept, login) = (settings.clone(), settings.open_at_login);
-                let saved = tokio::task::spawn_blocking(move || {
-                    write_settings(path.as_deref(), &kept)?;
-                    start_at_login(login)
-                })
-                .await
-                .unwrap_or_else(|e| Err(e.to_string()));
-                if let Err(error) = saved {
-                    (self.ui)(Event::Status {
-                        session: 0,
-                        status: SessionStatus::Failed(format!("settings not saved: {error}")),
-                    });
-                    // What is in force stays as it was, and the UI hears it again.
-                    self.announce_settings();
-                    return;
-                }
-                self.settings = settings;
-                self.hold_awake();
-                self.announce_settings();
+                self.save_settings(settings).await;
                 return;
             }
             Intent::MeasureStorage => {
@@ -1128,6 +1236,8 @@ struct Actor {
     route: Option<UnboundedSender<Internal>>,
     /// The last thing the agent said in the turn under way, for its report.
     last_text: String,
+    /// Added to the agent's environment: the `$BROWSER` bridge.
+    env: Vec<(String, String)>,
 }
 
 impl Actor {
@@ -1167,6 +1277,7 @@ impl Actor {
             before: HashMap::new(),
             route: None,
             last_text: String::new(),
+            env: Vec::new(),
         }
     }
 
@@ -1378,6 +1489,7 @@ impl Actor {
         for key in &plan.env_remove {
             command.env_remove(key);
         }
+        command.envs(self.env.iter().map(|(k, v)| (k, v)));
         let mut child = command
             .spawn()
             .map_err(|e| format!("could not start {}: {e}", plan.program))?;

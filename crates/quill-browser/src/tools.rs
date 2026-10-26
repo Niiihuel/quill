@@ -16,7 +16,7 @@ const Q = window.__quill || (window.__quill = { next: 1, refs: new Map(), ids: n
 const refOf = el => { let r = Q.ids.get(el); if (!r) { r = 'ref_' + Q.next++; Q.ids.set(el, r); Q.refs.set(r, new WeakRef(el)); } return r; };
 const byRef = r => { const w = Q.refs.get(r); const el = w && w.deref(); return el && el.isConnected ? el : null; };
 const TAGS = {A:'link',BUTTON:'button',SELECT:'combobox',TEXTAREA:'textbox',IMG:'image',NAV:'navigation',HEADER:'banner',FOOTER:'contentinfo',MAIN:'main',FORM:'form',UL:'list',OL:'list',LI:'listitem',TABLE:'table',TR:'row',TD:'cell',TH:'columnheader',DIALOG:'dialog',SECTION:'region',ARTICLE:'article',ASIDE:'complementary',SUMMARY:'button',DETAILS:'group',OPTION:'option',LABEL:'label',P:'paragraph',H1:'heading',H2:'heading',H3:'heading',H4:'heading',H5:'heading',H6:'heading'};
-const INPUTS = {checkbox:'checkbox',radio:'radio',button:'button',submit:'button',reset:'button',image:'button',range:'slider',search:'searchbox'};
+const INPUTS = {checkbox:'checkbox',radio:'radio',button:'button',submit:'button',reset:'button',image:'button',file:'button',range:'slider',search:'searchbox'};
 const role = el => el.getAttribute('role') || (el.tagName === 'INPUT' ? (INPUTS[el.type] || 'textbox') : TAGS[el.tagName]) || (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable) ? 'textbox' : null);
 const interactive = el => /^(A|BUTTON|INPUT|SELECT|TEXTAREA|SUMMARY)$/.test(el.tagName) || (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable)) || el.hasAttribute('onclick') || (el.hasAttribute('tabindex') && el.tabIndex >= 0) || /^(button|link|checkbox|radio|tab|menuitem|switch|option|combobox|textbox|slider|searchbox)$/.test(el.getAttribute('role') || '');
 const secret = el => el.tagName === 'INPUT' && (el.type === 'password' || el.type === 'hidden' || /one-time-code|cc-/.test(el.autocomplete || ''));
@@ -33,6 +33,7 @@ const name = el => {
   if (!n) n = el.getAttribute('placeholder') || el.getAttribute('title') || el.getAttribute('alt');
   if (!n && el.tagName === 'INPUT' && /^(button|submit|reset)$/.test(el.type)) n = el.value;
   if (!n && (/^(A|BUTTON|SUMMARY|OPTION|LABEL|LI|TD|TH|P|H[1-6])$/.test(el.tagName) || el.getAttribute('role'))) n = el.innerText;
+  if (!n && el.tagName === 'INPUT' && el.type === 'file') n = el.files && el.files.length ? [...el.files].map(f => f.name).join(', ') : 'Choose file';
   if (!n) n = own(el);
   return cap(clean(n), 100);
 };
@@ -126,6 +127,10 @@ type Answer = Result<Vec<ToolContent>, String>;
 impl Browser {
     /// Run the agent's tool `name` in `owner`'s browser.
     pub async fn tool(&self, owner: Owner, name: &str, input: Value) -> (Vec<ToolContent>, bool) {
+        // The person's answer is not the tool's time.
+        if let Err(error) = self.permitted(owner, name, &input).await {
+            return (ToolContent::text(error), true);
+        }
         let limit = if name == "javascript_tool" {
             45
         } else if name == "browser_batch" {
@@ -145,6 +150,38 @@ impl Browser {
                 ToolContent::text(format!("{name} took longer than {limit}s.")),
                 true,
             ),
+        }
+    }
+
+    /// Whether the agent may do this where it would: open a site, or act in the page a tab
+    /// is on (the person may have gone elsewhere in it, or a click taken it there).
+    async fn permitted(&self, owner: Owner, name: &str, input: &Value) -> Result<(), String> {
+        match name {
+            "navigate" => match input["url"].as_str() {
+                None | Some("back" | "forward") => Ok(()),
+                Some(url) => self.may(owner, url, true).await,
+            },
+            "tabs_create" => match input["url"].as_str() {
+                Some(url) => self.may(owner, url, true).await,
+                None => Ok(()),
+            },
+            "tabs_context" | "tabs_select" | "tabs_close" | "browser_batch" => Ok(()),
+            _ => {
+                let url = self.running().and_then(|run| {
+                    let tab = tab_id(input).or_else(|| active(&run, owner))?;
+                    let state = run.state.lock().unwrap();
+                    let owned = state.owners.get(&owner)?;
+                    owned
+                        .tabs
+                        .iter()
+                        .find(|t| t.id == tab)
+                        .map(|t| t.url.clone())
+                });
+                match url {
+                    Some(url) => self.may(owner, &url, false).await,
+                    None => Ok(()),
+                }
+            }
         }
     }
 
@@ -465,7 +502,11 @@ impl Browser {
                 return Err("A batch cannot hold another.".into());
             }
             let input = action.get("input").cloned().unwrap_or(json!({}));
-            match self.tool_inner(owner, tool, &input).await {
+            let ran = match self.permitted(owner, tool, &input).await {
+                Ok(()) => self.tool_inner(owner, tool, &input).await,
+                Err(error) => Err(error),
+            };
+            match ran {
                 Ok(content) => {
                     answer.push(ToolContent::Text(format!("{}. {tool}:", step + 1)));
                     answer.extend(content);

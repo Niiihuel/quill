@@ -16,3 +16,5 @@ quill-engine = { path = "../../crates/quill-engine" }
 # The platform's own folder dialog, through the desktop portal (no GTK linked in).
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 quill-pty = { path = "../../crates/quill-pty" }
+# `quill --open-url`, the agents' $BROWSER, speaks a line of JSON to the window's bridge.
+serde_json.workspace = true

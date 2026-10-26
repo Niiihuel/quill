@@ -21,6 +21,8 @@ struct App {
     inbox: Arc<Mutex<Vec<Event>>>,
     /// The folder the person chose in the platform's dialog, picked up on the next frame.
     picked: Arc<Mutex<Option<PathBuf>>>,
+    /// Files chosen for a page's file field, sent on the next frame.
+    chosen: Arc<Mutex<Option<(SessionId, quill_model::BrowserOp)>>>,
     /// Files or a folder chosen from "+", to go into the message as @-mentions.
     attached: Arc<Mutex<Vec<PathBuf>>>,
     /// The terminal tabs of each folder, kept while the window lives (features/terminal.md).
@@ -458,6 +460,50 @@ impl eframe::App for App {
             {
                 ctx.copy_text(text.clone());
             }
+            // A page's file field: the desktop's dialog, beside the window as it blocks.
+            if let Event::Browser {
+                session,
+                update:
+                    quill_model::BrowserUpdate::ChooseFiles {
+                        tab,
+                        node,
+                        multiple,
+                    },
+            } = &event
+            {
+                let (chosen, ctx, session, tab, node, multiple) = (
+                    self.chosen.clone(),
+                    ctx.clone(),
+                    *session,
+                    *tab,
+                    *node,
+                    *multiple,
+                );
+                std::thread::spawn(move || {
+                    let dialog = rfd::FileDialog::new();
+                    let paths = if multiple {
+                        dialog.pick_files().unwrap_or_default()
+                    } else {
+                        dialog.pick_file().into_iter().collect()
+                    };
+                    let op = quill_model::BrowserOp::Files { tab, node, paths };
+                    *chosen.lock().unwrap() = Some((session, op));
+                    ctx.request_repaint();
+                });
+            }
+            // An element picked in the page joins the message being written.
+            if let Event::Browser {
+                update: quill_model::BrowserUpdate::Selected(block),
+                ..
+            } = &event
+            {
+                let mut prompt = self.ui.prompt.trim_end().to_owned();
+                if !prompt.is_empty() {
+                    prompt.push_str("\n\n");
+                }
+                prompt.push_str(block);
+                self.set_prompt(prompt);
+            }
             let intents = self.ui.applied(&event);
             self.store.apply(event);
             self.dispatch(intents);
@@ -481,6 +527,9 @@ impl eframe::App for App {
         }
         if let Some(folder) = self.picked.lock().unwrap().take() {
             self.ui.cwd = folder;
+        }
+        if let Some((session, op)) = self.chosen.lock().unwrap().take() {
+            self.engine.send(Intent::Browser { session, op });
         }
         limn_egui::normalize_keyboard_input(&ctx);
         let area = ui.max_rect();
@@ -838,7 +887,37 @@ fn first_name() -> Option<String> {
     Some(chars.next()?.to_uppercase().chain(chars).collect())
 }
 
+/// `quill --open-url URL`: the agents' `$BROWSER` (the engine's bridge). A local page opens in
+/// the session's browser; anything else, or no quill to answer, in the desktop's own.
+fn open_url(url: &str) -> bool {
+    use std::io::{BufRead, Write};
+    let handed = (|| -> Option<bool> {
+        let socket = std::env::var_os("QUILL_BROWSER_BRIDGE")?;
+        let key = std::env::var("QUILL_BROWSER_KEY").ok()?;
+        let mut stream = std::os::unix::net::UnixStream::connect(socket).ok()?;
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .ok()?;
+        writeln!(stream, "{}", serde_json::json!({ "key": key, "url": url })).ok()?;
+        let mut reply = String::new();
+        std::io::BufReader::new(stream).read_line(&mut reply).ok()?;
+        Some(reply.trim() == "pane")
+    })()
+    .unwrap_or(false);
+    handed
+        || std::process::Command::new("xdg-open")
+            .arg(url)
+            .status()
+            .is_ok_and(|status| status.success())
+}
+
 fn main() -> eframe::Result {
+    let args: Vec<String> = std::env::args().collect();
+    if let [_, flag, url, ..] = args.as_slice() {
+        if flag == "--open-url" {
+            std::process::exit(if open_url(url) { 0 } else { 1 });
+        }
+    }
     let cwd = std::env::args()
         .nth(1)
         .map(std::path::PathBuf::from)
@@ -921,6 +1000,7 @@ fn main() -> eframe::Result {
                 engine,
                 inbox,
                 picked: Arc::default(),
+                chosen: Arc::default(),
                 attached: Arc::default(),
                 terminals: HashMap::new(),
                 transcript: None,
