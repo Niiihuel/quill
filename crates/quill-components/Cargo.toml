@@ -8,5 +8,6 @@ description = "quill's look, shared by its apps: tokens, icons and the system's 
 publish = false
 
 [dependencies]
-limn.workspace = true
+# Fonts::bundled, under the system faces fontconfig finds.
+limn = { workspace = true, features = ["bundled-fonts"] }
 quill-model = { path = "../quill-model" }

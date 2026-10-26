@@ -1,6 +1,4 @@
-//! The small pieces quill's views are built from, as quill-ui's view draws them, for every app
-//! to draw the same. quill-ui's `view.rs` keeps its own until the work in progress on it lands
-//! on main; then it takes these.
+//! The small pieces quill's views are built from, for every app of quill to draw the same.
 
 use crate::look::{self, BODY};
 use limn::{Component, ComponentPalette, Element, FontFamily};
@@ -20,14 +18,16 @@ pub fn hgap(width: f32) -> Element {
     Element::spacer().size(Some(width), None)
 }
 
-pub fn vline(height: Option<f32>) -> Element {
+pub fn vline(height: f32) -> Element {
     Element::spacer()
         .background(look::divider())
-        .size(Some(1.0), height)
+        .size(Some(1.0), Some(height))
 }
 
-pub fn hline(width: Option<f32>, color: limn::Color) -> Element {
-    Element::spacer().background(color).size(width, Some(1.0))
+pub fn hline(width: f32, color: limn::Color) -> Element {
+    Element::spacer()
+        .background(color)
+        .size(Some(width), Some(1.0))
 }
 
 /// An icon button as Desktop draws them: rounded 6, its icon in the text's ink,
@@ -68,7 +68,13 @@ pub fn tool_surface(
 }
 
 /// An icon button with no fill at rest.
-pub fn icon_tool(id: &str, icon: limn::Icon, label: &str, side: f32) -> Element {
+pub fn icon_tool(
+    id: &str,
+    icon: limn::Icon,
+    label: &str,
+    side: f32,
+    _palette: ComponentPalette,
+) -> Element {
     tool_surface(id, icon, label, side, None, look::tool_hover(), None).centered_y()
 }
 
@@ -91,26 +97,42 @@ pub fn toggle(
 /// A button with its keys in caps after the label, Desktop's "Revise… Esc" and
 /// "Next Ctrl ⏎": the light fill, or the near-black one when
 /// `primary`.
-pub fn keyed_button(id: &str, label: &str, keys: &str, primary: bool) -> Element {
-    let palette = look::palette();
+pub fn keyed_button(
+    id: &str,
+    label: &str,
+    keys: &str,
+    primary: bool,
+    enabled: bool,
+    palette: ComponentPalette,
+) -> Element {
     let (fill, hover, ink) = if primary {
-        (palette.text, look::primary_hover(), palette.surface)
+        (look::palette().text, look::primary_hover(), palette.surface)
     } else {
-        (look::cancel(), look::tool_hover(), palette.text)
+        (look::cancel(), look::tool_hover(), look::palette().text)
     };
-    let mut content = vec![hgap(10.0), text(label).foreground(ink).centered_y()];
+    let ink = if enabled { ink } else { look::muted() };
+    let mut content = vec![
+        hgap(10.0),
+        text(label).font_size(BODY).foreground(ink).centered_y(),
+    ];
     if !keys.is_empty() {
-        let keys = limn::Kbd::new(
-            keys,
-            ComponentPalette {
-                text: ink,
-                ..palette
-            },
+        content.push(
+            limn::Kbd::new(
+                keys,
+                ComponentPalette {
+                    text: ink,
+                    ..palette
+                },
+            )
+            .render()
+            .centered_y(),
         );
-        content.push(keys.render().centered_y());
     }
     content.push(hgap(10.0));
     let row = Element::row(content).gap(8.0).size(None, Some(30.0));
+    if !enabled {
+        return row.background(look::cancel()).radius(8.0);
+    }
     Element::clickable(id, row)
         .background(fill)
         .hover_background(hover)

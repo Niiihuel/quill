@@ -8,6 +8,12 @@ use limn::{
     ControlSize, Element, FontFamily, FramedCard, Markdown, OutputBlock, Size, Spinner,
     TextShimmer,
 };
+use quill_components::pieces::{
+    hgap, hline, icon_tool, keyed_button, muted, text, toggle, tool_surface, vline,
+};
+use quill_components::settings::{
+    self, choices, setting, setting_button, setting_switch, Setting, SettingsPage,
+};
 use quill_model::{ChangeKind, FileEffect, SessionStatus};
 use serde_json::Value;
 use std::time::Instant;
@@ -68,9 +74,7 @@ pub const SIDE_FIELD: &str = "side:field";
 pub const SIDE_OPEN: &str = "side:open";
 /// Settings: its gear and Ctrl+,, its close, its search, the page it opens on, and the
 /// data folder's "Open".
-pub const SETTINGS_OPEN: &str = "settings:open";
-pub const SETTINGS_CLOSE: &str = "settings:close";
-pub const SETTINGS_SEARCH: &str = "settings:search";
+pub use quill_components::settings::{SETTINGS_CLOSE, SETTINGS_OPEN, SETTINGS_SEARCH};
 pub const SETTINGS_FIRST: &str = "general";
 pub const SETTINGS_STORAGE_OPEN: &str = "settings:storage:open";
 /// The document pane's editor and its buttons.
@@ -94,22 +98,11 @@ const TERMINAL_FONT: f32 = 12.0;
 /// The shell's text starts 12 px in and 8 px under the pane's header.
 const TERMINAL_PADDING: [f32; 2] = [12.0, 8.0];
 
-fn text(s: impl Into<String>) -> Element {
-    Element::text(s.into())
-        .font_family(FontFamily::Sans)
-        .font_size(BODY)
-        .foreground(look::palette().text)
-}
-
 /// The last part of a path, as Desktop names a session's folder.
 fn folder_name(path: &std::path::Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string())
-}
-
-fn muted(s: impl Into<String>) -> Element {
-    text(s).foreground(look::muted())
 }
 
 /// How the space right of the sidebar is shared.
@@ -350,22 +343,6 @@ fn pad(child: Element, x: f32, y: f32) -> Element {
         .flex(1.0),
         gap(None, Some(y)),
     ])
-}
-
-fn hgap(width: f32) -> Element {
-    Element::spacer().size(Some(width), None)
-}
-
-fn vline(height: f32) -> Element {
-    Element::spacer()
-        .background(look::divider())
-        .size(Some(1.0), Some(height))
-}
-
-fn hline(width: f32, color: limn::Color) -> Element {
-    Element::spacer()
-        .background(color)
-        .size(Some(width), Some(1.0))
 }
 
 pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
@@ -960,64 +937,6 @@ fn rename_field(id: &str, name: &str, width: f32, palette: ComponentPalette) -> 
         .focus_border(look::handle(), 1.0)
         .radius(8.0)
         .centered_y()
-}
-
-/// A square icon button with the palette's hover and press, as limn's own tools draw them.
-fn icon_tool(
-    id: &str,
-    icon: limn::Icon,
-    label: &str,
-    side: f32,
-    _palette: ComponentPalette,
-) -> Element {
-    tool_surface(id, icon, label, side, None, look::tool_hover(), None).centered_y()
-}
-
-/// An icon button as Desktop draws them: rounded 6, its icon in the text's ink,
-/// `hover` under the pointer, an optional fill at rest, and a tooltip with its shortcut.
-fn tool_surface(
-    id: &str,
-    icon: limn::Icon,
-    label: &str,
-    side: f32,
-    fill: Option<limn::Color>,
-    hover: limn::Color,
-    shortcut: Option<&str>,
-) -> Element {
-    let palette = ComponentPalette {
-        hover,
-        selected: hover,
-        ..look::palette()
-    };
-    // The icon is centered by hand: limn's icon button sets it a pixel to the left.
-    let glyph = Element::icon(icon)
-        .foreground(look::palette().text)
-        .size(Some(16.0), Some(16.0))
-        .centered();
-    let button = palette
-        .interactive_surface(Element::clickable(id, glyph).accessibility_label(label))
-        .radius(6.0)
-        .size(Some(side), Some(side));
-    let button = match fill {
-        Some(fill) => button.background(fill),
-        None => button,
-    };
-    let tip = limn::Tooltip::new(button, id, label, look::palette());
-    match shortcut {
-        Some(keys) => tip.shortcut(keys),
-        None => tip,
-    }
-    .render()
-}
-
-/// A top-bar toggle: its icon on the active fill while what it shows is open.
-fn toggle(id: &str, icon: limn::Icon, label: &str, on: bool, shortcut: Option<&str>) -> Element {
-    let (fill, hover) = if on {
-        (Some(look::active()), look::active_hover())
-    } else {
-        (None, look::tool_hover())
-    };
-    tool_surface(id, icon, label, 26.0, fill, hover, shortcut).centered_y()
 }
 
 /// A session's name: the person's, the agent's or its first message, else "New session".
@@ -3769,51 +3688,6 @@ fn permission(item: &Item, ui: &Ui, column: f32, palette: ComponentPalette) -> E
         .radius(12.0)
         .padding(16.0)
         .size(Some(width), None)
-}
-
-/// A button with its keys in caps after the label, Desktop's "Revise… Esc" and
-/// "Next Ctrl ⏎": the light fill, or the near-black one when
-/// `primary`.
-fn keyed_button(
-    id: &str,
-    label: &str,
-    keys: &str,
-    primary: bool,
-    enabled: bool,
-    palette: ComponentPalette,
-) -> Element {
-    let (fill, hover, ink) = if primary {
-        (look::palette().text, look::primary_hover(), palette.surface)
-    } else {
-        (look::cancel(), look::tool_hover(), look::palette().text)
-    };
-    let ink = if enabled { ink } else { look::muted() };
-    let mut content = vec![
-        hgap(10.0),
-        text(label).font_size(BODY).foreground(ink).centered_y(),
-    ];
-    if !keys.is_empty() {
-        content.push(
-            limn::Kbd::new(
-                keys,
-                ComponentPalette {
-                    text: ink,
-                    ..palette
-                },
-            )
-            .render()
-            .centered_y(),
-        );
-    }
-    content.push(hgap(10.0));
-    let row = Element::row(content).gap(8.0).size(None, Some(30.0));
-    if !enabled {
-        return row.background(look::cancel()).radius(8.0);
-    }
-    Element::clickable(id, row)
-        .background(fill)
-        .hover_background(hover)
-        .radius(8.0)
 }
 
 /// The plan Claude proposed, before the person decides: "Claude
@@ -6697,98 +6571,20 @@ fn side_pane(
     .size(Some(width), Some(height))
 }
 
-/// One setting: what it is called, what it does, and its control.
-struct Setting {
-    title: String,
-    about: Option<String>,
-    control: Element,
-}
-
-fn setting(title: &str, about: &str, control: Element) -> Setting {
-    Setting {
-        title: title.to_owned(),
-        about: (!about.is_empty()).then(|| about.to_owned()),
-        control,
-    }
-}
-
-/// A page of Settings: its key, its name, and its settings in titled groups.
-struct SettingsPage {
-    key: String,
-    title: String,
-    icon: &'static str,
-    groups: Vec<(String, Vec<Setting>)>,
-}
-
-/// A select of Settings: `set:{name}` opens it and each choice reports `set:{name}={value}`.
+/// A select of Settings, open while its menu is.
 fn setting_select(
     ui: &Ui,
     name: &str,
     choices: &[(String, String)],
     current: &str,
-    palette: ComponentPalette,
+    _palette: ComponentPalette,
 ) -> Element {
-    let label = choices
-        .iter()
-        .find(|(value, _)| value == current)
-        .map_or_else(|| current.to_owned(), |(_, label)| label.clone());
-    let options = choices
-        .iter()
-        .map(|(value, label)| {
-            limn::DropdownOption::new(format!("set:{name}={value}"), label.clone())
-                .selected(value == current)
-        })
-        .collect();
-    limn::Select::new(
-        format!("set:{name}"),
-        label,
-        options,
+    settings::select(
+        name,
+        choices,
+        current,
         ui.settings_menu.as_deref() == Some(name),
-        format!("set:{name}:dismiss"),
-        palette,
     )
-    // Desktop's choice at the end of a row: its label and a chevron, no outline.
-    .variant(limn::SelectVariant::Plain)
-    .font_size(15.0)
-    .menu_palette(look::menu_palette())
-    .menu_width(200.0)
-    .placement(limn::PopoverPlacement::BottomEnd)
-    .render()
-}
-
-fn choices(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
-    pairs
-        .iter()
-        .map(|(value, label)| ((*value).to_owned(), (*label).to_owned()))
-        .collect()
-}
-
-/// Desktop's switch: white on its blue when on, on a gray track when off.
-fn setting_switch(name: &str, on: bool, palette: ComponentPalette) -> Element {
-    limn::Switch::new(format!("set:{name}"), on, palette)
-        .variant(limn::SwitchVariant::Accent)
-        .ink(look::switch_on())
-        .render()
-}
-
-/// A button in a settings row, as Desktop's "Manage": 28 high, filled, radius 8.
-fn setting_button(id: &str, label: &str) -> Element {
-    ComponentPalette {
-        hover: look::settings_current(),
-        ..look::palette()
-    }
-    .interactive_surface(Element::clickable(
-        id,
-        Element::row(vec![
-            hgap(10.0),
-            text(label).font_size(BODY).centered_y(),
-            hgap(10.0),
-        ])
-        .size(None, Some(28.0)),
-    ))
-    .background(look::settings_button())
-    .radius(8.0)
-    .centered_y()
 }
 
 /// Settings' pages, in the order the column lists them: quill's own, then one per agent
@@ -7174,197 +6970,17 @@ fn settings_dialog(
     let Some(current) = &ui.settings_page else {
         return base;
     };
-    let width = limn::Modal::fit_width(window.width, 1024.0);
-    let height = (window.height - 72.0).clamp(320.0, 772.0);
-    let body_height = height - 45.0;
     let pages = settings_pages(store, ui, palette);
-    let nav_width = 211.0;
-    let inner = nav_width - 32.0;
-    // The column: the search, then each group's pages.
-    let search = limn::SearchField::new(
-        SETTINGS_SEARCH,
-        ui.settings_query.as_str(),
-        "Search",
-        ComponentPalette {
-            surface: look::settings_field(),
-            raised: look::settings_field(),
-            border: look::settings_field_edge(),
-            ..palette
-        },
-    )
-    .size(limn::ControlSize::Compact)
-    .width(inner)
-    .render();
-    let mut nav = vec![Element::spacer().size(None, Some(16.0)), search];
-    let heading = |label: &str| {
-        Element::column(vec![
-            Element::spacer().size(None, Some(18.0)),
-            muted(label.to_owned()).font_size(SMALL),
-            Element::spacer().size(None, Some(8.0)),
-        ])
-    };
-    let searching = !ui.settings_query.trim().is_empty();
-    let link = |page: &SettingsPage| {
-        let row = ComponentPalette {
-            hover: look::row_hover(),
-            ..palette
-        }
-        .interactive_surface(Element::clickable(
-            format!("settings:page:{}", page.key),
-            Element::row(vec![
-                hgap(10.0),
-                Element::icon(icons::of(page.icon))
-                    .foreground(look::palette().text)
-                    .size(Some(16.0), Some(16.0))
-                    .centered_y(),
-                Element::truncated_text(page.title.clone())
-                    .font_family(FontFamily::Sans)
-                    .font_size(15.0)
-                    .foreground(look::palette().text)
-                    .flex(1.0)
-                    .centered_y(),
-            ])
-            .gap(12.0)
-            .size(Some(inner - 10.0), Some(32.0)),
-        ))
-        .radius(8.0);
-        if *current == page.key && !searching {
-            row.background(look::settings_current())
-        } else {
-            row
-        }
-    };
-    let mut groups = vec![("Preferences", vec!["general", "sessions", "browser"])];
-    let agents: Vec<&str> = pages
+    let owned = |keys: &[&str]| keys.iter().map(|k| (*k).to_owned()).collect();
+    let mut groups = vec![("Preferences", owned(&["general", "sessions", "browser"]))];
+    let agents: Vec<String> = pages
         .iter()
         .filter(|p| p.key.starts_with("agent:"))
-        .map(|p| p.key.as_str())
+        .map(|p| p.key.clone())
         .collect();
     if !agents.is_empty() {
         groups.push(("Agents", agents));
     }
-    groups.push(("This computer", vec!["system"]));
-    for (label, keys) in groups {
-        nav.push(heading(label));
-        for page in pages.iter().filter(|p| keys.contains(&p.key.as_str())) {
-            nav.push(link(page));
-        }
-    }
-    let nav = Element::row(vec![
-        Element::row(vec![hgap(16.0), Element::column(nav).gap(1.0), hgap(16.0)])
-            .size(Some(nav_width), Some(body_height))
-            .background(look::settings_nav()),
-        Element::spacer()
-            .background(look::settings_nav_edge())
-            .size(Some(1.0), Some(body_height)),
-    ]);
-    // The page: its sections, or what the search found on every page.
-    let content_width = width - nav_width - 1.0;
-    let rows_width = content_width - 6.0 - 16.0;
-    let section = |title: String, rows: Vec<Setting>| {
-        // The rows keep their own 10 px inset; the title takes it too, as Desktop aligns them.
-        let mut items = vec![
-            Element::row(vec![hgap(10.0), text(title).font_size(16.0)]),
-            Element::spacer().size(None, Some(10.0)),
-        ];
-        let count = rows.len();
-        for (at, row) in rows.into_iter().enumerate() {
-            let mut action = limn::ActionRow::new(row.title, palette)
-                .title_size(15.0)
-                .subtitle_size(14.0)
-                .sizing(limn::ActionRowSizing {
-                    gap: 24.0,
-                    copy_gap: 4.0,
-                    icon_column: 0.0,
-                    min_height: 52.0,
-                    min_height_with_subtitle: 64.0,
-                })
-                .wrap_title(true);
-            if let Some(about) = row.about {
-                action = action.subtitle(about);
-            }
-            items.push(
-                action
-                    .trailing(row.control)
-                    .render()
-                    .size(Some(rows_width), None),
-            );
-            if at + 1 < count {
-                items.push(hline(rows_width, look::settings_row_line()));
-            }
-        }
-        Element::column(items)
-    };
-    let query = ui.settings_query.trim().to_lowercase();
-    let mut content = vec![];
-    if query.is_empty() {
-        let page = pages
-            .into_iter()
-            .find(|p| p.key == *current)
-            .unwrap_or_else(|| unreachable_page(current));
-        for (title, rows) in page.groups {
-            content.push(section(title, rows));
-        }
-    } else {
-        for page in pages {
-            for (title, rows) in page.groups {
-                let found: Vec<Setting> = rows
-                    .into_iter()
-                    .filter(|r| {
-                        r.title.to_lowercase().contains(&query)
-                            || r.about
-                                .as_ref()
-                                .is_some_and(|a| a.to_lowercase().contains(&query))
-                    })
-                    .collect();
-                if !found.is_empty() {
-                    content.push(section(format!("{} \u{203a} {title}", page.title), found));
-                }
-            }
-        }
-        if content.is_empty() {
-            content.push(muted("No settings match your search.").font_size(15.0));
-        }
-    }
-    let content = Element::scroll(
-        "settings:content",
-        Element::row(vec![
-            hgap(6.0),
-            Element::column(vec![
-                Element::spacer().size(None, Some(18.0)),
-                Element::column(content).gap(40.0),
-                Element::spacer().size(None, Some(24.0)),
-            ]),
-        ]),
-    )
-    .size(Some(content_width), Some(body_height))
-    .background(look::settings_page());
-    let body = Element::row(vec![nav, content]).size(Some(width), Some(body_height));
-    limn::Modal::new(
-        base,
-        true,
-        "Settings",
-        "",
-        SETTINGS_CLOSE,
-        ComponentPalette {
-            surface: look::settings_page(),
-            border: look::settings_title_line(),
-            ..palette
-        },
-    )
-    .width(width)
-    .height(height)
-    .flush_body(true)
-    .body(body)
-    .render()
-}
-
-/// A page that is not among Settings' pages (an agent that went away): an empty one.
-fn unreachable_page(key: &str) -> SettingsPage {
-    SettingsPage {
-        key: key.to_owned(),
-        title: "Settings".into(),
-        icon: icons::SETTINGS,
-        groups: vec![],
-    }
+    groups.push(("This computer", owned(&["system"])));
+    settings::dialog(base, pages, groups, current, &ui.settings_query, window)
 }

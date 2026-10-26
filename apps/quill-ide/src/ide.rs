@@ -357,14 +357,16 @@ fn name(path: &Path) -> String {
 pub fn view(ide: &Ide, window: Size) -> Element {
     let below = (window.height - look::TOP_BAR - 1.0).max(0.0);
     let mut body = vec![];
+    let mut width = window.width;
     if ide.tree_open {
         body.push(tree(ide, below));
-        body.push(vline(Some(below)));
+        body.push(vline(below));
+        width -= look::SIDEBAR_WIDTH + 1.0;
     }
-    body.push(editor(ide, below).flex(1.0));
+    body.push(editor(ide, width, below).flex(1.0));
     Element::column(vec![
         top_bar(ide),
-        hline(None, look::pane_border()),
+        hline(window.width, look::pane_border()),
         Element::row(body).size(None, Some(below)),
     ])
     .size(Some(window.width), Some(window.height))
@@ -408,6 +410,7 @@ fn top_bar(ide: &Ide) -> Element {
             icons::of(icons::CLOSE),
             "Close file",
             20.0,
+            look::palette(),
         ));
         let pill = Element::row(items)
             .gap(6.0)
@@ -470,7 +473,7 @@ fn tree_rows(ide: &Ide, dir: &Path, depth: usize, shown: Option<&Path>, rows: &m
 }
 
 /// A line over the editor that says what the person must decide, with its button.
-fn notice(words: String, ink: limn::Color, button: Option<Element>) -> Element {
+fn notice(words: String, ink: limn::Color, button: Option<Element>, width: f32) -> Element {
     let mut row = vec![
         hgap(12.0),
         text(words).foreground(ink).centered_y(),
@@ -480,11 +483,11 @@ fn notice(words: String, ink: limn::Color, button: Option<Element>) -> Element {
     row.push(hgap(6.0));
     Element::column(vec![
         Element::row(row).gap(8.0).size(None, Some(NOTICE - 1.0)),
-        hline(None, look::pane_border()),
+        hline(width, look::pane_border()),
     ])
 }
 
-fn notices(ide: &Ide) -> Vec<Element> {
+fn notices(ide: &Ide, width: f32) -> Vec<Element> {
     let mut shown = vec![];
     if ide.quitting {
         let files = match ide.unsaved() {
@@ -492,32 +495,49 @@ fn notices(ide: &Ide) -> Vec<Element> {
             n => format!("{n} files have"),
         };
         let words = format!("{files} unsaved changes: close the window again to discard them.");
-        shown.push(notice(words, look::palette().text, None));
+        shown.push(notice(words, look::palette().text, None, width));
     }
     let Some((i, buffer)) = ide.active.zip(ide.active_buffer()) else {
         return shown;
     };
     if let Some(error) = &buffer.error {
-        shown.push(notice(format!("Not saved: {error}"), look::failed(), None));
+        shown.push(notice(
+            format!("Not saved: {error}"),
+            look::failed(),
+            None,
+            width,
+        ));
     }
     if buffer.stale {
-        let reload = keyed_button(&format!("reload:{i}"), "Reload", "", false);
+        let reload = keyed_button(
+            &format!("reload:{i}"),
+            "Reload",
+            "",
+            false,
+            true,
+            look::palette(),
+        );
         let words = "Changed on disk. Ctrl+S keeps yours; Reload takes the disk's.";
-        shown.push(notice(words.into(), look::palette().text, Some(reload)));
+        shown.push(notice(
+            words.into(),
+            look::palette().text,
+            Some(reload),
+            width,
+        ));
     }
     if ide.closing.as_ref() == Some(&buffer.path) {
         let words = "Unsaved changes. Close it again to discard them, or save them with Ctrl+S.";
-        shown.push(notice(words.into(), look::palette().text, None));
+        shown.push(notice(words.into(), look::palette().text, None, width));
     }
     shown
 }
 
-fn editor(ide: &Ide, height: f32) -> Element {
+fn editor(ide: &Ide, width: f32, height: f32) -> Element {
     let note = |s: &str| {
         let fill = || Element::spacer().flex(1.0);
         Element::column(vec![fill(), muted(s).centered_x(), fill()]).flex(1.0)
     };
-    let mut column = notices(ide);
+    let mut column = notices(ide, width);
     let height = height - column.len() as f32 * NOTICE;
     column.push(match ide.active_buffer() {
         None => note("Pick a file to read it"),
