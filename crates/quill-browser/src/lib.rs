@@ -12,7 +12,7 @@ pub mod tools;
 
 pub use cdp::Error;
 pub use frames::{decode, Frame, Frames, Pixels};
-pub use native::Native;
+pub use native::{Native, Present};
 
 use cdp::{Cdp, Message};
 use quill_model::{BrowserInput, BrowserOp, BrowserTab, BrowserUpdate, BrowserView, PointerButton};

@@ -1,6 +1,7 @@
 //! quill's window: limn paints quill-ui's view; quill-engine runs the agents.
 //! `quill [folder]` opens new sessions in `folder` (the current directory without one).
 
+mod direct;
 mod page;
 
 use eframe::egui;
@@ -40,6 +41,8 @@ struct App {
     pinned_theme: bool,
     /// Where the browser leaves its pages' frames, presented each frame.
     frames: quill_engine::Frames,
+    /// The page presented beneath the window, where the compositor allows (direct.rs).
+    direct: Option<Arc<direct::Direct>>,
     /// The texture each surface shows from the GPU, as registered with egui's renderer.
     textures: HashMap<String, (egui::TextureId, eframe::wgpu::Texture)>,
     /// The page's share of the window's input.
@@ -302,13 +305,25 @@ impl App {
             self.engine.send(intent);
             self.browser_shown = shown;
         }
-        let Some(rect) = region else {
+        let page = region.map(|rect| {
+            egui::Rect::from_min_size(
+                origin + egui::vec2(rect.x, rect.y),
+                egui::vec2(rect.width, rect.height),
+            )
+        });
+        if let Some(direct) = &self.direct {
+            let (window, fullscreen) = ctx.input(|i| {
+                (
+                    i.content_rect().size(),
+                    i.viewport().fullscreen == Some(true),
+                )
+            });
+            let room = page.filter(|_| self.browser_shown.is_some());
+            direct.place(room, window, ctx.pixels_per_point(), fullscreen);
+        }
+        let Some(rect) = page else {
             return;
         };
-        let rect = egui::Rect::from_min_size(
-            origin + egui::vec2(rect.x, rect.y),
-            egui::vec2(rect.width, rect.height),
-        );
         let hovered = ctx
             .input(|i| i.pointer.hover_pos())
             .is_some_and(|p| rect.contains(p));
@@ -633,6 +648,12 @@ impl eframe::App for App {
                     }
                 }
             }
+        }
+        // A page presented beneath the window shows through a hole in it.
+        let direct = self.direct.as_ref().filter(|d| d.shows());
+        if let (Some(direct), Some((session, view))) = (direct, self.browser_shown) {
+            let surface = quill_ui::view::browser_surface(session, view.tab);
+            limn_egui::present_surface_paint(&ctx, &surface, direct::punch(direct));
         }
         let (asks, taken) = self.route_page(&ctx, area.min);
         for ask in asks {
@@ -983,7 +1004,9 @@ fn main() -> eframe::Result {
             .with_title("quill")
             .with_app_id("quill")
             .with_inner_size([1408.0, 844.0])
-            .with_min_inner_size([720.0, 480.0]),
+            .with_min_inner_size([720.0, 480.0])
+            // Where the page is presented beneath it, the window is see-through.
+            .with_transparent(native),
         ..Default::default()
     };
     let result = eframe::run_native(
@@ -1025,6 +1048,9 @@ fn main() -> eframe::Result {
                 .map(|render| (render.device.clone(), render.queue.clone()));
             let native = native.then(|| start_native(&frames, gpu)).flatten();
             *keep.lock().unwrap() = native.clone();
+            let direct = native
+                .as_ref()
+                .and_then(|native| start_direct(creation, native));
             let engine = match std::env::var("QUILL_PROGRAMS") {
                 Ok(programs) => Engine::start_with(
                     sink,
@@ -1071,6 +1097,7 @@ fn main() -> eframe::Result {
                 pinned_theme: std::env::var_os("QUILL_THEME").is_some(),
                 frames,
                 textures: HashMap::new(),
+                direct,
                 page: page::Page::default(),
                 browser_shown: None,
                 address: None,
@@ -1101,6 +1128,9 @@ fn surface_frame(size: [usize; 2], rgba: Vec<u8>, scale: f32) -> Option<limn_egu
 fn wgpu_setup(native: bool) -> eframe::egui_wgpu::WgpuSetup {
     let mut setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
     if native {
+        // The GPU the compositor reads from (the integrated one on a laptop with two), so the
+        // buffers the page is presented in are its to read.
+        setup.power_preference = eframe::wgpu::PowerPreference::LowPower;
         let base = setup.device_descriptor.clone();
         setup.device_descriptor = Arc::new(move |adapter| {
             let mut descriptor = base(adapter);
@@ -1110,6 +1140,34 @@ fn wgpu_setup(native: bool) -> eframe::egui_wgpu::WgpuSetup {
         });
     }
     eframe::egui_wgpu::WgpuSetup::CreateNew(setup)
+}
+
+/// The page presented beneath the window, straight to the compositor, where it is Wayland and
+/// takes dmabufs; `None` keeps it drawn by egui.
+fn start_direct(
+    creation: &eframe::CreationContext,
+    native: &quill_engine::Native,
+) -> Option<Arc<direct::Direct>> {
+    use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
+    let render = creation.wgpu_render_state.as_ref()?;
+    let (RawDisplayHandle::Wayland(display), RawWindowHandle::Wayland(window)) = (
+        creation.display_handle().ok()?.as_raw(),
+        creation.window_handle().ok()?.as_raw(),
+    ) else {
+        return None;
+    };
+    match direct::Direct::new(display.display.as_ptr(), window.surface.as_ptr(), render) {
+        Ok(direct) => {
+            direct::prepare(render);
+            let shown = direct.clone();
+            native.present_with(Arc::new(move |_, page| shown.present(page)));
+            Some(direct)
+        }
+        Err(error) => {
+            eprintln!("quill: the page is drawn by the window: {error}");
+            None
+        }
+    }
 }
 
 /// Whether the browser's pages are drawn by Chromium in quill's own process, rather than by

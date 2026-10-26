@@ -14,10 +14,10 @@ in
 pkgs.mkShell {
   # cmake and ninja build CEF's C++ wrapper for cef-rs.
   nativeBuildInputs = with pkgs; [ stdenv.cc pkg-config cmake ninja ];
-  buildInputs = with pkgs; [ wayland libxkbcommon ];
+  buildInputs = with pkgs; [ wayland libxkbcommon libgbm ];
   CEF_PATH = "${cef}";
   # winit and wgpu dlopen these at runtime; libcef.so is linked from CEF_PATH, which comes
   # last: its own libvulkan.so.1 does not know where NixOS keeps the drivers, and with it first
   # wgpu finds no Vulkan and falls back to GL, where Chromium's GPU frames cannot be imported.
-  LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (with pkgs; [ wayland libxkbcommon vulkan-loader libGL libx11 libxcursor libxi libxrandr ]) + ":${cef}";
+  LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (with pkgs; [ wayland libxkbcommon vulkan-loader libGL libx11 libxcursor libxi libxrandr libgbm ]) + ":${cef}";
 }

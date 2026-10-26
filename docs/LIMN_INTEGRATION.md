@@ -26,6 +26,7 @@ When they are all merged, point `Cargo.toml` back at `../lienzo` and drop the br
 | [#137](https://github.com/Niiihuel/limn/pull/137) | `feat/code-editor-scrollbar` | quill-ide's editor scrollbar in quill's rail with its arrows | open |
 | — | `feat/surface-image` | the browser's native frames handed to egui as they are (`SurfaceFrame::from_image`) | local, not pushed |
 | — | `feat/surface-texture` | the browser's GPU frames drawn from a texture quill registered with egui-wgpu (`present_surface_texture`) | local, not pushed |
+| — | `feat/surface-paint` | the page presented beneath the window: quill paints the browser's surface itself, a transparent hole (`present_surface_paint`) | local, not pushed |
 | — | `feat/drawn-over` | no longer used: native tabs now paint into their surface, so nothing has to step aside for quill (docs/browser.md §8) | local, not pushed; can be dropped |
 
 Updating the branch: `git -C ../limn-quill-integration merge <branch>`; the only conflicts so
