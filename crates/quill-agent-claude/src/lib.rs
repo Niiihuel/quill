@@ -3,9 +3,9 @@
 //! (`fixtures/2.1.310/`, docs/engine.md §11.4).
 
 use quill_agent::{
-    AgentAdapter, AgentCapabilities, AgentCommand, AgentEvent, AgentId, CommandRun, Decision,
-    Decoded, FileChange, LaunchPlan, ModelInfo, PlanLimits, SessionSpec, Suggestion, Usage,
-    UsageWindow, HOST_TOOLS,
+    AgentAdapter, AgentCapabilities, AgentCommand, AgentEvent, AgentId, CommandRun,
+    ContextCategory, ContextKind, ContextUsage, Decision, Decoded, FileChange, LaunchPlan,
+    ModelInfo, PlanLimits, SessionSpec, Suggestion, Usage, UsageWindow, HOST_TOOLS,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -23,6 +23,8 @@ const QUIET: [&str; 2] = ["command_lifecycle", "auth_status"];
 pub struct Claude {
     next_request: u64,
     initialize: Option<String>,
+    /// The `get_context_usage` request waiting for its answer.
+    context_request: Option<String>,
     interrupted: bool,
     /// `can_use_tool` waiting for a decision: its tool call and input, echoed back on allow.
     pending: HashMap<String, (Value, Value)>,
@@ -343,6 +345,13 @@ impl AgentAdapter for Claude {
             AgentCommand::Rewind { request, dry_run } => vec![self.request(json!({
                 "subtype": "rewind_files", "user_message_id": request, "dry_run": dry_run,
             }))],
+            // What Desktop's context breakdown asks for (3.6556.2 `shared-104`, `get_context_usage`).
+            AgentCommand::ContextUsage => {
+                let line =
+                    self.request(json!({ "subtype": "get_context_usage", "detail": "full" }));
+                self.context_request = Some(self.last_request_id());
+                vec![line]
+            }
             AgentCommand::HostToolResult { id, text, is_error } => {
                 let rpc = self.host_calls.remove(&id).unwrap_or_default();
                 vec![success(
@@ -373,6 +382,15 @@ impl AgentAdapter for Claude {
                 if ok && self.initialize.as_deref() == Some(id.as_str()) {
                     self.ultracode = offers_ultracode(&body);
                     decoded.events.push(ready(&body, self.ultracode));
+                }
+                if self.context_request.as_deref() == Some(id.as_str()) {
+                    self.context_request = None;
+                    if ok {
+                        decoded
+                            .events
+                            .push(AgentEvent::ContextUsage(context_usage(&body)));
+                    }
+                    return decoded;
                 }
                 decoded.events.push(AgentEvent::Reply { id, ok, body });
             }
@@ -578,6 +596,66 @@ fn offers_ultracode(body: &Value) -> bool {
         .any(|command| {
             command["name"] == "effort" && text(&command["argumentHint"]).contains(ULTRACODE)
         })
+}
+
+/// The answer to `get_context_usage` (CLI 2.1.310): its categories, each with a `kind`, and
+/// the lists Desktop opens under them, MCP tools, memory files and custom agents
+/// (3.6556.2 `c2d611398`).
+fn context_usage(body: &Value) -> ContextUsage {
+    let number = |v: &Value| v.as_u64().unwrap_or(0);
+    let categories = body["categories"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|c| ContextCategory {
+            name: text(&c["name"]),
+            tokens: number(&c["tokens"]),
+            kind: match c["kind"].as_str() {
+                Some("deferred") => ContextKind::Deferred,
+                Some("buffer") => ContextKind::Buffer,
+                Some("free") => ContextKind::Free,
+                _ if c["isDeferred"] == true => ContextKind::Deferred,
+                _ => ContextKind::Used,
+            },
+        })
+        .collect();
+    let list = |key: &str, name: &dyn Fn(&Value) -> String| -> Vec<(String, u64)> {
+        body[key]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|e| (name(e), number(&e["tokens"])))
+            .collect()
+    };
+    // A tool's name carries its server ("mcp__github__create_issue"); the row shows both once,
+    // a claude.ai connector by its own name ("claude_ai_Gmail" is "Gmail").
+    let tool = |e: &Value| {
+        let (server, name) = (text(&e["serverName"]), text(&e["name"]));
+        let prefix = format!("mcp__{server}__");
+        let name = name.strip_prefix(&prefix).unwrap_or(&name);
+        let server = server
+            .strip_prefix("claude_ai_")
+            .unwrap_or(&server)
+            .replace('_', " ");
+        format!("{server} · {name}")
+    };
+    let groups = [
+        ("MCP tools", list("mcpTools", &tool)),
+        ("Memory files", list("memoryFiles", &|e| text(&e["path"]))),
+        ("Custom agents", list("agents", &|e| text(&e["agentType"]))),
+    ]
+    .into_iter()
+    .filter(|(_, entries)| !entries.is_empty())
+    .map(|(name, entries)| (name.to_owned(), entries))
+    .collect();
+    ContextUsage {
+        used: number(&body["totalTokens"]),
+        max: body["rawMaxTokens"]
+            .as_u64()
+            .unwrap_or_else(|| number(&body["maxTokens"])),
+        categories,
+        groups,
+    }
 }
 
 /// The answer to `initialize` describes the agent ([F:simple]). With `ultracode`, every model

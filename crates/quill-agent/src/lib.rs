@@ -120,6 +120,36 @@ pub struct UsageWindow {
     pub resets_at: u64,
 }
 
+/// How the agent's context is spent, as it reports it on request.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ContextUsage {
+    /// Tokens in use and the context's size.
+    pub used: u64,
+    pub max: u64,
+    /// What fills it, in the agent's own words, each with its share.
+    pub categories: Vec<ContextCategory>,
+    /// Lists that make up some categories (tools of each server, memory files…), each by
+    /// name with its entries' tokens.
+    pub groups: Vec<(String, Vec<(String, u64)>)>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ContextCategory {
+    pub name: String,
+    pub tokens: u64,
+    pub kind: ContextKind,
+}
+
+/// What a category's tokens are: in the context now, loaded only when needed, kept free
+/// for the agent's own compaction, or not used yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ContextKind {
+    Used,
+    Deferred,
+    Buffer,
+    Free,
+}
+
 /// The plan's usage windows the agent reported: the session's five hours and the week.
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PlanLimits {
@@ -223,9 +253,10 @@ pub enum AgentEvent {
         ok: bool,
         body: Value,
     },
-    /// A line the adapter does not understand, kept whole.
     /// How much of the plan's usage windows is spent.
     Limits(PlanLimits),
+    /// The answer to [`AgentCommand::ContextUsage`].
+    ContextUsage(ContextUsage),
     /// The agent calls one of quill's own tools, the ones that start and propose other
     /// sessions ([`HOST_TOOLS`]). The engine answers with [`AgentCommand::HostToolResult`].
     HostTool {
@@ -233,6 +264,7 @@ pub enum AgentEvent {
         name: String,
         input: Value,
     },
+    /// A line the adapter does not understand, kept whole.
     Unknown(Value),
 }
 
@@ -271,6 +303,9 @@ pub enum AgentCommand {
         request: String,
         dry_run: bool,
     },
+    /// Ask how the context is spent, answered by [`AgentEvent::ContextUsage`]; an agent
+    /// that cannot tell sends nothing.
+    ContextUsage,
     /// The answer to an [`AgentEvent::HostTool`] call.
     HostToolResult {
         id: String,

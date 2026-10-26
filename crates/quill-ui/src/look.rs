@@ -299,3 +299,11 @@ pub fn install() {
     });
     limn::set_tokens(tokens);
 }
+
+/// The context meter's series in order, Desktop's categorical chart colors
+/// [3.6556.2 `c6a992d55.css`, `--cds-chart-categorical-1…6`].
+pub fn chart_series(index: usize) -> Color {
+    let light = [0x2a78d6, 0xeb6834, 0x1baf7a, 0xeda100, 0xe87ba4, 0x008300];
+    let dark = [0x3987e5, 0xd95926, 0x199e70, 0xc98500, 0xd55181, 0x008300];
+    hex(if is_dark() { dark } else { light }[index % 6])
+}

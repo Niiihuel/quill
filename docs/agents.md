@@ -26,6 +26,7 @@ encode(cmd)  → Vec<String>                                                  //
 | Cambios de archivo estructurados | `ToolResult.files` | Write/Edit: `structuredPatch`, `originalFile` | `patch_apply` con diff | parte `patch` |
 | Reanudar / fork | `capabilities.resume/fork` | `--resume`, `--fork-session` | `resumeConversation` | sesiones persistidas del servidor |
 | Rewind propio del CLI | `capabilities.rewind` | `rewind_files` | — | `revert` |
+| Desglose del contexto | `Command::ContextUsage` → `Event::ContextUsage{used, max, categories, groups}` (sin respuesta si el agente no lo sabe) | `control_request get_context_usage` (`detail: "full"`) | — | — |
 
 Lo que un CLI no tenga se declara en `AgentCapabilities` y la UI lo muestra degradado. Por ejemplo, sin hooks la atribución se hace por turno con el repo sombra, y sin permisos interactivos no hay tarjeta de permiso.
 

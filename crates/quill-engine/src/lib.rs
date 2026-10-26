@@ -480,6 +480,9 @@ impl Router {
             Intent::SetEffort { session, effort } => {
                 (session, Input::Command(AgentCommand::SetEffort(effort)))
             }
+            Intent::ContextUsage { session } => {
+                (session, Input::Command(AgentCommand::ContextUsage))
+            }
             Intent::Rewind { session, request } => (session, Input::Rewind(request)),
             Intent::Rename { session, title } => {
                 self.titles.insert(session, title.clone());

@@ -18,6 +18,7 @@ fn replay(name: &str) -> (Claude, Vec<AgentEvent>, Vec<String>) {
                 match msg["request"]["subtype"].as_str() {
                     Some("initialize") => drop(claude.encode(AgentCommand::Start)),
                     Some("interrupt") => drop(claude.encode(AgentCommand::Interrupt)),
+                    Some("get_context_usage") => drop(claude.encode(AgentCommand::ContextUsage)),
                     _ => {}
                 }
             }
@@ -115,6 +116,37 @@ fn ultracode_is_extra_high_effort_with_workflows_on() {
     assert_eq!(
         settings(&mut claude, "high"),
         serde_json::json!({ "effortLevel": "high", "ultracode": false })
+    );
+}
+
+#[test]
+fn context_usage_keeps_each_category_with_its_kind_and_the_lists_under_them() {
+    let (_, events, _) = replay("context");
+    let [AgentEvent::ContextUsage(usage)] = events.as_slice() else {
+        panic!("{events:?}");
+    };
+    assert_eq!((usage.used, usage.max), (15812, 1_000_000));
+    let kinds: Vec<(&str, u64, ContextKind)> = usage
+        .categories
+        .iter()
+        .map(|c| (c.name.as_str(), c.tokens, c.kind))
+        .collect();
+    assert_eq!(kinds[0], ("System prompt", 3331, ContextKind::Used));
+    assert_eq!(
+        kinds[2],
+        ("System tools (deferred)", 14137, ContextKind::Deferred)
+    );
+    assert_eq!(kinds[7], ("Autocompact buffer", 33000, ContextKind::Buffer));
+    assert_eq!(kinds[8], ("Free space", 951188, ContextKind::Free));
+    let groups: Vec<(&str, usize)> = usage
+        .groups
+        .iter()
+        .map(|(name, entries)| (name.as_str(), entries.len()))
+        .collect();
+    assert_eq!(groups, [("Memory files", 2), ("Custom agents", 2)]);
+    assert_eq!(
+        usage.groups[0].1[0],
+        ("/home/user/.claude/CLAUDE.md".into(), 103)
     );
 }
 

@@ -106,6 +106,8 @@ pub struct Session {
     pub context_tokens: u64,
     /// The model's context size, once a turn reported it.
     pub context_window: u64,
+    /// What fills the context, as the agent last told it while the Context card was open.
+    pub context_usage: Option<quill_model::ContextUsage>,
     pub cost: f64,
     /// What is uncommitted in its folder, as the engine last said.
     pub working: Option<Vec<quill_model::FileEffect>>,
@@ -206,6 +208,7 @@ impl Store {
                 branch: None,
                 context_tokens: 0,
                 context_window: 0,
+                context_usage: None,
                 working: None,
                 cost: 0.0,
                 running_since: None,
@@ -470,6 +473,7 @@ fn agent_event(s: &mut Session, event: AgentEvent) {
         }
         AgentEvent::ModeChanged { mode } => s.mode = mode,
         AgentEvent::Tokens { tokens } => s.tokens = tokens,
+        AgentEvent::ContextUsage(usage) => s.context_usage = Some(usage),
         AgentEvent::TaskStarted {
             id,
             call,
@@ -1386,6 +1390,11 @@ impl Ui {
         }
     }
 
+    /// Whether the right panel's Context card is open (it starts folded).
+    pub fn context_open(&self) -> bool {
+        self.expanded.iter().any(|k| k == view::CONTEXT_CARD)
+    }
+
     pub fn pane_open(&self, pane: Pane) -> bool {
         self.panes.contains(&pane)
     }
@@ -1508,7 +1517,21 @@ impl Ui {
         } = event
         {
             if self.selected == Some(*session) {
-                return vec![Intent::WorkingTree { session: *session }];
+                let mut intents = vec![Intent::WorkingTree { session: *session }];
+                // The breakdown follows each turn while it is open, as Desktop's refreshes
+                // "when this turn ends".
+                if self.context_open()
+                    && matches!(
+                        event,
+                        Event::Agent {
+                            event: AgentEvent::TurnFinished { .. },
+                            ..
+                        }
+                    )
+                {
+                    intents.push(Intent::ContextUsage { session: *session });
+                }
+                return intents;
             }
         }
         vec![]
@@ -2064,6 +2087,9 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
             ui.close_pane(Pane::Side);
         }
         let mut intents = vec![Intent::WorkingTree { session }];
+        if ui.context_open() {
+            intents.push(Intent::ContextUsage { session });
+        }
         if store.session(session).is_some_and(|s| s.unread) {
             intents.push(Intent::MarkUnread {
                 session,
@@ -2112,7 +2138,12 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         } else {
             ui.expanded.push(id.to_owned());
         }
-        return vec![];
+        return match ui.selected {
+            Some(session) if id == view::CONTEXT_CARD && ui.context_open() => {
+                vec![Intent::ContextUsage { session }]
+            }
+            _ => vec![],
+        };
     }
     if let Some(call) = id.strip_prefix("tool:") {
         if let Some(at) = ui.expanded.iter().position(|c| c == call) {

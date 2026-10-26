@@ -55,6 +55,7 @@ impl Store {
                     | AgentEvent::Tokens { .. }
                     | AgentEvent::Running { .. }
                     | AgentEvent::Reply { .. }
+                    | AgentEvent::ContextUsage(_)
             ),
             _ => true,
         }

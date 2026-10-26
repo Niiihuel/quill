@@ -4,8 +4,8 @@
 use std::path::PathBuf;
 
 pub use quill_agent::{
-    AgentCapabilities, AgentEvent, Decision, FileChange, ModelInfo, PlanLimits, Suggestion, Usage,
-    UsageWindow,
+    AgentCapabilities, AgentEvent, ContextCategory, ContextKind, ContextUsage, Decision,
+    FileChange, ModelInfo, PlanLimits, Suggestion, Usage, UsageWindow,
 };
 
 /// quill's own id of a session.
@@ -183,6 +183,11 @@ pub enum Intent {
     SetEffort {
         session: SessionId,
         effort: String,
+    },
+    /// How the session's context is spent, answered by the agent's `ContextUsage` while it
+    /// runs; a session whose agent is not running gets no answer.
+    ContextUsage {
+        session: SessionId,
     },
     /// What is uncommitted in the session's folder, answered by `Event::WorkingTree`.
     WorkingTree {

@@ -4968,12 +4968,12 @@ fn right_panel(
             text(branch.clone()),
         ));
     }
-    // How full the context is, as Desktop's percentage and bar: the window comes from the
-    // agent's own report of its model.
+    // How full the context is, as Desktop's percentage and bar while the card is folded: the
+    // window comes from the agent's own report of its model.
     let share = (session.context_window > 0)
         .then(|| session.context_tokens as f32 / session.context_window as f32);
     let mut context_head = vec![];
-    if let Some(share) = share {
+    if let Some(share) = share.filter(|_| !open(CONTEXT_CARD, false)) {
         context_head.push(
             muted(format!("{}%", (share * 100.0).round() as u32))
                 .font_size(SMALL)
@@ -4981,19 +4981,9 @@ fn right_panel(
         );
         context_head.push(context_bar(share));
     }
-    let mut context_rows = vec![muted(if session.context_tokens == 0 {
-        "No turns yet".to_string()
-    } else if session.context_window > 0 {
-        format!(
-            "{:.1}k of {}k tokens",
-            session.context_tokens as f64 / 1000.0,
-            session.context_window / 1000
-        )
-    } else {
-        format!("{:.1}k tokens", session.context_tokens as f64 / 1000.0)
-    })];
+    let mut context_rows = context_breakdown(session, ui, inner - 36.0);
     if session.cost > 0.0 {
-        context_rows.push(muted(format!("${:.4} this session", session.cost)));
+        context_rows.push(muted(format!("${:.4} this session", session.cost)).font_size(SMALL));
     }
     let (added, removed, files) = match &session.working {
         Some(working) => (
@@ -5052,8 +5042,8 @@ fn right_panel(
         ),
         panel_card(
             "Context",
-            "panel:context",
-            open("panel:context", false),
+            CONTEXT_CARD,
+            open(CONTEXT_CARD, false),
             context_head,
             context_rows,
             inner,
@@ -5270,6 +5260,237 @@ fn language_of(path: &str) -> limn::CodeLanguage {
         "md" | "markdown" => Markdown,
         _ => Plain,
     }
+}
+
+/// The right panel's Context card, folded until opened.
+pub const CONTEXT_CARD: &str = "panel:context";
+
+/// A count of tokens as Desktop writes it: "254", "15.8K", "1M" (3.6556.2 `shared-8` `cX`).
+pub(crate) fn compact(n: u64) -> String {
+    // Halves round up, as JavaScript's `toFixed` does here, not to even.
+    let short = |value: f64, unit: &str| {
+        let value = format!("{:.1}", (value * 10.0).round() / 10.0);
+        format!("{}{unit}", value.strip_suffix(".0").unwrap_or(&value))
+    };
+    let thousands = (n as f64 / 100.0).round() / 10.0;
+    if thousands >= 1000.0 {
+        short(n as f64 / 1e6, "M")
+    } else if n >= 1000 {
+        short(thousands, "K")
+    } else {
+        n.to_string()
+    }
+}
+
+/// The Context card open, as Desktop's rail draws it (3.6556.2 `c2d611398`): "N% used" and
+/// "used / max", a meter of what fills the context, a row per category with its swatch,
+/// tokens and share (the deferred last, with "—"), and the lists under some categories,
+/// each folded. Until the agent told what fills it, the meter is one share of the whole.
+fn context_breakdown(session: &Session, ui: &Ui, width: f32) -> Vec<Element> {
+    use quill_model::ContextKind::*;
+    let usage = session.context_usage.as_ref().filter(|u| u.max > 0);
+    let (used, max) = usage.map_or((session.context_tokens, session.context_window), |u| {
+        (u.used, u.max)
+    });
+    if used == 0 || max == 0 {
+        return vec![muted("Send a message to see context usage.").font_size(SMALL)];
+    }
+    let percent = (used as f32 / max as f32 * 100.0).round().min(100.0) as u32;
+    let headline = Element::row(vec![
+        text(format!("{percent}% used")).centered_y(),
+        Element::spacer().flex(1.0),
+        muted(format!("{} / {}", compact(used), compact(max)))
+            .font_size(SMALL)
+            .centered_y(),
+    ])
+    .size(None, Some(20.0));
+    let Some(usage) = usage else {
+        return vec![headline, meter(&[(used, look::handle())], max, width)];
+    };
+    let of = |kind| {
+        let mut list: Vec<_> = usage
+            .categories
+            .iter()
+            .filter(|c| c.kind == kind && c.tokens > 0)
+            .collect();
+        list.sort_by_key(|c| std::cmp::Reverse(c.tokens));
+        list
+    };
+    let (taken, buffer, free, deferred) = (of(Used), of(Buffer), of(Free), of(Deferred));
+    // At most six in the meter: past that, the first five and "Other" (Desktop's `te`).
+    let colored = if taken.len() + buffer.len() > 6 {
+        5 - buffer.len().min(1)
+    } else {
+        taken.len()
+    };
+    let color = |at: usize| {
+        if at < colored {
+            look::chart_series(at)
+        } else {
+            look::chart_reference()
+        }
+    };
+    let mut segments: Vec<(u64, limn::Color)> = taken[..colored]
+        .iter()
+        .enumerate()
+        .map(|(at, c)| (c.tokens, color(at)))
+        .collect();
+    let other: u64 = taken[colored..].iter().map(|c| c.tokens).sum();
+    if other > 0 {
+        segments.push((other, look::chart_reference()));
+    }
+    segments.extend(buffer.iter().map(|c| (c.tokens, look::chart_muted())));
+    let total = max.max(
+        taken
+            .iter()
+            .chain(&buffer)
+            .chain(&free)
+            .map(|c| c.tokens)
+            .sum(),
+    );
+    let mut rows = vec![headline, meter(&segments, total, width)];
+    let row = |swatch: limn::Color, name: &str, tokens: u64, share: Option<f32>| {
+        let ink = if share.is_some() {
+            look::palette().text
+        } else {
+            look::muted()
+        };
+        Element::row(vec![
+            Element::spacer()
+                .background(swatch)
+                .radius(2.0)
+                .size(Some(10.0), Some(10.0))
+                .centered_y(),
+            Element::truncated_text(name.to_owned())
+                .font_family(FontFamily::Sans)
+                .font_size(SMALL)
+                .foreground(ink)
+                .max_width(width - NAME_ROOM)
+                .centered_y(),
+            Element::spacer().flex(1.0),
+            to_right(muted(compact(tokens)).font_size(SMALL), 44.0),
+            to_right(
+                text(share.map_or("—".into(), |s| format!("{:.1}%", s * 100.0)))
+                    .font_size(SMALL)
+                    .foreground(ink),
+                44.0,
+            ),
+        ])
+        .gap(6.0)
+        .size(None, Some(20.0))
+    };
+    let share = |tokens: u64| Some(tokens as f32 / max as f32);
+    let mut legend: Vec<Element> = taken
+        .iter()
+        .enumerate()
+        .map(|(at, c)| row(color(at), &c.name, c.tokens, share(c.tokens)))
+        .collect();
+    legend.extend(
+        buffer
+            .iter()
+            .map(|c| row(look::chart_muted(), &c.name, c.tokens, share(c.tokens))),
+    );
+    legend.extend(
+        free.iter()
+            .map(|c| row(look::chart_tint(), &c.name, c.tokens, share(c.tokens))),
+    );
+    legend.extend(
+        deferred
+            .iter()
+            .map(|c| row(look::chart_muted(), &c.name, c.tokens, None)),
+    );
+    rows.push(Element::column(legend).gap(4.0));
+    for (name, entries) in &usage.groups {
+        let id = format!("{CONTEXT_CARD}:{name}");
+        let open = ui.expanded.contains(&id);
+        let tokens: u64 = entries.iter().map(|(_, t)| *t).sum();
+        let toggle = Element::clickable(
+            id.clone(),
+            Element::row(vec![
+                caret(open).size(Some(10.0), Some(12.0)),
+                text(name.clone()).font_size(SMALL).centered_y(),
+                Element::spacer().flex(1.0),
+                to_right(muted(compact(tokens)).font_size(SMALL), 44.0),
+                to_right(muted(entries.len().to_string()).font_size(SMALL), 44.0),
+            ])
+            .gap(6.0)
+            .size(None, Some(20.0)),
+        );
+        let list = open.then(|| {
+            let list = Element::column(
+                entries
+                    .iter()
+                    .map(|(entry, tokens)| {
+                        Element::row(vec![
+                            Element::spacer().size(Some(10.0), None),
+                            Element::truncated_text(tilde(entry))
+                                .font_family(FontFamily::Sans)
+                                .font_size(SMALL)
+                                .foreground(look::muted())
+                                .max_width(width - NAME_ROOM)
+                                .centered_y(),
+                            Element::spacer().flex(1.0),
+                            to_right(muted(compact(*tokens)).font_size(SMALL), 44.0),
+                            Element::spacer().size(Some(44.0), None),
+                        ])
+                        .gap(6.0)
+                        .size(None, Some(20.0))
+                    })
+                    .collect(),
+            );
+            // A long list scrolls in its own box, as Desktop's past twelve rows (`max-h-60`).
+            if entries.len() > 12 {
+                Element::scroll(format!("{id}:scroll"), list).size(None, Some(240.0))
+            } else {
+                list
+            }
+        });
+        rows.push(Element::column(vec![
+            toggle,
+            limn::Collapse::new(format!("{id}:body"), list)
+                .expand()
+                .render(),
+        ]));
+    }
+    rows
+}
+
+/// A path under the person's home as "~/…", so a long one keeps what tells it apart.
+fn tilde(path: &str) -> String {
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() => match path.strip_prefix(&home) {
+            Some(rest) if rest.starts_with('/') => format!("~{rest}"),
+            _ => path.to_owned(),
+        },
+        _ => path.to_owned(),
+    }
+}
+
+/// What a breakdown row keeps beside its name: the swatch, tokens, share and their gaps.
+const NAME_ROOM: f32 = 10.0 + 44.0 + 44.0 + 4.0 * 6.0;
+
+/// `element` at the right end of a box `width` wide, for numbers in a column.
+fn to_right(element: Element, width: f32) -> Element {
+    Element::row(vec![Element::spacer().flex(1.0), element.centered_y()])
+        .size(Some(width), Some(20.0))
+}
+
+/// Desktop's context meter, its `StackedMeter` at size "sm": 4 px on a tinted ground, each
+/// share in its color with a 1 px seam, cut to `width`.
+fn meter(segments: &[(u64, limn::Color)], total: u64, width: f32) -> Element {
+    let total = total.max(1) as f32;
+    let parts = segments
+        .iter()
+        .map(|(tokens, color)| ((*tokens as f32 / total * width).round(), *color))
+        .filter(|(w, _)| *w >= 1.0)
+        .map(|(w, color)| Element::spacer().background(color).size(Some(w), Some(4.0)))
+        .collect();
+    Element::row(parts)
+        .gap(1.0)
+        .background(look::chart_tint())
+        .radius(2.0)
+        .size(Some(width), Some(4.0))
+        .clip_children()
 }
 
 /// Desktop's small context bar: a 24 × 6 pill filled blue to the share used.

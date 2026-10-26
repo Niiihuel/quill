@@ -1821,3 +1821,45 @@ fn settings_save_through_the_engine_and_shape_what_comes_next() {
     assert_eq!(click(&store, &mut ui, view::SETTINGS_CLOSE), vec![]);
     assert!(ui.settings_page.is_none());
 }
+
+#[test]
+fn the_context_breakdown_is_asked_for_when_its_card_opens_and_after_each_turn() {
+    let (store, mut ui) = store_with_session();
+    let click = |ui: &mut Ui| {
+        update(
+            &store,
+            ui,
+            &UiAction::Clicked {
+                id: view::CONTEXT_CARD.into(),
+            },
+        )
+    };
+    assert_eq!(click(&mut ui), vec![Intent::ContextUsage { session: 1 }]);
+    let finished = Event::Agent {
+        session: 1,
+        request: None,
+        event: AgentEvent::TurnFinished {
+            ok: true,
+            interrupted: false,
+            usage: Usage::default(),
+            error: None,
+        },
+    };
+    assert!(ui
+        .applied(&finished)
+        .contains(&Intent::ContextUsage { session: 1 }));
+    // Folded again, it is not asked for.
+    assert_eq!(click(&mut ui), vec![]);
+    assert!(!ui
+        .applied(&finished)
+        .contains(&Intent::ContextUsage { session: 1 }));
+}
+
+#[test]
+fn token_counts_read_as_desktop_writes_them() {
+    let counts: Vec<String> = [254, 999, 15_812, 999_960, 1_000_000, 1_250_000]
+        .into_iter()
+        .map(view::compact)
+        .collect();
+    assert_eq!(counts, ["254", "999", "15.8K", "1M", "1M", "1.3M"]);
+}
