@@ -13,7 +13,7 @@ use std::process::Stdio;
 mod bridge;
 mod servers;
 
-pub use quill_browser::{native, Frame, Frames, Native, Pixels};
+pub use quill_browser::{native, Frame, Frames, Native, Pixels, Present};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};

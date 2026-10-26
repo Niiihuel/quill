@@ -47,9 +47,15 @@ impl std::fmt::Debug for Native {
     }
 }
 
+/// Where a tab's GPU paints are shown besides `Frames`: called on CEF's thread with the surface
+/// and the tab's texture, the paint just copied into it. `true` says they were shown, and no
+/// frame is published for the window.
+pub type Present = Arc<dyn Fn(&str, &wgpu::Texture) -> bool + Send + Sync>;
+
 struct Shared {
     frames: Frames,
     gpu: Option<Gpu>,
+    present: Mutex<Option<Present>>,
     pages: Mutex<Pages>,
     shown: Mutex<Shown>,
     /// The engine's end of the DevTools stream, while one is open.
@@ -193,6 +199,7 @@ impl Native {
                     queue,
                     failed: Default::default(),
                 }),
+                present: Mutex::default(),
                 pages: Mutex::default(),
                 shown: Mutex::default(),
                 stream: Mutex::default(),
@@ -235,6 +242,11 @@ impl Native {
     /// shows none.
     pub(crate) fn show(&self, shown: Option<(String, String, (u32, u32))>) {
         self.shared.post(Job::Show(shown));
+    }
+
+    /// Show the tabs' GPU paints through `present` as well, as soon as each is copied.
+    pub fn present_with(&self, present: Present) {
+        *self.shared.present.lock().unwrap() = Some(present);
     }
 
     /// Draw the tab `target` at `size` CSS pixels.
@@ -920,6 +932,12 @@ impl Shared {
             submission_index: Some(submitted),
             timeout: Some(Duration::from_secs(1)),
         });
+        let present = self.present.lock().unwrap().clone();
+        if let (Some(present), Some(surface)) = (present, shown.surface.as_deref()) {
+            if present(surface, &page) {
+                return;
+            }
+        }
         if let Some(surface) = shown.surface.clone() {
             let frame = crate::Frame {
                 width: page.width() as usize,
