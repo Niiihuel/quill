@@ -3,9 +3,42 @@
 //! git colors from its static tokens; the accent is quill's own (spec.md §6).
 
 use limn::{Color, Theme};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 static DARK: AtomicBool = AtomicBool::new(false);
+/// The conversation's text size and column, as Settings chose them; read every frame.
+static CHAT: AtomicU32 = AtomicU32::new(16);
+static WIDE: AtomicBool = AtomicBool::new(false);
+
+/// The conversation's words at Settings' "Transcript text size": Desktop's Medium is 16
+///; Small and Large are inferred.
+pub fn set_text_size(size: quill_model::TextSize) {
+    use quill_model::TextSize::*;
+    let px = match size {
+        Small => 15,
+        Medium => 16,
+        Large => 18,
+    };
+    CHAT.store(px, Ordering::Relaxed);
+}
+
+pub fn chat() -> f32 {
+    CHAT.load(Ordering::Relaxed) as f32
+}
+
+/// Settings' "Transcript width": Narrow is Desktop's column; Wide is inferred.
+pub fn set_wide(wide: bool) {
+    WIDE.store(wide, Ordering::Relaxed);
+}
+
+/// The transcript and composer column, at most.
+pub fn column() -> f32 {
+    if WIDE.load(Ordering::Relaxed) {
+        960.0
+    } else {
+        770.0
+    }
+}
 
 /// Draw dark from now on, or light again; the tooltips follow at once.
 pub fn set_dark(dark: bool) {
@@ -50,6 +83,21 @@ tones! {
     /// (dark: inferred).
     awaiting_edge = hex(0xfee9bb), hex(0x5c4520);
     running = hex(0x3b5bdb), hex(0x3b5bdb);
+    /// Settings, as Desktop's draws it at 1×: the page's ground, the
+    /// column of pages beside it and their edge, the hairline under the title and between
+    /// rows, the page in view, the search field, a button's fill, the theme's track and a
+    /// switch that is on.
+    settings_page = hex(0xffffff), hex(0x1f1f1f);
+    settings_nav = hex(0xffffff), hex(0x191919);
+    settings_nav_edge = hex(0xe5e5e5), hex(0x303030);
+    settings_title_line = hex(0xe0e0e0), hex(0x3a3a3a);
+    settings_row_line = hex(0xf3f3f3), hex(0x2a2a2a);
+    settings_current = hex(0xdadada), hex(0x3b3b3b);
+    settings_field = hex(0xffffff), hex(0x242424);
+    settings_field_edge = hex(0xebebeb), hex(0x2c2c2c);
+    settings_button = hex(0xf2f2f2), hex(0x404040);
+    settings_track = hex(0xf3f3f3), hex(0x2a2a2a);
+    switch_on = hex(0x257de0), hex(0x257de0);
     /// A session named in the conversation: Desktop's blue chip
     /// (light: inferred).
     mention = hex(0x1f63b8), hex(0x8ab4f0);
@@ -125,15 +173,12 @@ tones! {
 // at 0.75×, so sizes read from them are scaled.
 /// Sidebar width with its 1 px border.
 pub const SIDEBAR_WIDTH: f32 = 288.0;
-/// The transcript and composer column, at most.
-pub const COLUMN: f32 = 770.0;
 /// The right panel: 280 px cards with 8 px around them.
 pub const PANEL_WIDTH: f32 = 296.0;
 pub const TOP_BAR: f32 = 36.0;
 pub const PANE_HEADER: f32 = 43.0;
 /// UI text; the conversation's text is larger.
 pub const BODY: f32 = 14.0;
-pub const CHAT: f32 = 16.0;
 /// Section labels and captions.
 pub const SMALL: f32 = 13.0;
 

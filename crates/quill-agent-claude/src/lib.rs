@@ -211,6 +211,15 @@ impl AgentAdapter for Claude {
         "claude"
     }
 
+    fn name(&self) -> &'static str {
+        "Claude Code"
+    }
+
+    fn tested(&self) -> &'static [&'static str] {
+        // The versions the fixtures were captured from.
+        &["2.1.310"]
+    }
+
     fn launch(&self, spec: &SessionSpec) -> LaunchPlan {
         let mut args: Vec<String> = [
             "--output-format",
@@ -234,6 +243,11 @@ impl AgentAdapter for Claude {
             // workflows it adds; choosing it again in the session turns them on.
             let effort = if effort == ULTRACODE { "xhigh" } else { effort };
             args.extend(["--effort".into(), effort.to_owned()]);
+        }
+        // Desktop's "Allow bypass permissions mode": the session may be
+        // switched to it later, which the CLI allows only when launched with this flag.
+        if spec.allow_unsafe {
+            args.push("--allow-dangerously-skip-permissions".into());
         }
         if let Some(model) = &spec.model {
             args.extend(["--model".into(), model.clone()]);
@@ -600,6 +614,7 @@ fn ready(body: &Value, ultracode: bool) -> AgentEvent {
         capabilities: AgentCapabilities {
             models: models.collect(),
             modes: MODES.map(String::from).into(),
+            unsafe_modes: vec!["bypassPermissions".into()],
             interrupt: true,
             resume: true,
             fork: true,

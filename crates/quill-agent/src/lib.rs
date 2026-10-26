@@ -33,6 +33,8 @@ pub struct SessionSpec {
     pub fork: bool,
     /// Keep `resume`'s conversation only up to this message of it, by the agent's own id.
     pub resume_at: Option<String>,
+    /// The person allowed the agent's modes that skip every approval.
+    pub allow_unsafe: bool,
 }
 
 /// One model the agent offers, with the efforts it accepts.
@@ -49,6 +51,9 @@ pub struct AgentCapabilities {
     pub models: Vec<ModelInfo>,
     /// Permission modes, in the agent's own words (`default`, `acceptEdits`, `plan`…).
     pub modes: Vec<String>,
+    /// Modes that skip every approval, offered only once the person allows them.
+    #[serde(default)]
+    pub unsafe_modes: Vec<String>,
     pub interrupt: bool,
     pub resume: bool,
     pub fork: bool,
@@ -305,6 +310,10 @@ pub struct Decoded {
 /// One coding-agent CLI.
 pub trait AgentAdapter: Send {
     fn id(&self) -> AgentId;
+    /// The agent's name for people, as Settings lists it.
+    fn name(&self) -> &'static str;
+    /// The versions of the agent's program quill was tested with.
+    fn tested(&self) -> &'static [&'static str];
     fn launch(&self, spec: &SessionSpec) -> LaunchPlan;
     /// Lines for `command`. Commands the agent answers get an id, reported back as [`AgentEvent::Reply`].
     fn encode(&mut self, command: AgentCommand) -> Vec<String>;

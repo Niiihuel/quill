@@ -1689,3 +1689,100 @@ fn agent_in(store: &mut Store, session: SessionId, text: &str) {
         },
     });
 }
+
+#[test]
+fn settings_save_through_the_engine_and_shape_what_comes_next() {
+    use quill_model::{AgentInfo, Settings, TextSize};
+    let (mut store, mut ui) = store_with_session();
+    agent(
+        &mut store,
+        AgentEvent::Ready {
+            version: "2.1.310".into(),
+            capabilities: quill_model::AgentCapabilities {
+                models: vec![quill_model::ModelInfo {
+                    id: "haiku".into(),
+                    name: "Haiku".into(),
+                    efforts: vec!["low".into(), "high".into()],
+                }],
+                modes: vec!["default".into(), "plan".into()],
+                unsafe_modes: vec!["bypassPermissions".into()],
+                ..Default::default()
+            },
+            mode: None,
+        },
+    );
+    let heard = |ui: &mut Ui, settings: Settings| {
+        ui.applied(&Event::Settings {
+            settings,
+            agents: vec![AgentInfo {
+                id: "claude".into(),
+                name: "Claude Code".into(),
+                tested: vec!["2.1.310".into()],
+            }],
+        });
+    };
+    heard(&mut ui, Settings::default());
+    assert_eq!(
+        click(&store, &mut ui, view::SETTINGS_OPEN),
+        vec![Intent::MeasureStorage]
+    );
+    // A switch is kept by the engine before the UI shows it.
+    let saved = click(&store, &mut ui, "set:keep_awake");
+    let [Intent::SaveSettings(settings)] = saved.as_slice() else {
+        panic!("{saved:?}");
+    };
+    assert!(!settings.keep_awake && ui.settings.keep_awake);
+    // A select opens, and a choice closes it and saves.
+    click(&store, &mut ui, "set:text_size");
+    assert_eq!(ui.settings_menu.as_deref(), Some("text_size"));
+    let saved = click(&store, &mut ui, "set:text_size=large");
+    assert!(ui.settings_menu.is_none());
+    assert!(
+        matches!(saved.as_slice(), [Intent::SaveSettings(s)] if s.text_size == TextSize::Large)
+    );
+    // An agent's defaults: a new model drops the effort chosen for the old one.
+    let mut settings = Settings::default();
+    settings.agents.entry("claude".into()).or_default().effort = Some("high".into());
+    heard(&mut ui, settings);
+    let saved = click(&store, &mut ui, "set:agent:claude:model=haiku");
+    let [Intent::SaveSettings(settings)] = saved.as_slice() else {
+        panic!("{saved:?}");
+    };
+    let claude = settings.agent("claude");
+    assert_eq!(
+        (claude.model.as_deref(), claude.effort),
+        (Some("haiku"), None)
+    );
+    // Heard back: a new session starts with them, and the text takes its size.
+    let mut settings = settings.clone();
+    settings.text_size = TextSize::Large;
+    settings
+        .agents
+        .entry("claude".into())
+        .or_default()
+        .allow_unsafe = true;
+    heard(&mut ui, settings);
+    click(&store, &mut ui, view::NEW_SESSION);
+    assert_eq!(ui.model.as_deref(), Some("haiku"));
+    assert_eq!(look::chat(), 18.0);
+    look::set_text_size(TextSize::Medium);
+    // The page draws, the search finds across pages, and bypass is offered once allowed.
+    let window = limn::Size::new(1408.0, 844.0);
+    click(&store, &mut ui, "settings:page:agent:claude");
+    let frame = UiTree::new(view(&store, &ui, window)).layout(window);
+    assert!(frame
+        .regions
+        .iter()
+        .any(|r| r.id == "set:agent:claude:unsafe"));
+    ui.settings_query = "awake".into();
+    let frame = UiTree::new(view(&store, &ui, window)).layout(window);
+    assert!(frame.regions.iter().any(|r| r.id == "set:keep_awake"));
+    assert!(!frame
+        .regions
+        .iter()
+        .any(|r| r.id == "set:agent:claude:unsafe"));
+    ui.selected = Some(1);
+    assert!(view::menu_modes(store.session(1), &ui).contains(&"bypassPermissions".to_string()));
+    assert_eq!(click(&store, &mut ui, view::SETTINGS_CLOSE), vec![]);
+    assert!(ui.settings_page.is_none());
+}

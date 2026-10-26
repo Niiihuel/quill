@@ -135,6 +135,8 @@ pub struct Session {
     pub parent: Option<SessionId>,
     /// A side chat (`/btw`): an aside of its parent's, not work started for it.
     pub aside: bool,
+    /// The version of the agent's program, as it said when it started.
+    pub agent_version: Option<String>,
 }
 
 /// Work the agent runs beside its turns, as Desktop counts "1 running task".
@@ -219,6 +221,7 @@ impl Store {
                 touched: 0,
                 parent: None,
                 aside: false,
+                agent_version: None,
             }),
             Event::Status { session, status } => {
                 if let Some(s) = self.session_mut(session) {
@@ -436,7 +439,11 @@ impl Store {
                     s.items.push(Item::Forwarded { from });
                 }
             }
-            Event::Reading { .. } | Event::FileRead { .. } | Event::FileWriteFailed { .. } => {}
+            Event::Reading { .. }
+            | Event::FileRead { .. }
+            | Event::FileWriteFailed { .. }
+            | Event::Settings { .. }
+            | Event::Storage { .. } => {}
         }
     }
 }
@@ -451,8 +458,11 @@ fn agent_event(s: &mut Session, event: AgentEvent) {
     }
     match event {
         AgentEvent::Ready {
-            capabilities, mode, ..
+            version,
+            capabilities,
+            mode,
         } => {
+            s.agent_version = Some(version);
             s.capabilities = Some(capabilities);
             if let Some(mode) = mode {
                 s.mode = mode;
@@ -726,8 +736,6 @@ pub struct Ui {
     pub deleting: Option<SessionId>,
     /// What the search dialog looks for, while it is open.
     pub search: Option<String>,
-    /// The branch bar's pull request opens as a draft; the last kind chosen stays.
-    pub pr_draft: bool,
     /// Sessions whose branch bar the person closed.
     pub bar_closed: Vec<SessionId>,
     /// How the sidebar groups and orders the sessions.
@@ -753,6 +761,18 @@ pub struct Ui {
     /// The reply being read aloud, by its session and place.
     pub reading: Option<(SessionId, usize)>,
     pub document: Option<Document>,
+    /// The settings in force, as the engine last kept them, and the agents it can run.
+    pub settings: quill_model::Settings,
+    pub agents: Vec<quill_model::AgentInfo>,
+    /// Settings, while open: the page shown, what its search looks for, and the select whose
+    /// list is open.
+    pub settings_page: Option<String>,
+    pub settings_query: String,
+    pub settings_menu: Option<String>,
+    /// Where quill keeps its data and how much it takes, as last measured.
+    pub storage: Option<(PathBuf, u64)>,
+    /// Things quill moves itself jump to where they go, as limn's do under reduced motion.
+    pub reduced_motion: bool,
     /// How many of each session's items the person has had in view.
     pub seen: std::collections::HashMap<SessionId, usize>,
     /// Where the items the person had not seen began when they opened each session: the
@@ -841,13 +861,17 @@ fn session_clicked(store: &Store, ui: &mut Ui, id: &str) -> Option<Vec<Intent>> 
         ui.open_menu = None;
     } else if let Some(kind) = id.strip_prefix("pr-kind:") {
         ui.open_menu = None;
-        ui.pr_draft = kind == "draft";
+        // The kind chosen is the next one's too, kept in Settings.
+        return Some(vec![Intent::SaveSettings(quill_model::Settings {
+            pr_draft: kind == "draft",
+            ..ui.settings.clone()
+        })]);
     } else if id == view::PR_CREATE {
         let session = ui.selected.and_then(|s| store.session(s));
         return Some(match session {
             Some(s) if view::pr_blocked(s).is_none() => vec![Intent::Send {
                 session: s.id,
-                text: pr_request(ui.pr_draft),
+                text: pr_request(ui.settings.pr_draft),
             }],
             _ => vec![],
         });
@@ -1194,7 +1218,6 @@ impl Ui {
             title_edit: None,
             deleting: None,
             search: None,
-            pr_draft: false,
             bar_closed: vec![],
             group_by: GroupBy::default(),
             sort_by: SortBy::default(),
@@ -1209,6 +1232,13 @@ impl Ui {
             copied: None,
             reading: None,
             document: None,
+            settings: Default::default(),
+            agents: vec![],
+            settings_page: None,
+            settings_query: String::new(),
+            settings_menu: None,
+            storage: None,
+            reduced_motion: false,
             seen: Default::default(),
             new_from: Default::default(),
             effort_thumb: None,
@@ -1313,11 +1343,30 @@ impl Ui {
             .launch(open(self.sidebar_open, look::SIDEBAR_WIDTH), motion, now);
         self.panel_shown
             .launch(open(self.panel_open, look::PANEL_WIDTH), motion, now);
+        if self.reduced_motion {
+            let (sidebar, panel) = (self.sidebar_shown.target(), self.panel_shown.target());
+            self.sidebar_shown.snap_to(sidebar, now);
+            self.panel_shown.snap_to(panel, now);
+        }
         let ultra = view::effort_shown(store, self).as_deref() == Some("ultracode");
         match (ultra, self.ultra_since) {
             (true, None) => self.ultra_since = Some(std::time::Instant::now()),
             (false, Some(_)) => self.ultra_since = None,
             _ => {}
+        }
+    }
+
+    /// What a new session starts with: the agent's defaults from Settings, where it has any.
+    fn take_defaults(&mut self) {
+        let defaults = self.settings.agent(&self.agent);
+        if let Some(model) = defaults.model {
+            self.model = Some(model);
+        }
+        if let Some(effort) = defaults.effort {
+            self.effort = Some(effort);
+        }
+        if let Some(mode) = defaults.mode {
+            self.mode = mode;
         }
     }
 
@@ -1368,6 +1417,20 @@ impl Ui {
     }
 
     fn applied_to_view(&mut self, event: &Event) -> Vec<Intent> {
+        if let Event::Settings { settings, agents } = event {
+            look::set_text_size(settings.text_size);
+            look::set_wide(settings.wide);
+            self.settings = settings.clone();
+            self.agents = agents.clone();
+            if self.selected.is_none() {
+                self.take_defaults();
+            }
+            return vec![];
+        }
+        if let Event::Storage { path, bytes } = event {
+            self.storage = Some((path.clone(), *bytes));
+            return vec![];
+        }
         if let Event::Reading {
             session,
             reading: false,
@@ -1540,6 +1603,23 @@ pub fn update(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Intent
         UiAction::InputChanged { id, value } if id == view::COMPOSER => {
             ui.prompt = value.clone();
             vec![]
+        }
+        UiAction::InputChanged { id, value } if id == view::SETTINGS_SEARCH => {
+            ui.settings_query = value.clone();
+            vec![]
+        }
+        UiAction::InputChanged { id, value } if id.starts_with("set:agent:") => {
+            let Some(agent) = id
+                .strip_prefix("set:agent:")
+                .and_then(|r| r.strip_suffix(":program"))
+            else {
+                return vec![];
+            };
+            let mut settings = ui.settings.clone();
+            let program = value.trim();
+            settings.agents.entry(agent.to_owned()).or_default().program =
+                (!program.is_empty()).then(|| program.to_owned());
+            vec![Intent::SaveSettings(settings)]
         }
         UiAction::InputChanged { id, value } if id == view::SIDE_FIELD => {
             ui.side_reply = value.clone();
@@ -1756,7 +1836,11 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         ui.selected = None;
         ui.search = None;
         ui.title_edit = None;
+        ui.take_defaults();
         return vec![];
+    }
+    if let Some(intents) = settings_clicked(ui, id) {
+        return intents;
     }
     if let Some(intents) = session_clicked(store, ui, id) {
         return intents;
@@ -2251,6 +2335,91 @@ fn answer(store: &Store, ui: &mut Ui, rest: &str) -> Vec<Intent> {
         }
     }
     vec![]
+}
+
+/// Settings' own clicks: open and close, pick a page, and change a
+/// setting, which the engine keeps before the UI shows it. `None` when `id` is none of
+/// them. A select reports its trigger, `set:{name}`, then a choice, `set:{name}={value}`.
+fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
+    use quill_model::{Motion, TextSize, Theme};
+    if id == view::SETTINGS_OPEN {
+        ui.settings_page = Some(view::SETTINGS_FIRST.into());
+        ui.settings_query.clear();
+        return Some(vec![Intent::MeasureStorage]);
+    }
+    ui.settings_page.as_ref()?;
+    if id == view::SETTINGS_CLOSE {
+        ui.settings_page = None;
+        ui.settings_menu = None;
+        return Some(vec![]);
+    }
+    if let Some(page) = id.strip_prefix("settings:page:") {
+        ui.settings_page = Some(page.to_owned());
+        ui.settings_query.clear();
+        return Some(vec![]);
+    }
+    let rest = id.strip_prefix("set:")?;
+    if let Some(menu) = rest.strip_suffix(":dismiss") {
+        if ui.settings_menu.as_deref() == Some(menu) {
+            ui.settings_menu = None;
+        }
+        return Some(vec![]);
+    }
+    let mut settings = ui.settings.clone();
+    if let Some((name, value)) = rest.split_once('=') {
+        ui.settings_menu = None;
+        match (name, value) {
+            ("theme", "system") => settings.theme = Theme::System,
+            ("theme", "light") => settings.theme = Theme::Light,
+            ("theme", "dark") => settings.theme = Theme::Dark,
+            ("text_size", "small") => settings.text_size = TextSize::Small,
+            ("text_size", "medium") => settings.text_size = TextSize::Medium,
+            ("text_size", "large") => settings.text_size = TextSize::Large,
+            ("width", value) => settings.wide = value == "wide",
+            ("motion", "system") => settings.motion = Motion::System,
+            ("motion", "reduced") => settings.motion = Motion::Reduced,
+            ("motion", "full") => settings.motion = Motion::Full,
+            ("pr_kind", value) => settings.pr_draft = value == "draft",
+            (name, value) => {
+                let (agent, field) = name.strip_prefix("agent:")?.rsplit_once(':')?;
+                let entry = settings.agents.entry(agent.to_owned()).or_default();
+                // An empty choice leaves it to the agent.
+                let value = (!value.is_empty()).then(|| value.to_owned());
+                match field {
+                    "model" => {
+                        entry.model = value;
+                        // An effort the new model lacks would not start.
+                        entry.effort = None;
+                    }
+                    "effort" => entry.effort = value,
+                    "mode" => entry.mode = value,
+                    _ => return None,
+                }
+            }
+        }
+        return Some(vec![Intent::SaveSettings(settings)]);
+    }
+    match rest {
+        "keep_awake" => settings.keep_awake = !settings.keep_awake,
+        "attention" => settings.attention = !settings.attention,
+        "login" => settings.open_at_login = !settings.open_at_login,
+        other => match other
+            .strip_prefix("agent:")
+            .and_then(|r| r.strip_suffix(":unsafe"))
+        {
+            Some(agent) => {
+                let entry = settings.agents.entry(agent.to_owned()).or_default();
+                entry.allow_unsafe = !entry.allow_unsafe;
+            }
+            // A select's trigger opens its list, or closes it.
+            None => {
+                ui.settings_menu =
+                    (ui.settings_menu.as_deref() != Some(other)).then(|| other.to_owned());
+                return Some(vec![]);
+            }
+        },
+    }
+    Some(vec![Intent::SaveSettings(settings)])
 }
 
 /// Write what the document pane holds over its file.

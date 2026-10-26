@@ -28,6 +28,10 @@ struct App {
     transcript: Option<(SessionId, usize, usize)>,
     /// The same of the session beside it, in the side pane.
     beside: Option<(SessionId, usize, usize)>,
+    /// The motion Settings asked for that is in force.
+    applied: Option<quill_model::Motion>,
+    /// `QUILL_THEME` pins the theme over Settings, for demos and captures.
+    pinned_theme: bool,
 }
 
 impl App {
@@ -155,6 +159,38 @@ impl App {
         });
     }
 
+    /// The theme and the motion Settings chose, in force from this frame: "System" follows the
+    /// desktop's theme as it changes, and its motion preference where it can be read.
+    fn apply_look(&mut self, ctx: &egui::Context) {
+        use quill_model::{Motion, Theme};
+        if !self.pinned_theme {
+            let dark = match self.ui.settings.theme {
+                Theme::Light => false,
+                Theme::Dark => true,
+                Theme::System => ctx.system_theme() != Some(egui::Theme::Light),
+            };
+            if dark != quill_ui::look::is_dark() {
+                ctx.set_theme(if dark {
+                    egui::Theme::Dark
+                } else {
+                    egui::Theme::Light
+                });
+                quill_ui::look::set_dark(dark);
+            }
+        }
+        let motion = self.ui.settings.motion;
+        if self.applied != Some(motion) {
+            self.applied = Some(motion);
+            let reduced = match motion {
+                Motion::Reduced => true,
+                Motion::Full => false,
+                Motion::System => limn_egui::prefers_reduced_motion().unwrap_or(false),
+            };
+            self.tree.set_reduced_motion(reduced);
+            self.ui.reduced_motion = reduced;
+        }
+    }
+
     fn dispatch(&mut self, intents: Vec<Intent>) {
         for intent in intents {
             quill_ui::decided(&mut self.store, &intent);
@@ -180,11 +216,30 @@ impl eframe::App for App {
                 .is_scroll_at_end(&format!("side:{id}:scroll"), 8.0)
         });
         let events = std::mem::take(&mut *self.inbox.lock().unwrap());
+        let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
         for event in events {
+            // A session that finished or waits on the person flags quill while it is behind
+            // other windows, as Desktop's "Draw attention on notifications".
+            let calls = matches!(
+                &event,
+                Event::Agent {
+                    event: quill_model::AgentEvent::TurnFinished { .. },
+                    ..
+                } | Event::Status {
+                    status: quill_model::SessionStatus::Awaiting,
+                    ..
+                }
+            );
+            if calls && !focused && self.ui.settings.attention {
+                ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                    egui::UserAttentionType::Informational,
+                ));
+            }
             let intents = self.ui.applied(&event);
             self.store.apply(event);
             self.dispatch(intents);
         }
+        self.apply_look(&ctx);
         let attached = std::mem::take(&mut *self.attached.lock().unwrap());
         if !attached.is_empty() {
             // Paths inside the folder are written from it, as the agent reads them.
@@ -224,6 +279,12 @@ impl eframe::App for App {
         let mut focus_terminal = false;
         let was_renaming = self.ui.terminal.renaming.is_some();
         let was_titling = self.ui.title_edit.is_some();
+        // Ctrl+, opens Settings, as in Desktop.
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Comma)) {
+            actions.push(limn::UiAction::Clicked {
+                id: quill_ui::view::SETTINGS_OPEN.into(),
+            });
+        }
         // Ctrl+` shows and hides the terminal, as in Desktop; limn has no key for it.
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Backtick)) {
             actions.push(limn::UiAction::Clicked {
@@ -351,6 +412,12 @@ impl eframe::App for App {
                     let _ = std::process::Command::new("xdg-open")
                         .arg(&session.cwd)
                         .spawn();
+                }
+                // Settings' data folder shows in the desktop's own file manager.
+                if id == quill_ui::view::SETTINGS_STORAGE_OPEN {
+                    if let Some((path, _)) = &self.ui.storage {
+                        let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+                    }
                 }
                 match id.as_str() {
                     quill_ui::view::ATTACH_FILES => self.attach(&ctx, false),
@@ -590,6 +657,8 @@ fn main() -> eframe::Result {
                 terminals: HashMap::new(),
                 transcript: None,
                 beside: None,
+                applied: None,
+                pinned_theme: std::env::var_os("QUILL_THEME").is_some(),
                 fonts_attached: false,
             }))
         }),

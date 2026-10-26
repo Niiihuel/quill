@@ -17,6 +17,9 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 /// Where events go; the app wakes its window from here.
 pub type Sink = Arc<dyn Fn(Event) + Send + Sync>;
 
+/// The agents quill has adapters for, as Settings lists them.
+const AGENTS: [&str; 1] = ["claude"];
+
 /// The adapter for an agent id; `None` for agents quill does not have yet.
 fn adapter(agent: &str) -> Option<Box<dyn AgentAdapter>> {
     match agent {
@@ -39,6 +42,8 @@ pub struct Config {
     pub database: Option<PathBuf>,
     /// Where the shadow repositories of session folders live; `None` attributes no files.
     pub snapshots: Option<PathBuf>,
+    /// Where the person's settings are kept; `None` keeps them in memory only.
+    pub settings: Option<PathBuf>,
 }
 
 impl Config {
@@ -50,9 +55,14 @@ impl Config {
                 std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share"))
             })
             .unwrap_or_else(|| ".".into());
+        let config = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+            .unwrap_or_else(|| ".".into());
         Self {
             database: Some(data.join("quill/quill.db")),
             snapshots: Some(data.join("quill/snapshots")),
+            settings: Some(config.join("quill/settings.json")),
             ..Self::default()
         }
     }
@@ -118,7 +128,12 @@ enum Internal {
 async fn route(mut rx: UnboundedReceiver<Intent>, ui: Sink, config: Config) {
     let (internal, mut internal_rx) = unbounded_channel();
     let mut router = Router::new(ui, config, internal);
+    let path = router.config.settings.clone();
+    router.settings = tokio::task::spawn_blocking(move || read_settings(path.as_deref()))
+        .await
+        .unwrap_or_default();
     router.restore();
+    router.announce_settings();
     loop {
         tokio::select! {
             intent = rx.recv() => match intent {
@@ -162,6 +177,9 @@ struct Router {
         tokio::sync::oneshot::Sender<()>,
         tokio::task::JoinHandle<()>,
     )>,
+    settings: quill_model::Settings,
+    /// What keeps the computer from idle sleep while an agent works.
+    awake: Option<Child>,
 }
 
 impl Router {
@@ -205,6 +223,62 @@ impl Router {
             reports: HashMap::new(),
             busy: Default::default(),
             reading: None,
+            settings: Default::default(),
+            awake: None,
+        }
+    }
+
+    /// The settings in force and the agents quill can run, for the UI.
+    fn announce_settings(&self) {
+        let agents = AGENTS
+            .iter()
+            .filter_map(|id| adapter(id))
+            .map(|a| quill_model::AgentInfo {
+                id: a.id().to_owned(),
+                name: a.name().to_owned(),
+                tested: a.tested().iter().map(|v| (*v).to_owned()).collect(),
+            })
+            .collect();
+        (self.ui)(Event::Settings {
+            settings: self.settings.clone(),
+            agents,
+        });
+    }
+
+    /// The program an agent runs as: the tests' stand-in, the person's choice, or its own.
+    fn program(&self, agent: &str) -> Option<String> {
+        self.config
+            .programs
+            .get(agent)
+            .cloned()
+            .or_else(|| self.settings.agent(agent).program)
+    }
+
+    /// Hold the computer awake while an agent works and the person wants it, as Desktop's
+    /// "Keep computer awake while Claude works": idle sleep is held
+    /// off, the display may still turn off and the lid still sleeps (logind ignores
+    /// inhibitors for the lid by default).
+    fn hold_awake(&mut self) {
+        let want = self.settings.keep_awake && !self.busy.is_empty();
+        match (want, self.awake.is_some()) {
+            (true, false) => {
+                self.awake = Command::new("systemd-inhibit")
+                    .args([
+                        "--what=sleep",
+                        "--who=quill",
+                        "--why=An agent is working",
+                        "sleep",
+                        "infinity",
+                    ])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .kill_on_drop(true)
+                    .spawn()
+                    .ok();
+            }
+            (false, true) => self.awake = None,
+            _ => {}
         }
     }
 
@@ -237,7 +311,8 @@ impl Router {
                 continue;
             };
             let (tx, rx) = unbounded_channel();
-            let program = self.config.programs.get(&restored.new.agent).cloned();
+            let program = self.program(&restored.new.agent);
+            let allow_unsafe = self.settings.agent(&restored.new.agent).allow_unsafe;
             let mut actor = Actor::new(
                 session,
                 restored.new,
@@ -247,6 +322,7 @@ impl Router {
                 self.sink.clone(),
             );
             actor.spec.resume = restored.resume;
+            actor.spec.allow_unsafe = allow_unsafe;
             // A fork that has said nothing yet still continues where it was forked from.
             if let (None, Some((from, at))) = (&actor.spec.resume, restored.forked) {
                 let mut ids = self.agent_ids.lock().unwrap();
@@ -308,8 +384,10 @@ impl Router {
             branch,
         });
         let (tx, rx) = unbounded_channel();
-        let program = self.config.programs.get(&new.agent).cloned();
+        let program = self.program(&new.agent);
+        let allow_unsafe = self.settings.agent(&new.agent).allow_unsafe;
         let mut actor = Actor::new(id, new, adapter, program, tx.clone(), self.sink.clone());
+        actor.spec.allow_unsafe = allow_unsafe;
         actor.shadow_root = self.config.snapshots.clone();
         actor.route = Some(self.internal.clone());
         if let Some((from, at)) = fork_of {
@@ -493,6 +571,48 @@ impl Router {
                 }
                 return;
             }
+            Intent::SaveSettings(settings) => {
+                let path = self.config.settings.clone();
+                let (kept, login) = (settings.clone(), settings.open_at_login);
+                let saved = tokio::task::spawn_blocking(move || {
+                    write_settings(path.as_deref(), &kept)?;
+                    start_at_login(login)
+                })
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()));
+                if let Err(error) = saved {
+                    (self.ui)(Event::Status {
+                        session: 0,
+                        status: SessionStatus::Failed(format!("settings not saved: {error}")),
+                    });
+                    // What is in force stays as it was, and the UI hears it again.
+                    self.announce_settings();
+                    return;
+                }
+                self.settings = settings;
+                self.hold_awake();
+                self.announce_settings();
+                return;
+            }
+            Intent::MeasureStorage => {
+                let path = self
+                    .config
+                    .database
+                    .as_ref()
+                    .and_then(|db| db.parent())
+                    .map(PathBuf::from);
+                if let Some(path) = path {
+                    let ui = self.ui.clone();
+                    tokio::spawn(async move {
+                        let at = path.clone();
+                        let bytes = tokio::task::spawn_blocking(move || size_of(&at))
+                            .await
+                            .unwrap_or(0);
+                        ui(Event::Storage { path, bytes });
+                    });
+                }
+                return;
+            }
             Intent::ReadAloud { session, text } => {
                 // One voice at a time: a new reading, or none, ends the one under way first.
                 if let Some((stop, done)) = self.reading.take() {
@@ -633,9 +753,11 @@ impl Router {
                     self.busy.remove(&session);
                     self.flush(session);
                 }
+                self.hold_awake();
             }
             Internal::TurnEnded { session, text } => {
                 self.busy.remove(&session);
+                self.hold_awake();
                 if let Some(&parent) = self.parents.get(&session) {
                     let title = self.titles.get(&session).cloned().unwrap_or_default();
                     self.reports
@@ -938,6 +1060,7 @@ impl Actor {
             resume: None,
             fork: false,
             resume_at: None,
+            allow_unsafe: false,
         };
         Self {
             id,
@@ -1284,6 +1407,72 @@ impl Actor {
 
 /// The message that tells a session what the sessions it started said, in quill's words for
 /// what Desktop sends (3.6556.2 `<side-sessions-event>`).
+/// The settings kept at `path`; the defaults when there is none or it does not read.
+fn read_settings(path: Option<&std::path::Path>) -> quill_model::Settings {
+    path.and_then(|p| std::fs::read(p).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+/// Keep `settings` at `path`, whole or not at all: written beside it, then moved over it.
+fn write_settings(
+    path: Option<&std::path::Path>,
+    settings: &quill_model::Settings,
+) -> Result<(), String> {
+    let Some(path) = path else {
+        return Ok(());
+    };
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_vec_pretty(settings).map_err(|e| e.to_string())?;
+    let next = path.with_extension("json.new");
+    std::fs::write(&next, json).map_err(|e| e.to_string())?;
+    std::fs::rename(&next, path).map_err(|e| e.to_string())
+}
+
+/// Start quill when the person logs in, or no longer: the desktop's autostart entry
+/// (freedesktop Desktop Application Autostart), written for this program or removed.
+fn start_at_login(on: bool) -> Result<(), String> {
+    let Some(config) = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+    else {
+        return Ok(());
+    };
+    let entry = config.join("autostart/quill.desktop");
+    if !on {
+        return match std::fs::remove_file(&entry) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+            _ => Ok(()),
+        };
+    }
+    let program = std::env::current_exe().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(entry.parent().unwrap_or(&config)).map_err(|e| e.to_string())?;
+    std::fs::write(
+        &entry,
+        format!(
+            "[Desktop Entry]\nType=Application\nName=quill\nExec=\"{}\"\nX-GNOME-Autostart-enabled=true\n",
+            program.display()
+        ),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// The bytes the files under `path` take.
+fn size_of(path: &std::path::Path) -> u64 {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => std::fs::read_dir(path)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| size_of(&entry.path()))
+            .sum(),
+        Ok(meta) => meta.len(),
+        Err(_) => 0,
+    }
+}
+
 /// The largest file the document pane opens.
 const DOCUMENT_LIMIT: u64 = 2 << 20;
 
@@ -1376,6 +1565,29 @@ fn report_text(reports: &[quill_model::Report]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_are_kept_whole_and_an_unknown_key_reads_as_defaults() {
+        let dir = std::env::temp_dir().join(format!("quill-settings-{}", std::process::id()));
+        let path = dir.join("settings.json");
+        assert_eq!(read_settings(Some(&path)), quill_model::Settings::default());
+        let mut settings = quill_model::Settings {
+            wide: true,
+            ..Default::default()
+        };
+        settings.agents.insert(
+            "claude".into(),
+            quill_model::AgentSettings {
+                model: Some("haiku".into()),
+                ..Default::default()
+            },
+        );
+        write_settings(Some(&path), &settings).unwrap();
+        assert_eq!(read_settings(Some(&path)), settings);
+        std::fs::write(&path, r#"{"wide": true, "someday": 1}"#).unwrap();
+        assert!(read_settings(Some(&path)).wide);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn a_document_stays_inside_its_sessions_folder() {

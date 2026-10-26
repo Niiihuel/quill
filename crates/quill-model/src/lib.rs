@@ -55,6 +55,106 @@ pub struct Repo {
     pub base: Option<String>,
 }
 
+/// What the person chose in Settings, as the engine keeps it in `settings.json`. A key it
+/// does not know is dropped and a missing one takes its default, so an older or newer file
+/// still reads.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    pub theme: Theme,
+    /// The size of the conversation's words.
+    pub text_size: TextSize,
+    /// The conversation in a wider column.
+    pub wide: bool,
+    pub motion: Motion,
+    /// Keep the computer from idle sleep while an agent works.
+    pub keep_awake: bool,
+    /// Ask the desktop to draw attention to quill when a session finishes or waits on the
+    /// person while quill is not in front.
+    pub attention: bool,
+    /// A pull request opens as a draft unless the person picks otherwise.
+    pub pr_draft: bool,
+    /// Start quill when the person logs in.
+    pub open_at_login: bool,
+    /// Each agent's own, by its id.
+    pub agents: std::collections::BTreeMap<String, AgentSettings>,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            theme: Theme::System,
+            text_size: TextSize::Medium,
+            wide: false,
+            motion: Motion::System,
+            // Desktop keeps the computer awake by default and does not flash the app icon
+            //; quill has no notifications yet, so drawing attention is
+            // its only signal and starts on (inferred).
+            keep_awake: true,
+            attention: true,
+            pr_draft: false,
+            open_at_login: false,
+            agents: Default::default(),
+        }
+    }
+}
+
+impl Settings {
+    pub fn agent(&self, agent: &str) -> AgentSettings {
+        self.agents.get(agent).cloned().unwrap_or_default()
+    }
+}
+
+/// What the person chose for one agent.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct AgentSettings {
+    /// The agent's program, when it is not the one on `PATH`.
+    pub program: Option<String>,
+    /// What a new session starts with; `None` leaves it to the agent.
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub mode: Option<String>,
+    /// Offer the agent's modes that skip every approval.
+    pub allow_unsafe: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TextSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Motion {
+    #[default]
+    System,
+    Reduced,
+    Full,
+}
+
+/// An agent quill can run: its id, its name for people, and the versions of its program
+/// quill was tested with.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AgentInfo {
+    pub id: String,
+    pub name: String,
+    pub tested: Vec<String>,
+}
+
 /// What the UI asks of the engine.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Intent {
@@ -136,6 +236,11 @@ pub enum Intent {
         path: String,
         text: String,
     },
+    /// Keep these settings and act on them (start at login, keep awake…); answered by
+    /// `Event::Settings`.
+    SaveSettings(Settings),
+    /// How much room quill's own data takes; answered by `Event::Storage`.
+    MeasureStorage,
     /// Read a reply aloud with the system's voice, stopping any other; `None` stops.
     ReadAloud {
         session: SessionId,
@@ -305,6 +410,17 @@ pub enum Event {
         path: String,
         error: String,
     },
+    /// The settings in force, and the agents quill can run. Not a session's: it is sent at
+    /// start and after each save.
+    Settings {
+        settings: Settings,
+        agents: Vec<AgentInfo>,
+    },
+    /// Where quill keeps its data and how many bytes it takes.
+    Storage {
+        path: PathBuf,
+        bytes: u64,
+    },
     /// What the session hears next was passed on by the session `from`, which started it.
     Forwarded {
         session: SessionId,
@@ -368,6 +484,8 @@ impl Event {
             | Event::Proposed { session, .. }
             | Event::ProposalAnswered { session, .. }
             | Event::Reported { session, .. } => *session,
+            // quill's own, not a session's: no session has id 0.
+            Event::Settings { .. } | Event::Storage { .. } => 0,
         }
     }
 }

@@ -23,6 +23,7 @@ fn engine() -> (Engine, Receiver<Event>) {
         programs,
         database: None,
         snapshots: None,
+        settings: None,
     };
     let engine = Engine::start_with(move |event| drop(tx.send(event)), config);
     (engine, rx)
@@ -192,6 +193,7 @@ fn a_kept_session_comes_back_and_continues() {
             programs,
             database: Some(database.clone()),
             snapshots: None,
+            settings: None,
         };
         (
             Engine::start_with(move |event| drop(tx.send(event)), config),
@@ -284,6 +286,7 @@ fn a_request_is_attributed_and_its_undo_puts_files_back() {
         programs,
         database: None,
         snapshots: Some(snapshots.clone()),
+        settings: None,
     };
     let engine = Engine::start_with(move |event| drop(tx.send(event)), config);
     let cwd = workdir("rewind");
@@ -335,6 +338,7 @@ fn a_name_and_a_pin_are_kept_and_a_deleted_session_is_gone() {
             programs,
             database: Some(database.clone()),
             snapshots: None,
+            settings: None,
         };
         (
             Engine::start_with(move |event| drop(tx.send(event)), config),
@@ -434,7 +438,11 @@ fn a_name_and_a_pin_are_kept_and_a_deleted_session_is_gone() {
 
     let (engine, rx) = start();
     new_session(&engine, "simple");
-    let events = until(&rx, |e| matches!(e, Event::SessionCreated { .. }));
+    // The settings come first at every start; they are no session's.
+    let events: Vec<Event> = until(&rx, |e| matches!(e, Event::SessionCreated { .. }))
+        .into_iter()
+        .filter(|e| !matches!(e, Event::Settings { .. }))
+        .collect();
     assert_eq!(
         events.len(),
         1,

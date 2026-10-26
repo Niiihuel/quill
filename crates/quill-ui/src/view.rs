@@ -1,7 +1,7 @@
 //! The window: sidebar of sessions, transcript and composer (features/code-*.md, docs/ui.md §2).
 
 use crate::icons;
-use crate::look::{self, BODY, CHAT, COLUMN, SMALL};
+use crate::look::{self, chat, BODY, SMALL};
 use crate::{Item, Pane, Session, Store, ToolResult, Ui};
 use limn::{
     Button, ButtonGroup, ButtonSize, ButtonVariant, Component, ComponentPalette, Composer,
@@ -66,6 +66,13 @@ pub const FILTER_RESET: &str = "filter:reset";
 pub const SIDE_FIELD: &str = "side:field";
 /// The side pane's tool that shows its session on its own.
 pub const SIDE_OPEN: &str = "side:open";
+/// Settings: its gear and Ctrl+,, its close, its search, the page it opens on, and the
+/// data folder's "Open".
+pub const SETTINGS_OPEN: &str = "settings:open";
+pub const SETTINGS_CLOSE: &str = "settings:close";
+pub const SETTINGS_SEARCH: &str = "settings:search";
+pub const SETTINGS_FIRST: &str = "general";
+pub const SETTINGS_STORAGE_OPEN: &str = "settings:storage:open";
 /// The document pane's editor and its buttons.
 pub const DOC_EDITOR: &str = "doc:editor";
 pub const DOC_EDIT: &str = "doc:edit";
@@ -151,11 +158,12 @@ fn layout(store: &Store, ui: &Ui, window: Size) -> Layout {
     } else {
         column_width(rest, ui.column_fraction.unwrap_or(fraction))
     };
-    let panel = if panes.is_empty() && session.is_some() && rest - look::PANEL_WIDTH >= COLUMN {
-        ui.panel_shown.value(Instant::now()).round()
-    } else {
-        0.0
-    };
+    let panel =
+        if panes.is_empty() && session.is_some() && rest - look::PANEL_WIDTH >= look::column() {
+            ui.panel_shown.value(Instant::now()).round()
+        } else {
+            0.0
+        };
     Layout {
         main: rest - column - panel,
         column,
@@ -312,7 +320,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     let below = window.height - look::TOP_BAR - 1.0;
     let mut row = vec![];
     if layout.main > 0.0 {
-        let column = COLUMN.min(layout.main - 64.0).max(240.0);
+        let column = look::column().min(layout.main - 64.0).max(240.0);
         let body = match session {
             Some(session) => transcript(store, session, ui, column, palette),
             None => empty(ui, column),
@@ -387,6 +395,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
         .background(look::theme().background)
         .size(Some(window.width), Some(window.height));
     let root = search_dialog(store, ui, root, palette);
+    let root = settings_dialog(store, ui, root, window, palette);
     // Desktop's own wording for both closes (Ion `cccc2cf0a`,) and for a delete
     //, less its vendor's servers: quill forgets only its own record.
     let tabs = &ui.terminal.tabs;
@@ -984,11 +993,35 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
             ));
         }
     }
-    Element::column(rows)
-        .gap(2.0)
-        .padding(8.0)
-        .background(look::sidebar())
-        .size(Some(look::SIDEBAR_WIDTH - 1.0), Some(height))
+    // At its foot, the person and Settings, where Desktop keeps its profile and its menu
+    //.
+    let foot = Element::row(vec![
+        hgap(10.0),
+        Element::truncated_text(ui.name.clone().unwrap_or_default())
+            .font_family(FontFamily::Sans)
+            .font_size(BODY)
+            .foreground(look::palette().text)
+            .flex(1.0)
+            .centered_y(),
+        tool_surface(
+            SETTINGS_OPEN,
+            icons::of(icons::SETTINGS),
+            "Settings",
+            28.0,
+            None,
+            look::tool_hover(),
+            Some("Ctrl+,"),
+        )
+        .centered_y(),
+    ])
+    .size(None, Some(36.0));
+    Element::column(vec![
+        Element::column(rows).gap(2.0).flex(1.0).clip_children(),
+        foot,
+    ])
+    .padding(8.0)
+    .background(look::sidebar())
+    .size(Some(look::SIDEBAR_WIDTH - 1.0), Some(height))
 }
 
 /// The groups when the list goes by status, in their order, as the person's newer Desktop
@@ -1639,7 +1672,9 @@ fn entries<'a>(
                     flush(&mut steps, &mut items);
                     items.push(
                         Element::row(vec![
-                            muted("Passed your message to").font_size(CHAT).centered_y(),
+                            muted("Passed your message to")
+                                .font_size(chat())
+                                .centered_y(),
                             session_chip(store, child).centered_y(),
                         ])
                         .gap(8.0),
@@ -1768,7 +1803,7 @@ fn session_chip(store: &Store, id: quill_model::SessionId) -> Element {
                 .centered_y(),
             text(title.clone())
                 .foreground(look::mention())
-                .font_size(CHAT)
+                .font_size(chat())
                 .centered_y(),
             hgap(6.0),
         ])
@@ -1860,7 +1895,7 @@ fn started_card(store: &Store, session: &Session, input: &Value, column: f32) ->
             .radius(2.5)
             .size(Some(5.0), Some(5.0))
             .centered_y(),
-        text(title.to_owned()).font_size(CHAT).centered_y(),
+        text(title.to_owned()).font_size(chat()).centered_y(),
     ];
     if let Some(doing) = doing {
         row.push(
@@ -2111,12 +2146,12 @@ fn status_line(
             let key = format!("tool:{}", step.call);
             let open = ui.expanded.iter().any(|c| c == step.call);
             let (verb, object) = step_label(step, false);
-            let mut line = vec![dots(), muted(verb).font_size(CHAT).centered_y()];
+            let mut line = vec![dots(), muted(verb).font_size(chat()).centered_y()];
             if !object.is_empty() {
-                line.push(text(object).font_size(CHAT).centered_y());
+                line.push(text(object).font_size(chat()).centered_y());
             }
             let since = session.step_since.map_or(0, |t| t.elapsed().as_secs());
-            line.push(muted(elapsed(since)).font_size(CHAT).centered_y());
+            line.push(muted(elapsed(since)).font_size(chat()).centered_y());
             line.push(caret(open));
             let line = Element::clickable(key, Element::row(line).gap(8.0));
             if !open {
@@ -2140,7 +2175,7 @@ fn status_line(
             }
             Element::row(vec![
                 dots(),
-                muted(parts.join(" · ")).font_size(CHAT).centered_y(),
+                muted(parts.join(" · ")).font_size(chat()).centered_y(),
             ])
             .gap(12.0)
         }
@@ -2174,7 +2209,7 @@ fn status_line(
             let tasks = tasks?;
             TextShimmer::new("status:tasks", tasks, palette)
                 .render()
-                .font_size(CHAT)
+                .font_size(chat())
         }
     })
 }
@@ -2236,7 +2271,7 @@ fn item(
         Item::User { text: t, .. } => {
             // As wide as its words, up to 3/4 of the column, 16 px of side padding.
             let line = text(t.clone())
-                .font_size(CHAT)
+                .font_size(chat())
                 .max_width(column * 0.75 - 32.0);
             let bubble = Element::panel(Element::row(vec![hgap(4.0), line, hgap(4.0)]))
                 .background(look::user_bubble())
@@ -2261,7 +2296,7 @@ fn item(
             };
             Markdown::new(t, code_palette)
                 .width(column)
-                .font_size(CHAT)
+                .font_size(chat())
                 .colors(colors)
                 .code_label(false)
                 .code_fit_content(true)
@@ -2733,20 +2768,20 @@ fn step_group(steps: &[Step], ui: &Ui, column: f32, palette: ComponentPalette) -
     let mut head = vec![if running {
         TextShimmer::new(format!("{key}:shimmer"), summary, palette)
             .render()
-            .font_size(CHAT)
+            .font_size(chat())
             .centered_y()
     } else {
-        muted(summary).font_size(CHAT).centered_y()
+        muted(summary).font_size(chat()).centered_y()
     }];
     // A command left running in the background offers its output.
     if steps
         .iter()
         .any(|s| s.running && s.name == "Bash" && s.result.is_some())
     {
-        head.push(text("View live output").font_size(CHAT).centered_y());
+        head.push(text("View live output").font_size(chat()).centered_y());
     }
     if stopped {
-        head.push(muted("Stopped").font_size(CHAT).centered_y());
+        head.push(muted("Stopped").font_size(chat()).centered_y());
     } else if !running
         && steps
             .last()
@@ -2755,7 +2790,7 @@ fn step_group(steps: &[Step], ui: &Ui, column: f32, palette: ComponentPalette) -
         // Desktop marks a run whose last step failed.
         head.push(
             text("Failed")
-                .font_size(CHAT)
+                .font_size(chat())
                 .foreground(look::failed())
                 .centered_y(),
         );
@@ -2763,13 +2798,13 @@ fn step_group(steps: &[Step], ui: &Ui, column: f32, palette: ComponentPalette) -
     if added + removed > 0 {
         head.push(
             text(format!("+{added}"))
-                .font_size(CHAT)
+                .font_size(chat())
                 .foreground(look::added())
                 .centered_y(),
         );
         head.push(
             text(format!("−{removed}"))
-                .font_size(CHAT)
+                .font_size(chat())
                 .foreground(look::removed())
                 .centered_y(),
         );
@@ -2939,7 +2974,7 @@ fn lone_step(step: &Step, column: f32, palette: ComponentPalette) -> Option<Elem
     let result = step.result.filter(|r| !r.stopped && !r.is_error)?;
     if step.name == "ExitPlanMode" {
         let line = Element::row(vec![
-            muted("Proposed plan").font_size(CHAT).centered_y(),
+            muted("Proposed plan").font_size(chat()).centered_y(),
             caret(false),
         ])
         .gap(8.0)
@@ -3457,7 +3492,7 @@ fn branch_bar(
             limn::Tooltip::new(counts, VIEW_CHANGES, "View changes", look::palette()).render(),
         ));
     }
-    let label = if ui.pr_draft {
+    let label = if ui.settings.pr_draft {
         "Create draft PR"
     } else {
         "Create PR"
@@ -3504,10 +3539,10 @@ fn branch_bar(
     };
     let kinds = vec![
         limn::DropdownMenuItem::new("pr-kind:ready", "Create PR")
-            .radio(!ui.pr_draft)
+            .radio(!ui.settings.pr_draft)
             .into(),
         limn::DropdownMenuItem::new("pr-kind:draft", "Create draft PR")
-            .radio(ui.pr_draft)
+            .radio(ui.settings.pr_draft)
             .into(),
     ];
     let chevron = menu(
@@ -3953,6 +3988,24 @@ fn offered_modes(session: Option<&Session>) -> Vec<String> {
         .collect()
 }
 
+/// The modes the mode menu lists: those offered, and those that skip every approval once the
+/// person allowed them for the agent in Settings.
+pub(crate) fn menu_modes(session: Option<&Session>, ui: &Ui) -> Vec<String> {
+    let mut modes = offered_modes(session);
+    let agent = session.map_or(ui.agent.as_str(), |s| s.agent.as_str());
+    if ui.settings.agent(agent).allow_unsafe {
+        modes.extend(
+            session
+                .and_then(|s| s.capabilities.as_ref())
+                .map(|c| c.unsafe_modes.clone())
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|m| mode_entry(m).is_some()),
+        );
+    }
+    modes
+}
+
 /// The models the menu lists: the session's agent's, or for a new session the last
 /// session's.
 fn offered_models<'a>(
@@ -4012,7 +4065,7 @@ pub fn menu_digit(store: &Store, ui: &Ui, typed: &str) -> Option<String> {
     let n: usize = typed.parse().ok().filter(|n| (1..=9).contains(n))?;
     let session = ui.selected.and_then(|id| store.session(id));
     match ui.open_menu? {
-        MODE_MENU => offered_modes(session)
+        MODE_MENU => menu_modes(session, ui)
             .get(n - 1)
             .map(|m| format!("mode:{m}")),
         MODEL_MENU => split_models(offered_models(store, session))
@@ -4030,6 +4083,8 @@ fn mode_entry(mode: &str) -> Option<(&'static str, &'static str)> {
         "default" => ("Manual", "Always ask before making changes"),
         "acceptEdits" => ("Accept edits", "Automatically accept all file edits"),
         "plan" => ("Plan", "Create a plan before making changes"),
+        // Desktop's "Allow bypass permissions mode".
+        "bypassPermissions" => ("Bypass permissions", "Skip every permission check"),
         _ => return None,
     })
 }
@@ -4054,7 +4109,7 @@ fn mode_menu(session: Option<&Session>, ui: &Ui) -> Element {
         Some("Ctrl+Shift+M"),
     );
     let mut entries = vec![limn::DropdownMenuEntry::Heading("Mode".into())];
-    for (i, mode) in offered_modes(session).iter().enumerate() {
+    for (i, mode) in menu_modes(session, ui).iter().enumerate() {
         let (label, about) = mode_entry(mode).unwrap_or(("", ""));
         let n = i + 1;
         entries.push(
@@ -5064,7 +5119,7 @@ fn document_pane(ui: &Ui, width: f32, height: f32, palette: ComponentPalette) ->
             Element::column(vec![
                 Markdown::new(&document.text().unwrap_or_default(), look::palette())
                     .width(width - 48.0)
-                    .font_size(CHAT)
+                    .font_size(chat())
                     .render()
                     .element,
             ])
@@ -5480,9 +5535,9 @@ fn reports_block(
                 )
                 .foreground(look::muted())
                 .font_family(FontFamily::Sans)
-                .font_size(CHAT)
+                .font_size(chat())
             } else {
-                muted("Received message from").font_size(CHAT)
+                muted("Received message from").font_size(chat())
             };
             let line = Element::row(vec![
                 lead.centered_y(),
@@ -5587,4 +5642,631 @@ fn side_pane(
         Element::spacer().size(None, Some(12.0)),
     ])
     .size(Some(width), Some(height))
+}
+
+/// One setting: what it is called, what it does, and its control.
+struct Setting {
+    title: String,
+    about: Option<String>,
+    control: Element,
+}
+
+fn setting(title: &str, about: &str, control: Element) -> Setting {
+    Setting {
+        title: title.to_owned(),
+        about: (!about.is_empty()).then(|| about.to_owned()),
+        control,
+    }
+}
+
+/// A page of Settings: its key, its name, and its settings in titled groups.
+struct SettingsPage {
+    key: String,
+    title: String,
+    icon: &'static str,
+    groups: Vec<(String, Vec<Setting>)>,
+}
+
+/// A select of Settings: `set:{name}` opens it and each choice reports `set:{name}={value}`.
+fn setting_select(
+    ui: &Ui,
+    name: &str,
+    choices: &[(String, String)],
+    current: &str,
+    palette: ComponentPalette,
+) -> Element {
+    let label = choices
+        .iter()
+        .find(|(value, _)| value == current)
+        .map_or_else(|| current.to_owned(), |(_, label)| label.clone());
+    let options = choices
+        .iter()
+        .map(|(value, label)| {
+            limn::DropdownOption::new(format!("set:{name}={value}"), label.clone())
+                .selected(value == current)
+        })
+        .collect();
+    limn::Select::new(
+        format!("set:{name}"),
+        label,
+        options,
+        ui.settings_menu.as_deref() == Some(name),
+        format!("set:{name}:dismiss"),
+        palette,
+    )
+    // Desktop's choice at the end of a row: its label and a chevron, no outline.
+    .variant(limn::SelectVariant::Plain)
+    .font_size(15.0)
+    .menu_palette(look::menu_palette())
+    .menu_width(200.0)
+    .placement(limn::PopoverPlacement::BottomEnd)
+    .render()
+}
+
+fn choices(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+    pairs
+        .iter()
+        .map(|(value, label)| ((*value).to_owned(), (*label).to_owned()))
+        .collect()
+}
+
+/// Desktop's switch: white on its blue when on, on a gray track when off.
+fn setting_switch(name: &str, on: bool, palette: ComponentPalette) -> Element {
+    limn::Switch::new(format!("set:{name}"), on, palette)
+        .variant(limn::SwitchVariant::Accent)
+        .ink(look::switch_on())
+        .render()
+}
+
+/// A button in a settings row, as Desktop's "Manage": 28 high, filled, radius 8.
+fn setting_button(id: &str, label: &str) -> Element {
+    ComponentPalette {
+        hover: look::settings_current(),
+        ..look::palette()
+    }
+    .interactive_surface(Element::clickable(
+        id,
+        Element::row(vec![
+            hgap(10.0),
+            text(label).font_size(BODY).centered_y(),
+            hgap(10.0),
+        ])
+        .size(None, Some(28.0)),
+    ))
+    .background(look::settings_button())
+    .radius(8.0)
+    .centered_y()
+}
+
+/// Settings' pages, in the order the column lists them: quill's own, then one per agent
+/// quill can run, built from what the agent says it offers, then this computer's. Desktop's
+/// pages for its account, its cloud and its own features are not here: quill has none of
+/// them (docs/ui.md §2.11).
+fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<SettingsPage> {
+    use quill_model::{Motion, TextSize, Theme};
+    let s = &ui.settings;
+    // Desktop's three icons on a track.
+    let theme = limn::SegmentedControl::new(
+        [
+            ("system", icons::MONITOR, Theme::System),
+            ("light", icons::SUN, Theme::Light),
+            ("dark", icons::MOON, Theme::Dark),
+        ]
+        .into_iter()
+        .map(|(value, icon, theme)| {
+            limn::Tab::new(format!("set:theme={value}"), "", 28.0)
+                .icon(icons::of(icon))
+                .active(s.theme == theme)
+        })
+        .collect(),
+        ComponentPalette {
+            raised: look::settings_track(),
+            selected: look::settings_current(),
+            ..palette
+        },
+    )
+    .render();
+    let text_size = match s.text_size {
+        TextSize::Small => "small",
+        TextSize::Medium => "medium",
+        TextSize::Large => "large",
+    };
+    let motion = match s.motion {
+        Motion::System => "system",
+        Motion::Reduced => "reduced",
+        Motion::Full => "full",
+    };
+    let mut pages = vec![
+        SettingsPage {
+            key: "general".into(),
+            title: "General".into(),
+            icon: icons::SETTINGS,
+            groups: vec![(
+                "Appearance".into(),
+                vec![
+                    setting("Theme", "", theme),
+                    setting(
+                        "Transcript text size",
+                        "The size of the conversation's words.",
+                        setting_select(
+                            ui,
+                            "text_size",
+                            &choices(&[("small", "Small"), ("medium", "Medium"), ("large", "Large")]),
+                            text_size,
+                            palette,
+                        ),
+                    ),
+                    setting(
+                        "Transcript width",
+                        "How wide the conversation and the message box get.",
+                        setting_select(
+                            ui,
+                            "width",
+                            &choices(&[("narrow", "Narrow"), ("wide", "Wide")]),
+                            if s.wide { "wide" } else { "narrow" },
+                            palette,
+                        ),
+                    ),
+                    setting(
+                        "Motion",
+                        "Reduced keeps panels, sliders and menus from moving.",
+                        setting_select(
+                            ui,
+                            "motion",
+                            &choices(&[("system", "System"), ("reduced", "Reduced"), ("full", "Full")]),
+                            motion,
+                            palette,
+                        ),
+                    ),
+                ],
+            )],
+        },
+        SettingsPage {
+            key: "sessions".into(),
+            title: "Sessions".into(),
+            icon: icons::LIST,
+            groups: vec![
+                (
+                    "While agents work".into(),
+                    vec![
+                        setting(
+                            "Keep computer awake",
+                            "Keep this computer from sleeping while an agent works, so long tasks can finish. The display can still turn off, and closing the lid still puts it to sleep.",
+                            setting_switch("keep_awake", s.keep_awake, palette),
+                        ),
+                        setting(
+                            "Draw attention",
+                            "Ask the desktop to flag quill when a session finishes or needs you while quill isn't in front.",
+                            setting_switch("attention", s.attention, palette),
+                        ),
+                    ],
+                ),
+                (
+                    "Pull requests".into(),
+                    vec![setting(
+                        "Pull request kind",
+                        "What the branch bar's button opens. Picking a kind in its menu changes this too.",
+                        setting_select(
+                            ui,
+                            "pr_kind",
+                            &choices(&[("ready", "Ready for review"), ("draft", "Draft")]),
+                            if s.pr_draft { "draft" } else { "ready" },
+                            palette,
+                        ),
+                    )],
+                ),
+            ],
+        },
+    ];
+    for agent in &ui.agents {
+        pages.push(agent_page(store, ui, agent, palette));
+    }
+    let storage = match &ui.storage {
+        Some((path, bytes)) => format!("{} \u{b7} {}", path.display(), human_bytes(*bytes)),
+        None => "Measuring\u{2026}".to_owned(),
+    };
+    pages.push(SettingsPage {
+        key: "system".into(),
+        title: "System".into(),
+        icon: icons::MONITOR,
+        groups: vec![
+            (
+                "quill".into(),
+                vec![
+                    setting("Version", "", muted(env!("CARGO_PKG_VERSION")).centered_y()),
+                    setting(
+                        "Open at login",
+                        "Start quill when you log in to this computer.",
+                        setting_switch("login", s.open_at_login, palette),
+                    ),
+                ],
+            ),
+            (
+                "Storage".into(),
+                vec![setting(
+                    "Data folder",
+                    &format!("Sessions and their file history are kept in {storage}."),
+                    setting_button(SETTINGS_STORAGE_OPEN, "Open"),
+                )],
+            ),
+        ],
+    });
+    pages
+}
+
+/// An agent's page: its program and the version it runs, what new sessions start with, and
+/// its modes that skip approvals, from what its sessions said it offers.
+fn agent_page(
+    store: &Store,
+    ui: &Ui,
+    agent: &quill_model::AgentInfo,
+    palette: ComponentPalette,
+) -> SettingsPage {
+    let mine = agent.id.as_str();
+    let chosen = ui.settings.agent(mine);
+    // What the agent offers, as its latest session heard it.
+    let latest = store
+        .sessions
+        .iter()
+        .rev()
+        .find(|s| s.agent == mine && s.capabilities.is_some());
+    let capabilities = latest.and_then(|s| s.capabilities.as_ref());
+    let version = store
+        .sessions
+        .iter()
+        .rev()
+        .filter(|s| s.agent == mine)
+        .find_map(|s| s.agent_version.clone());
+    let tested = agent.tested.join(", ");
+    let (version_value, version_about) = match &version {
+        Some(v) if agent.tested.contains(v) => {
+            (v.clone(), format!("quill was tested with {tested}."))
+        }
+        Some(v) => (
+            v.clone(),
+            format!("quill was tested with {tested}; this version may behave differently."),
+        ),
+        None => (
+            "Not run yet".to_owned(),
+            format!("quill was tested with {tested}."),
+        ),
+    };
+    let program = limn::TextField::new(
+        format!("set:agent:{mine}:program"),
+        chosen.program.as_deref().unwrap_or_default(),
+        mine,
+        palette,
+    )
+    .render()
+    .size(Some(240.0), Some(32.0));
+    let mut groups = vec![(
+        "Program".to_owned(),
+        vec![
+            setting(
+                "Program",
+                &format!(
+                    "The {} program quill runs. Empty runs the one on your PATH. Applies to new sessions.",
+                    agent.name
+                ),
+                program,
+            ),
+            setting("Version", &version_about, muted(version_value).centered_y()),
+        ],
+    )];
+    let defaults = match capabilities {
+        None => vec![setting(
+            "Model, effort and mode",
+            &format!(
+                "Start a session with {} once, and its models, efforts and modes are listed here.",
+                agent.name
+            ),
+            Element::spacer().size(Some(0.0), Some(0.0)),
+        )],
+        Some(capabilities) => {
+            let leave = (String::new(), "Agent's default".to_owned());
+            let mut models = vec![leave.clone()];
+            models.extend(
+                capabilities
+                    .models
+                    .iter()
+                    .map(|m| (m.id.clone(), m.name.clone())),
+            );
+            let model = chosen.model.clone().unwrap_or_default();
+            let efforts: Vec<String> = capabilities
+                .models
+                .iter()
+                .find(|m| m.id == model)
+                .or_else(|| capabilities.models.first())
+                .map(|m| m.efforts.clone())
+                .unwrap_or_default();
+            let mut effort_choices = vec![leave.clone()];
+            effort_choices.extend(efforts.iter().map(|e| (e.clone(), effort_label(e))));
+            let mut modes = vec![leave];
+            let unsafe_modes = if chosen.allow_unsafe {
+                capabilities.unsafe_modes.clone()
+            } else {
+                vec![]
+            };
+            modes.extend(
+                capabilities
+                    .modes
+                    .iter()
+                    .chain(&unsafe_modes)
+                    .filter_map(|m| mode_entry(m).map(|(label, _)| (m.clone(), label.to_owned()))),
+            );
+            let mut rows = vec![
+                setting(
+                    "Model",
+                    "What a new session starts with; the message box changes it for one session.",
+                    setting_select(ui, &format!("agent:{mine}:model"), &models, &model, palette),
+                ),
+                setting(
+                    "Effort",
+                    "",
+                    setting_select(
+                        ui,
+                        &format!("agent:{mine}:effort"),
+                        &effort_choices,
+                        chosen.effort.as_deref().unwrap_or_default(),
+                        palette,
+                    ),
+                ),
+                setting(
+                    "Permission mode",
+                    "",
+                    setting_select(
+                        ui,
+                        &format!("agent:{mine}:mode"),
+                        &modes,
+                        chosen.mode.as_deref().unwrap_or_default(),
+                        palette,
+                    ),
+                ),
+            ];
+            if !capabilities.unsafe_modes.is_empty() {
+                rows.push(setting(
+                    "Allow bypass permissions mode",
+                    &format!(
+                        "Bypass all permission checks and let {} work uninterrupted. Letting an agent run any command is risky and can lose data, damage your system or leak it (through prompt injection, for example). Applies to new sessions.",
+                        agent.name
+                    ),
+                    setting_switch(&format!("agent:{mine}:unsafe"), chosen.allow_unsafe, palette),
+                ));
+            }
+            rows
+        }
+    };
+    groups.push(("New sessions".to_owned(), defaults));
+    SettingsPage {
+        key: format!("agent:{mine}"),
+        title: agent.name.clone(),
+        icon: icons::CODE,
+        groups,
+    }
+}
+
+/// A size in bytes as people read it.
+fn human_bytes(bytes: u64) -> String {
+    let units = ["bytes", "KB", "MB", "GB", "TB"];
+    let mut size = bytes as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit + 1 < units.len() {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} bytes")
+    } else {
+        format!("{size:.1} {}", units[unit])
+    }
+}
+
+/// Settings, in Desktop's measures at 1×: a 1024 × 772 card whose body
+/// reaches its edges under a 44-high title; a 212-wide column of pages on its own ground, a
+/// 28-high search over groups of 32-high pages; and the page's sections, each a 16 px title
+/// over rows apart by hairlines, a 15 px title and its 14 px muted words on the left and the
+/// control on the right. With a search, every page's settings that match.
+fn settings_dialog(
+    store: &Store,
+    ui: &Ui,
+    base: Element,
+    window: Size,
+    palette: ComponentPalette,
+) -> Element {
+    let Some(current) = &ui.settings_page else {
+        return base;
+    };
+    let width = limn::Modal::fit_width(window.width, 1024.0);
+    let height = (window.height - 72.0).clamp(320.0, 772.0);
+    let body_height = height - 45.0;
+    let pages = settings_pages(store, ui, palette);
+    let nav_width = 211.0;
+    let inner = nav_width - 32.0;
+    // The column: the search, then each group's pages.
+    let search = limn::SearchField::new(
+        SETTINGS_SEARCH,
+        ui.settings_query.as_str(),
+        "Search",
+        ComponentPalette {
+            surface: look::settings_field(),
+            raised: look::settings_field(),
+            border: look::settings_field_edge(),
+            ..palette
+        },
+    )
+    .size(limn::ControlSize::Compact)
+    .width(inner)
+    .render();
+    let mut nav = vec![Element::spacer().size(None, Some(16.0)), search];
+    let heading = |label: &str| {
+        Element::column(vec![
+            Element::spacer().size(None, Some(18.0)),
+            muted(label.to_owned()).font_size(SMALL),
+            Element::spacer().size(None, Some(8.0)),
+        ])
+    };
+    let searching = !ui.settings_query.trim().is_empty();
+    let link = |page: &SettingsPage| {
+        let row = ComponentPalette {
+            hover: look::row_hover(),
+            ..palette
+        }
+        .interactive_surface(Element::clickable(
+            format!("settings:page:{}", page.key),
+            Element::row(vec![
+                hgap(10.0),
+                Element::icon(icons::of(page.icon))
+                    .foreground(look::palette().text)
+                    .size(Some(16.0), Some(16.0))
+                    .centered_y(),
+                Element::truncated_text(page.title.clone())
+                    .font_family(FontFamily::Sans)
+                    .font_size(15.0)
+                    .foreground(look::palette().text)
+                    .flex(1.0)
+                    .centered_y(),
+            ])
+            .gap(12.0)
+            .size(Some(inner - 10.0), Some(32.0)),
+        ))
+        .radius(8.0);
+        if *current == page.key && !searching {
+            row.background(look::settings_current())
+        } else {
+            row
+        }
+    };
+    let mut groups = vec![("Preferences", vec!["general", "sessions"])];
+    let agents: Vec<&str> = pages
+        .iter()
+        .filter(|p| p.key.starts_with("agent:"))
+        .map(|p| p.key.as_str())
+        .collect();
+    if !agents.is_empty() {
+        groups.push(("Agents", agents));
+    }
+    groups.push(("This computer", vec!["system"]));
+    for (label, keys) in groups {
+        nav.push(heading(label));
+        for page in pages.iter().filter(|p| keys.contains(&p.key.as_str())) {
+            nav.push(link(page));
+        }
+    }
+    let nav = Element::row(vec![
+        Element::row(vec![hgap(16.0), Element::column(nav).gap(1.0), hgap(16.0)])
+            .size(Some(nav_width), Some(body_height))
+            .background(look::settings_nav()),
+        Element::spacer()
+            .background(look::settings_nav_edge())
+            .size(Some(1.0), Some(body_height)),
+    ]);
+    // The page: its sections, or what the search found on every page.
+    let content_width = width - nav_width - 1.0;
+    let rows_width = content_width - 6.0 - 16.0;
+    let section = |title: String, rows: Vec<Setting>| {
+        // The rows keep their own 10 px inset; the title takes it too, as Desktop aligns them.
+        let mut items = vec![
+            Element::row(vec![hgap(10.0), text(title).font_size(16.0)]),
+            Element::spacer().size(None, Some(10.0)),
+        ];
+        let count = rows.len();
+        for (at, row) in rows.into_iter().enumerate() {
+            let mut action = limn::ActionRow::new(row.title, palette)
+                .title_size(15.0)
+                .subtitle_size(14.0)
+                .sizing(limn::ActionRowSizing {
+                    gap: 24.0,
+                    copy_gap: 4.0,
+                    icon_column: 0.0,
+                    min_height: 52.0,
+                    min_height_with_subtitle: 64.0,
+                })
+                .wrap_title(true);
+            if let Some(about) = row.about {
+                action = action.subtitle(about);
+            }
+            items.push(
+                action
+                    .trailing(row.control)
+                    .render()
+                    .size(Some(rows_width), None),
+            );
+            if at + 1 < count {
+                items.push(hline(rows_width, look::settings_row_line()));
+            }
+        }
+        Element::column(items)
+    };
+    let query = ui.settings_query.trim().to_lowercase();
+    let mut content = vec![];
+    if query.is_empty() {
+        let page = pages
+            .into_iter()
+            .find(|p| p.key == *current)
+            .unwrap_or_else(|| unreachable_page(current));
+        for (title, rows) in page.groups {
+            content.push(section(title, rows));
+        }
+    } else {
+        for page in pages {
+            for (title, rows) in page.groups {
+                let found: Vec<Setting> = rows
+                    .into_iter()
+                    .filter(|r| {
+                        r.title.to_lowercase().contains(&query)
+                            || r.about
+                                .as_ref()
+                                .is_some_and(|a| a.to_lowercase().contains(&query))
+                    })
+                    .collect();
+                if !found.is_empty() {
+                    content.push(section(format!("{} \u{203a} {title}", page.title), found));
+                }
+            }
+        }
+        if content.is_empty() {
+            content.push(muted("No settings match your search.").font_size(15.0));
+        }
+    }
+    let content = Element::scroll(
+        "settings:content",
+        Element::row(vec![
+            hgap(6.0),
+            Element::column(vec![
+                Element::spacer().size(None, Some(18.0)),
+                Element::column(content).gap(40.0),
+                Element::spacer().size(None, Some(24.0)),
+            ]),
+        ]),
+    )
+    .size(Some(content_width), Some(body_height))
+    .background(look::settings_page());
+    let body = Element::row(vec![nav, content]).size(Some(width), Some(body_height));
+    limn::Modal::new(
+        base,
+        true,
+        "Settings",
+        "",
+        SETTINGS_CLOSE,
+        ComponentPalette {
+            surface: look::settings_page(),
+            border: look::settings_title_line(),
+            ..palette
+        },
+    )
+    .width(width)
+    .height(height)
+    .flush_body(true)
+    .body(body)
+    .render()
+}
+
+/// A page that is not among Settings' pages (an agent that went away): an empty one.
+fn unreachable_page(key: &str) -> SettingsPage {
+    SettingsPage {
+        key: key.to_owned(),
+        title: "Settings".into(),
+        icon: icons::SETTINGS,
+        groups: vec![],
+    }
 }

@@ -45,7 +45,9 @@ impl Store {
             | Event::Deleted { .. }
             | Event::Reading { .. }
             | Event::FileRead { .. }
-            | Event::FileWriteFailed { .. } => false,
+            | Event::FileWriteFailed { .. }
+            | Event::Settings { .. }
+            | Event::Storage { .. } => false,
             Event::Agent { event, .. } => !matches!(
                 event,
                 AgentEvent::TextDelta { .. }
