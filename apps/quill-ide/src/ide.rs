@@ -45,6 +45,14 @@ pub const SYMBOL_FIELD: &str = "symbol:field";
 const SYMBOL_CLOSE: &str = "symbol:close";
 const REFS_FIELD: &str = "refs:field";
 const REFS_CLOSE: &str = "refs:close";
+/// The bar over the editor: its height, its "···" menu and the Markdown views.
+const CRUMBS: f32 = 30.0;
+const MORE: &str = "editor:more";
+const WRAP: &str = "editor:wrap";
+const MINIMAP: &str = "editor:minimap";
+pub const PREVIEW_TOGGLE: &str = "doc:toggle";
+const MD_LINK: &str = "md-link:";
+const MD_DIAGRAM: &str = "md-diagram:";
 /// The terminal's share of the window under the editor, its type and its insets, as quill's.
 const TERMINAL_HEIGHT: f32 = 0.36;
 pub const TERMINAL_FONT: f32 = 12.0;
@@ -326,6 +334,16 @@ pub struct Buffer {
     pub structure: Option<Structure>,
     pub analyzing: bool,
     pub folded: Vec<std::ops::Range<usize>>,
+    pub view: DocView,
+}
+
+/// How a Markdown file shows: its source, rendered, or both side by side.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum DocView {
+    #[default]
+    Source,
+    Preview,
+    Split,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -353,6 +371,7 @@ impl Buffer {
             structure: None,
             analyzing: false,
             folded: vec![],
+            view: DocView::Source,
         }
     }
 
@@ -441,6 +460,11 @@ pub struct Ide {
     pub references: Option<(Vec<Location>, usize)>,
     pub renaming_symbol: Option<String>,
     pub lsp_note: Option<String>,
+    /// The "···" menu over the editor is open; the diagrams of a preview shown as source; an
+    /// address a link asks the host to open in the desktop's browser.
+    pub more_open: bool,
+    pub diagram_sources: Vec<u64>,
+    pub open_url: Option<String>,
 }
 
 #[derive(Default)]
@@ -527,6 +551,9 @@ impl Ide {
             references: None,
             renaming_symbol: None,
             lsp_note: None,
+            more_open: false,
+            diagram_sources: vec![],
+            open_url: None,
         };
         (ide, jobs)
     }
@@ -623,6 +650,10 @@ impl Ide {
         let UiAction::Clicked { id } = action else {
             return vec![];
         };
+        // The "···" menu shuts with whatever is chosen, in it or not.
+        if id != MORE {
+            self.more_open = false;
+        }
         if !id.starts_with("close:") {
             self.closing = None;
         }
@@ -659,6 +690,9 @@ impl Ide {
             return jobs;
         }
         if let Some(jobs) = self.lsp_clicked(id) {
+            return jobs;
+        }
+        if let Some(jobs) = self.bar_clicked(id) {
             return jobs;
         }
         if id == TREE_TOGGLE {
@@ -1182,6 +1216,96 @@ impl Ide {
         jobs
     }
 
+    /// The bar over the editor: its path and symbols, its menu, the Markdown views and the
+    /// preview's links. `None` when `id` is none of them.
+    fn bar_clicked(&mut self, id: &str) -> Option<Vec<Job>> {
+        if let Some(dir) = id.strip_prefix("tree:reveal-dir:") {
+            let dir = PathBuf::from(dir);
+            let mut jobs = self.reveal_in_tree(&dir.join("_"));
+            jobs.retain(|job| *job != Job::List(dir.join("_")));
+            self.expanded.insert(dir.clone());
+            if !self.listed.contains_key(&dir) {
+                jobs.push(Job::List(dir.clone()));
+            }
+            self.reveal_row = Some(format!("dir:{}", dir.display()));
+            return Some(jobs);
+        }
+        let mut save = false;
+        match id {
+            MORE => self.more_open = !self.more_open,
+            "editor:more:dismiss" => self.more_open = false,
+            WRAP => {
+                self.prefs.wrap = !self.prefs.wrap;
+                save = true;
+            }
+            MINIMAP => {
+                self.prefs.minimap = !self.prefs.minimap;
+                save = true;
+            }
+            PREVIEW_TOGGLE => {
+                let buffer = self.active.and_then(|a| self.buffers.get_mut(a))?;
+                buffer.view = match buffer.view {
+                    DocView::Source => DocView::Preview,
+                    _ => DocView::Source,
+                };
+            }
+            _ => {
+                if let Some(view) = id.strip_prefix("doc:") {
+                    let buffer = self.active.and_then(|a| self.buffers.get_mut(a))?;
+                    buffer.view = match view {
+                        "preview" => DocView::Preview,
+                        "split" => DocView::Split,
+                        "source" => DocView::Source,
+                        _ => return None,
+                    };
+                } else if let Some(diagram) = id.strip_prefix(MD_DIAGRAM) {
+                    let diagram = u64::from_str_radix(diagram, 16).ok()?;
+                    match self.diagram_sources.iter().position(|d| *d == diagram) {
+                        Some(at) => {
+                            self.diagram_sources.remove(at);
+                        }
+                        None => self.diagram_sources.push(diagram),
+                    }
+                } else if let Some(target) = id.strip_prefix(MD_LINK) {
+                    return Some(self.follow_link(target));
+                } else {
+                    return None;
+                }
+            }
+        }
+        Some(if save {
+            vec![Job::SavePrefs(self.prefs.clone())]
+        } else {
+            vec![]
+        })
+    }
+
+    /// A preview's link: a web address goes to the desktop's browser, a file of the folder
+    /// opens here, and the document's own anchors are left as they are.
+    fn follow_link(&mut self, target: &str) -> Vec<Job> {
+        let web = ["http://", "https://", "mailto:"];
+        if web.iter().any(|scheme| target.starts_with(scheme)) {
+            self.open_url = Some(target.to_owned());
+            return vec![];
+        }
+        let file = target.split('#').next().unwrap_or_default();
+        let Some(dir) = self.active_buffer().and_then(|b| b.path.parent()) else {
+            return vec![];
+        };
+        if file.is_empty() || target.contains("://") {
+            return vec![];
+        }
+        let path = dir.join(file);
+        // Only what is inside the folder opens.
+        match std::fs::canonicalize(&path) {
+            Ok(path) if path.starts_with(&self.root) => self.open(path),
+            _ => {
+                self.lsp_note = Some(format!("{file} is not in the folder"));
+                vec![]
+            }
+        }
+    }
+
     /// Asks of the language server about the caret, and its answers' dialogs. `None` when `id`
     /// is none of them.
     fn lsp_clicked(&mut self, id: &str) -> Option<Vec<Job>> {
@@ -1698,6 +1822,8 @@ impl Ide {
             (Key::G, false) => Some(QUICK_LINE.into()),
             (Key::J, true) => Some(TERMINAL_TOGGLE.into()),
             (Key::I, true) => Some(LSP_FORMAT.into()),
+            // Not V: egui reads Ctrl+Shift+V as a paste.
+            (Key::M, true) => Some(PREVIEW_TOGGLE.into()),
             // With Vim keys Ctrl+F is a page down, and `/` finds.
             (Key::F, false) if !self.prefs.vim => Some(FIND_OPEN.into()),
             _ => None,
@@ -2229,8 +2355,11 @@ fn editor(ide: &Ide, width: f32, height: f32) -> Element {
         let fill = || Element::spacer().flex(1.0);
         Element::column(vec![fill(), muted(s).centered_x(), fill()]).flex(1.0)
     };
-    let mut column = notices(ide, width);
-    let height = height - column.len() as f32 * NOTICE - FOOTER;
+    let bar = ide.active_buffer().map(|b| crumb_bar(ide, b, width));
+    let top = usize::from(bar.is_some());
+    let mut column: Vec<Element> = bar.into_iter().collect();
+    column.extend(notices(ide, width));
+    let height = height - (column.len() - top) as f32 * NOTICE - top as f32 * CRUMBS - FOOTER;
     let matches = ide.find.as_ref().and_then(|f| f.results.as_ref());
     column.push(match ide.active_buffer() {
         None => note("Pick a file to read it"),
@@ -2253,7 +2382,7 @@ fn editor(ide: &Ide, width: f32, height: f32) -> Element {
             let (folds, scopes) = structure_controls(buffer, revision);
             // An editor per file keeps each one's caret and scroll while another is on screen.
             // With Vim keys, a file opens in Normal mode: reading, until `i`.
-            CodeEditor::new(buffer.editor_id(), editor.clone())
+            let code = CodeEditor::new(buffer.editor_id(), editor.clone())
                 .palette(look::palette())
                 .language(limn::CodeLanguage::from_code_fence(ext))
                 .font_size(ide.prefs.font_size as f32)
@@ -2279,7 +2408,25 @@ fn editor(ide: &Ide, width: f32, height: f32) -> Element {
                     matches.map(|r| r.matches.clone()).unwrap_or_default(),
                 )
                 .height(height)
-                .render()
+                .render();
+            let text = || {
+                snapshot
+                    .as_ref()
+                    .map(|s| s.chunks().collect::<String>())
+                    .unwrap_or_default()
+            };
+            match (markdown(path), buffer.view) {
+                (true, DocView::Preview) => markdown_preview(ide, &text(), width, height),
+                (true, DocView::Split) => {
+                    let half = ((width - 1.0) / 2.0).floor();
+                    Element::row(vec![
+                        Element::row(vec![code]).size(Some(half), Some(height)),
+                        vline(height),
+                        markdown_preview(ide, &text(), width - half - 1.0, height),
+                    ])
+                }
+                _ => code,
+            }
         }
     });
     // The server's hover floats at the editor's top end, as the find bar does, until a key.
@@ -2313,7 +2460,7 @@ fn editor(ide: &Ide, width: f32, height: f32) -> Element {
             limn::PopoverPlacement::BottomEnd,
         )
         .popover_non_modal();
-        column.insert(0, hover);
+        column.insert(top, hover);
     }
     // The find bar floats under the end of the line over the editor.
     if let Some(find) = &ide.find {
@@ -2327,7 +2474,7 @@ fn editor(ide: &Ide, width: f32, height: f32) -> Element {
             .error(find.error.as_deref())
             .width((width - 24.0).min(520.0));
         let anchor = Element::spacer().size(Some(width - 12.0), Some(0.0));
-        column.insert(0, bar.attach(anchor));
+        column.insert(top, bar.attach(anchor));
     }
     column.push(footer(ide, width));
     Element::column(column)
@@ -2376,6 +2523,158 @@ fn name_dialog(ide: &Ide, naming: &Naming, base: Element) -> Element {
         vec![(title, vec![row])],
         0,
     )
+}
+
+fn markdown(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("md" | "markdown" | "mdx")
+    )
+}
+
+/// The bar over the editor, as openADE's: the file's path, its folders leading to the tree and
+/// its name copying itself, then the declarations the caret is in, each taking the caret to
+/// it; at the end, a Markdown file's views, Find and the editor's menu.
+fn crumb_bar(ide: &Ide, buffer: &Buffer, width: f32) -> Element {
+    let palette = look::palette();
+    let relative = ide.relative(&buffer.path).display().to_string();
+    let root = ide.root.clone();
+    let file = relative.clone();
+    let mut crumbs = limn::Breadcrumb::from_path("crumbs", relative, palette)
+        .dirty(buffer.dirty())
+        .segment_action(move |segment| {
+            Some(if segment == file {
+                COPY_RELATIVE.into()
+            } else {
+                format!("tree:reveal-dir:{}", root.join(segment).display())
+            })
+        });
+    let snapshot = buffer.editor.as_ref().and_then(|e| e.snapshot().ok());
+    if let (Some(structure), Some(snapshot)) = (&buffer.structure, &snapshot) {
+        let caret = snapshot.selection().head;
+        for (name, range) in tree_sitter::symbols_at(structure, caret) {
+            let row = snapshot.row_of(range.start).unwrap_or(0);
+            crumbs =
+                crumbs.item(limn::BreadcrumbItem::new(name.clone()).action(format!("scope:{row}")));
+        }
+    }
+    let mut tools = vec![];
+    if markdown(&buffer.path) {
+        let tabs = [
+            ("source", "Source", DocView::Source),
+            ("preview", "Preview", DocView::Preview),
+            ("split", "Split", DocView::Split),
+        ]
+        .into_iter()
+        .map(|(key, label, view)| {
+            limn::Tab::new(format!("doc:{key}"), label, 64.0).active(buffer.view == view)
+        })
+        .collect();
+        let switch = limn::SegmentedControl::new(
+            tabs,
+            ComponentPalette {
+                raised: look::settings_track(),
+                selected: look::settings_current(),
+                ..palette
+            },
+        );
+        tools.push(switch.render().centered_y());
+    }
+    tools.push(
+        tool_surface(
+            FIND_OPEN,
+            icons::of(icons::SEARCH),
+            "Find",
+            24.0,
+            None,
+            look::tool_hover(),
+            Some(if ide.prefs.vim { "/" } else { "Ctrl+F" }),
+        )
+        .centered_y(),
+    );
+    let item = |id: &str, label: &str, keys: &str| {
+        let item = limn::DropdownMenuItem::new(id, label);
+        limn::DropdownMenuEntry::from(if keys.is_empty() {
+            item
+        } else {
+            item.shortcut(keys)
+        })
+    };
+    let entries = vec![
+        item(LSP_DEFINITION, "Go to definition", "F12"),
+        item(LSP_REFERENCES, "Find references", "Shift+F12"),
+        item(LSP_RENAME, "Rename symbol", "F2"),
+        item(LSP_FORMAT, "Format document", "Ctrl+Shift+I"),
+        limn::DropdownMenuEntry::Separator,
+        item(QUICK_LINE, "Go to line", "Ctrl+G"),
+        limn::DropdownMenuEntry::from(
+            limn::DropdownMenuItem::new(WRAP, "Wrap long lines").selected(ide.prefs.wrap),
+        ),
+        limn::DropdownMenuEntry::from(
+            limn::DropdownMenuItem::new(MINIMAP, "Minimap").selected(ide.prefs.minimap),
+        ),
+        limn::DropdownMenuEntry::Separator,
+        item(COPY_PATH, "Copy path", ""),
+        item(COPY_RELATIVE, "Copy relative path", ""),
+        item(REVEAL, "Reveal in files", ""),
+    ];
+    let more = tool_surface(
+        MORE,
+        icons::of(icons::DOTS_HORIZONTAL),
+        "More",
+        24.0,
+        ide.more_open.then(look::active),
+        look::tool_hover(),
+        None,
+    );
+    tools.push(
+        menu(
+            more,
+            entries,
+            ide.more_open,
+            MORE,
+            240.0,
+            limn::PopoverPlacement::BottomEnd,
+        )
+        .centered_y(),
+    );
+    let tools_width = 24.0 * 2.0 + 8.0 + if markdown(&buffer.path) { 200.0 } else { 0.0 };
+    let crumbs = crumbs
+        .width((width - tools_width - 32.0).max(80.0))
+        .height(CRUMBS - 1.0)
+        .render();
+    let mut row = vec![hgap(8.0), crumbs.centered_y(), Element::spacer().flex(1.0)];
+    row.extend(tools);
+    row.push(hgap(6.0));
+    Element::column(vec![
+        Element::row(row)
+            .gap(4.0)
+            .size(Some(width), Some(CRUMBS - 1.0)),
+        hline(width, look::pane_border()),
+    ])
+}
+
+/// A Markdown file rendered, in a reading column, as quill renders its conversation: code in
+/// its inks, diagrams drawn, links that open.
+fn markdown_preview(ide: &Ide, text: &str, width: f32, height: f32) -> Element {
+    let column = (width - 64.0).clamp(240.0, 820.0);
+    let rendered = limn::Markdown::new(text, look::palette())
+        .id("preview")
+        .width(column)
+        .font_size(15.0)
+        .code_font_size(look::SMALL)
+        .code_syntax_colors(syntax_colors())
+        .link_action_prefix(MD_LINK)
+        .diagram_action_prefix(MD_DIAGRAM)
+        .diagram_sources(&ide.diagram_sources)
+        .render()
+        .element;
+    let page = Element::row(vec![
+        Element::spacer().flex(1.0),
+        Element::column(vec![rendered]).padding(24.0),
+        Element::spacer().flex(1.0),
+    ]);
+    Element::scroll("preview:scroll", page).size(Some(width), Some(height))
 }
 
 fn terminal_height(window: Size) -> f32 {
@@ -2601,23 +2900,6 @@ fn footer(ide: &Ide, width: f32) -> Element {
     let mut tail = vec![];
     match buffer {
         Some(buffer) => {
-            let path = buffer.path.strip_prefix(&ide.root).unwrap_or(&buffer.path);
-            lead.push(small(path.display().to_string()));
-            // Where the caret is among the file's declarations, as breadcrumbs.
-            let caret = buffer
-                .editor
-                .as_ref()
-                .and_then(|e| e.snapshot().ok())
-                .map(|s| s.selection().head);
-            let symbols = buffer
-                .structure
-                .as_ref()
-                .zip(caret)
-                .map(|(s, at)| tree_sitter::symbols_at(s, at).join(" \u{203a} "))
-                .filter(|path| !path.is_empty());
-            if let Some(symbols) = symbols {
-                lead.push(small(format!("\u{203a} {symbols}")));
-            }
             if buffer.dirty() {
                 lead.push(small("Unsaved".into()));
             }
@@ -3417,6 +3699,34 @@ mod tests {
             .unwrap()
             .to_vec();
         assert_eq!(shown, vec![mark(6..7), mark(17..18), mark(10..12)]);
+    }
+
+    #[test]
+    fn the_bar_switches_a_markdown_files_views_and_its_links_open() {
+        let mut ide = with_files();
+        read(&mut ide, "/r/README.md", "# Hi\n");
+        click(&mut ide, PREVIEW_TOGGLE);
+        assert_eq!(ide.buffers[0].view, DocView::Preview);
+        click(&mut ide, "doc:split");
+        assert_eq!(ide.buffers[0].view, DocView::Split);
+        click(&mut ide, "md-link:https://example.com/a");
+        assert_eq!(
+            ide.open_url.take().as_deref(),
+            Some("https://example.com/a")
+        );
+        assert!(click(&mut ide, "md-link:#section").is_empty());
+        click(&mut ide, "md-diagram:000000000000002a");
+        assert_eq!(ide.diagram_sources, vec![42]);
+        click(&mut ide, "md-diagram:000000000000002a");
+        assert!(ide.diagram_sources.is_empty());
+        click(&mut ide, MORE);
+        assert!(ide.more_open);
+        let jobs = click(&mut ide, WRAP);
+        assert!(!ide.more_open && ide.prefs.wrap);
+        assert!(matches!(&jobs[..], [Job::SavePrefs(p)] if p.wrap));
+        let window = Size::new(1408.0, 844.0);
+        let frame = UiTree::new(view(&ide, window)).layout(window);
+        assert!(frame.regions.iter().any(|r| r.id == "doc:preview"));
     }
 
     #[test]

@@ -75,14 +75,15 @@ pub fn analyze(snapshot: &BufferSnapshot, path: &Path) -> Structure {
     structure
 }
 
-/// The names of the declarations that hold character `at`, the outermost first.
-pub fn symbols_at(structure: &Structure, at: usize) -> Vec<&str> {
+/// The declarations that hold character `at`, the outermost first.
+pub fn symbols_at(
+    structure: &Structure,
+    at: usize,
+) -> impl Iterator<Item = &(String, Range<usize>)> {
     structure
         .symbols
         .iter()
-        .filter(|(_, range)| range.contains(&at))
-        .map(|(name, _)| name.as_str())
-        .collect()
+        .filter(move |(_, range)| range.contains(&at))
 }
 
 #[cfg(test)]
@@ -102,7 +103,10 @@ mod tests {
         );
         assert!(structure.scopes.iter().any(|s| s.start == 3));
         let inside = source.find("let x").unwrap();
-        assert_eq!(symbols_at(&structure, inside), ["m", "go"]);
+        let names: Vec<&str> = symbols_at(&structure, inside)
+            .map(|(n, _)| n.as_str())
+            .collect();
+        assert_eq!(names, ["m", "go"]);
         assert!(analyze(&snapshot, Path::new("a.txt")).folds.is_empty());
     }
 }
