@@ -6484,27 +6484,11 @@ fn setting_select(
 fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<SettingsPage> {
     use quill_model::{Motion, TextSize, Theme};
     let s = &ui.settings;
-    // Desktop's three icons on a track.
-    let theme = limn::SegmentedControl::new(
-        [
-            ("system", icons::MONITOR, Theme::System),
-            ("light", icons::SUN, Theme::Light),
-            ("dark", icons::MOON, Theme::Dark),
-        ]
-        .into_iter()
-        .map(|(value, icon, theme)| {
-            limn::Tab::new(format!("set:theme={value}"), "", 28.0)
-                .icon(icons::of(icon))
-                .active(s.theme == theme)
-        })
-        .collect(),
-        ComponentPalette {
-            raised: look::settings_track(),
-            selected: look::settings_current(),
-            ..palette
-        },
-    )
-    .render();
+    let theme = settings::theme_control(match s.theme {
+        Theme::System => "system",
+        Theme::Light => "light",
+        Theme::Dark => "dark",
+    });
     let text_size = match s.text_size {
         TextSize::Small => "small",
         TextSize::Medium => "medium",

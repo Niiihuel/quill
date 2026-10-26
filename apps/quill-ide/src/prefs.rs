@@ -4,7 +4,7 @@
 use crate::packs::{self, Offered};
 use quill_components::icons;
 use quill_components::settings::{
-    choices, select, setting, setting_button, setting_switch, SettingsPage,
+    choices, select, setting, setting_button, setting_switch, theme_control, SettingsPage,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -124,15 +124,7 @@ pub fn pages(
             icons::SETTINGS,
             vec![(
                 "Appearance".into(),
-                vec![setting(
-                    "Theme",
-                    "",
-                    pick(
-                        "theme",
-                        choices(&[("system", "System"), ("light", "Light"), ("dark", "Dark")]),
-                        &prefs.theme,
-                    ),
-                )],
+                vec![setting("Theme", "", theme_control(&prefs.theme))],
             )],
         ),
         page(

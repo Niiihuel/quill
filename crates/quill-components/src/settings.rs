@@ -81,6 +81,33 @@ pub fn select(name: &str, choices: &[(String, String)], current: &str, open: boo
     )
 }
 
+/// Desktop's theme setting, its three icons on a track: each reports
+/// `set:theme=system|light|dark`; `current` is the one on.
+pub fn theme_control(current: &str) -> Element {
+    use crate::icons;
+    let tabs = [
+        ("system", icons::MONITOR),
+        ("light", icons::SUN),
+        ("dark", icons::MOON),
+    ]
+    .into_iter()
+    .map(|(value, icon)| {
+        limn::Tab::new(format!("set:theme={value}"), "", 28.0)
+            .icon(icons::of(icon))
+            .active(current == value)
+    })
+    .collect();
+    limn::SegmentedControl::new(
+        tabs,
+        ComponentPalette {
+            raised: look::settings_track(),
+            selected: look::settings_current(),
+            ..look::palette()
+        },
+    )
+    .render()
+}
+
 pub fn choices(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
     pairs
         .iter()
