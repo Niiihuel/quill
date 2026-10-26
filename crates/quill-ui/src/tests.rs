@@ -1746,12 +1746,19 @@ fn the_last_pane_closed_keeps_what_it_shows_until_the_column_has_shut() {
     assert_eq!(ui.helper.as_deref(), Some("call"));
     settle(&store, &mut ui);
     assert_eq!((ui.helper.as_deref(), ui.closing), (None, None));
-    // One of two goes at once: the column stays open.
+    // One of two shuts on the stack's spring, still shown until it has; the column stays.
+    ui.reduced_motion = false;
     ui.open_pane(Pane::Agent);
     ui.open_pane(Pane::Plan);
+    ui.tick(&store);
     ui.helper = Some("call".into());
     ui.close_pane(Pane::Agent);
-    assert_eq!((ui.helper.as_deref(), ui.closing), (None, None));
+    ui.tick(&store);
+    assert_eq!(ui.helper.as_deref(), Some("call"));
+    assert_eq!(ui.stack_closing, Some((0, Pane::Agent)));
+    assert!(ui.closing.is_none());
+    settle(&store, &mut ui);
+    assert_eq!((ui.helper.as_deref(), ui.stack_closing), (None, None));
 }
 
 /// The springs at rest, so a pane just opened is drawn whole.
@@ -2168,4 +2175,22 @@ fn code_from_an_editor_goes_to_its_folders_session_as_a_mention() {
         mention(root, Path::new("/work/a.md"), Some((1, 1)), "```x```")
             .starts_with("@a.md (line 1):\n````md\n")
     );
+}
+
+#[test]
+fn a_wider_pane_widens_the_column_and_panes_stack_and_expand_on_springs() {
+    let (store, mut ui) = store_with_session();
+    ui.open_pane(Pane::Files);
+    ui.tick(&store);
+    assert_eq!(ui.column_share.target(), 0.25);
+    // A document beside the tree takes a reader's width, and opens under it.
+    ui.open_pane(Pane::Document);
+    ui.tick(&store);
+    assert_eq!(ui.column_share.target(), 0.5);
+    assert_eq!(ui.stack_shown.target(), 1.0);
+    // Expanded, it grows over the conversation, and moves while it does.
+    ui.expanded_pane = Some(Pane::Document);
+    ui.tick(&store);
+    assert_eq!(ui.expand_shown.target(), 1.0);
+    assert!(ui.animating());
 }

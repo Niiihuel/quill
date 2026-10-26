@@ -135,46 +135,40 @@ fn layout(store: &Store, ui: &Ui, window: Size) -> Layout {
     } else {
         &ui.panes
     };
-    let panes: Vec<Pane> = open
-        .iter()
-        .copied()
+    let mut open = open.to_vec();
+    // A stacked pane that closed stays in its place while the stack closes over it.
+    if let Some((at, pane)) = ui.stack_closing.filter(|_| open.len() == 1) {
+        open.insert(at.min(open.len()), pane);
+    }
+    let mut panes: Vec<Pane> = open
+        .into_iter()
         .filter(|p| *p != Pane::Diff || diff_files(store, ui).is_some())
         // A browser belongs to a session.
         .filter(|p| *p != Pane::Browser || session.is_some())
         .collect();
+    let now = Instant::now();
+    // An expanded pane grows over the conversation, and shrinks back, on a spring.
+    let expanded = ui.expand_shown.value(now).clamp(0.0, 1.0);
     if let Some(pane) = ui.expanded_pane.filter(|p| panes.contains(p)) {
-        return Layout {
-            main: 0.0,
-            column: rest,
-            shown: rest,
-            panes: vec![pane],
-            panel: 0.0,
-        };
+        panes = vec![pane];
     }
-    // The first pane sets the column: the diff takes 3 of 5 parts, a terminal 1 of 3
-    // (the 1× captures of 2026-10-25, see look.rs).
-    let fraction = match panes.first() {
-        Some(Pane::Diff) => 0.6,
-        // A helper agent and a plan open at a third too.
-        Some(Pane::Terminal | Pane::Agent | Pane::Plan) => 1.0 / 3.0,
-        // A session beside reads at about Desktop's thread pane.
-        Some(Pane::Side) => 0.42,
-        // Inferred: a document reads best at half the room, and so does a page.
-        Some(Pane::Document | Pane::Browser) => 0.5,
-        // Inferred: a tree of names reads in a quarter, as a side tree in an editor.
-        Some(Pane::Files) => 0.25,
-        None => 0.0,
+    // The widest pane open sets the column; a dragged boundary sets it instead, as in
+    // Desktop. It moves on the spring between the two (`Ui::tick`).
+    let share = match ui.column_share.target() {
+        target if target > 0.0 => ui.column_share.value(now),
+        _ => ui
+            .column_fraction
+            .unwrap_or_else(|| panes.iter().map(|p| p.share()).fold(0.0, f32::max)),
     };
-    // Dragging the boundary sets the share, as in Desktop.
     let column = if panes.is_empty() {
         0.0
     } else {
-        column_width(rest, ui.column_fraction.unwrap_or(fraction))
+        let at_rest = column_width(rest, share);
+        (at_rest + (rest - at_rest) * expanded).round()
     };
-    let now = Instant::now();
     let shown = (column * ui.column_shown.value(now).clamp(0.0, 1.0)).round();
     let panel = if session.is_some() && rest - look::PANEL_WIDTH >= look::column() {
-        ui.panel_shown.value(now).round()
+        (ui.panel_shown.value(now) * (1.0 - expanded)).round()
     } else {
         0.0
     };
@@ -258,18 +252,21 @@ pub fn column_width(rest: f32, fraction: f32) -> f32 {
     )
 }
 
-/// The heights of the panes in the column, top first: one fills it; two share it, evenly
-/// until the person drags their boundary.
-fn pane_heights(layout: &Layout, ui: &Ui, window: Size) -> Vec<f32> {
+/// The heights of the panes in the column, top first, as they rest and as they are drawn
+/// now: one fills it; two share it, evenly until the person drags their boundary, the lower
+/// opening and closing on a spring (`Ui::stack_shown`).
+fn pane_heights(layout: &Layout, ui: &Ui, window: Size) -> Vec<(f32, f32)> {
     let below = window.height - look::TOP_BAR - 1.0;
     if layout.panes.len() < 2 {
-        return vec![below];
+        return vec![(below, below)];
     }
     let room = below - HANDLE;
     let top = (room * ui.stack_fraction.unwrap_or(0.5))
         .round()
         .clamp(MIN_PANE, (room - MIN_PANE).max(MIN_PANE));
-    vec![top, room - top]
+    let open = ui.stack_shown.value(Instant::now()).clamp(0.0, 1.0);
+    let top_now = (top + (room - top) * (1.0 - open)).round();
+    vec![(top, top_now), (room - top, room - top_now)]
 }
 
 /// A boundary: Desktop's hairline at rest, its blue under the pointer and while dragged.
@@ -333,7 +330,8 @@ pub fn terminal_grid(store: &Store, ui: &Ui, window: Size) -> (u16, u16) {
         .iter()
         .position(|p| *p == Pane::Terminal)
         .unwrap_or(0);
-    let height = pane_heights(&layout, ui, window)[at.min(layout.panes.len().saturating_sub(1))];
+    // The height it rests at: the shell is not resized frame by frame as the stack moves.
+    let height = pane_heights(&layout, ui, window)[at.min(layout.panes.len().saturating_sub(1))].0;
     let inner = Size::new(
         pane_width(&layout) - 2.0 * TERMINAL_PADDING[0],
         height - look::PANE_HEADER - 1.0 - 2.0 * TERMINAL_PADDING[1],
@@ -383,11 +381,14 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
         let heights = pane_heights(&layout, ui, window);
         let width = pane_width(&layout);
         let mut stack = vec![];
-        for (i, (pane, height)) in layout.panes.iter().zip(heights).enumerate() {
+        for (i, (pane, (height, now))) in layout.panes.iter().zip(heights).enumerate() {
             if i > 0 {
                 stack.push(divider(STACK_HANDLE, false, width, palette));
             }
-            stack.push(match pane {
+            // The upper pane is drawn at the height it has now, as when its boundary is
+            // dragged; the lower one at the height it rests at, cut to what has opened.
+            let height = if i == 0 { now } else { height };
+            let drawn = match pane {
                 Pane::Diff => diff_pane(store, ui, width, height, palette),
                 Pane::Terminal => terminal_pane(session, ui, width, height, palette),
                 Pane::Agent => agent_pane(store, session, ui, width, height, palette),
@@ -396,6 +397,13 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
                 Pane::Document => document_pane(ui, width, height, palette),
                 Pane::Browser => browser_pane(session, ui, width, height, palette),
                 Pane::Files => files_pane(ui, width, height, palette),
+            };
+            stack.push(if i == 0 {
+                drawn
+            } else {
+                Element::column(vec![drawn])
+                    .size(Some(width), Some(now.max(0.0)))
+                    .clip_children()
             });
         }
         let mut column = vec![];
@@ -689,7 +697,7 @@ fn files_pane(ui: &Ui, width: f32, height: f32, palette: ComponentPalette) -> El
         .map(|d| files.root.join(&d.path));
     body.push(tree::view(
         files,
-        &Pack::Material,
+        &Pack::Quill,
         shown.as_deref(),
         None,
         [width, below.max(0.0)],
@@ -1134,9 +1142,11 @@ fn top_bar(session: Option<&Session>, ui: &Ui, main: f32, beside: f32) -> Elemen
         row.push(vline(16.0).centered_y());
     }
     if session.is_some() {
+        // Desktop shows and hides its file tree with a list's glyph (`ListBullet`); the folder
+        // is Open in's.
         row.push(toggle(
             FILES_TOGGLE,
-            icons::of(icons::FOLDER),
+            icons::of(icons::LIST),
             "Files",
             ui.pane_open(Pane::Files),
             Some("Ctrl+Shift+E"),
@@ -3036,7 +3046,8 @@ fn browser_card(
     };
     let width = column.min(480.0);
     let mut row = vec![
-        Element::row(vec![Element::icon(icons::of(icons::GLOBE))
+        // A stack centres on both axes; a row only across.
+        Element::stack(vec![Element::icon(icons::of(icons::GLOBE))
             .foreground(look::muted())
             .size(Some(20.0), Some(20.0))
             .centered()])
@@ -4100,20 +4111,26 @@ fn branch_bar(
     if ui.bar_closed.contains(&session.id) {
         return None;
     }
-    let mut row = vec![
-        hgap(5.0),
-        muted(folder_name(&session.cwd)).centered_y(),
-        muted(repo.branch.clone())
+    // Narrow, the bar gives up the folder's name first, then the counts, so the pull request
+    // and the close always fit; the branch takes what is left, cut short with an ellipsis.
+    let mut row = vec![hgap(5.0)];
+    if column >= 520.0 {
+        row.push(muted(folder_name(&session.cwd)).centered_y());
+    }
+    row.push(
+        Element::truncated_text(repo.branch.clone())
             .font_family(FontFamily::Monospace)
+            .font_size(BODY)
+            .foreground(look::muted())
+            .flex(1.0)
             .centered_y(),
-        Element::spacer().flex(1.0),
-    ];
+    );
     let (added, removed) = session
         .working
         .iter()
         .flatten()
         .fold((0, 0), |(a, r), f| (a + f.added, r + f.removed));
-    if added + removed > 0 {
+    if added + removed > 0 && column >= 420.0 {
         let count = |key: &str, text: String, color: limn::Color| {
             limn::RollingNumber::new(format!("bar:{}:{key}", session.id), text, palette)
                 .color(color)

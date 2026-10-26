@@ -816,6 +816,16 @@ pub struct Ui {
     /// the last pane closed, which it still shows while it shuts.
     pub column_shown: limn::ScalarSpring,
     pub closing: Option<Pane>,
+    /// The column's share of the room, on a spring as panes that need more open and close; a
+    /// dragged boundary sets it at once.
+    pub column_share: limn::ScalarSpring,
+    /// How far the expanded pane has grown over the conversation, 0 to 1, on a spring both
+    /// ways.
+    pub expand_shown: limn::ScalarSpring,
+    /// How far the lower of two stacked panes is open, 0 to 1, on a spring, and the one that
+    /// closed with its place in the stack, which it still shows while it shuts.
+    pub stack_shown: limn::ScalarSpring,
+    pub stack_closing: Option<(usize, Pane)>,
     /// The session whose sidebar row has its "···" menu open.
     pub row_menu: Option<SessionId>,
     /// The selected session's title while the person renames it in the top bar.
@@ -1250,6 +1260,24 @@ impl Pane {
         Pane::Files,
     ];
 
+    /// The share of the room right of the sidebar this pane opens the column at. The widest
+    /// pane open sets it, so a document opened beside the tree gets a reader's width.
+    pub fn share(self) -> f32 {
+        match self {
+            // The diff takes 3 of 5 parts, a terminal 1 of 3 (the 1×
+            // captures of 2026-10-25, see look.rs).
+            Pane::Diff => 0.6,
+            // A helper agent and a plan open at a third too.
+            Pane::Terminal | Pane::Agent | Pane::Plan => 1.0 / 3.0,
+            // A session beside reads at about Desktop's thread pane.
+            Pane::Side => 0.42,
+            // Inferred: a document reads best at half the room, and so does a page.
+            Pane::Document | Pane::Browser => 0.5,
+            // Inferred: a tree of names reads in a quarter, as a side tree in an editor.
+            Pane::Files => 0.25,
+        }
+    }
+
     pub fn key(self) -> &'static str {
         match self {
             Pane::Diff => "diff",
@@ -1379,6 +1407,10 @@ impl Ui {
             panel_shown: limn::ScalarSpring::new(look::PANEL_WIDTH, std::time::Instant::now()),
             column_shown: limn::ScalarSpring::new(0.0, std::time::Instant::now()),
             closing: None,
+            column_share: limn::ScalarSpring::new(0.0, std::time::Instant::now()),
+            expand_shown: limn::ScalarSpring::new(0.0, std::time::Instant::now()),
+            stack_shown: limn::ScalarSpring::new(0.0, std::time::Instant::now()),
+            stack_closing: None,
             row_menu: None,
             title_edit: None,
             deleting: None,
@@ -1425,6 +1457,9 @@ impl Ui {
             || self.sidebar.animating(now)
             || self.panel_shown.is_active(now)
             || self.column_shown.is_active(now)
+            || self.column_share.is_active(now)
+            || self.expand_shown.is_active(now)
+            || self.stack_shown.is_active(now)
     }
 
     /// When the host should paint again for what moves on its own: at once for a moving
@@ -1527,9 +1562,39 @@ impl Ui {
         );
         self.column_shown
             .launch(open(!self.panes.is_empty(), 1.0), motion, now);
+        // The widest pane open sets the column's share, unless the person dragged it; it
+        // grows and shrinks on the spring, but a column that opens takes it at once, as the
+        // column slides in on its own.
+        if !self.panes.is_empty() {
+            let share = self
+                .column_fraction
+                .unwrap_or_else(|| self.panes.iter().map(|p| p.share()).fold(0.0, f32::max));
+            if self.column_shown.value(now) < 0.01 {
+                self.column_share.snap_to(share, now);
+            } else {
+                self.column_share.launch(share, motion, now);
+            }
+        }
+        self.expand_shown
+            .launch(open(self.expanded_pane.is_some(), 1.0), motion, now);
+        self.stack_shown
+            .launch(open(self.panes.len() >= 2, 1.0), motion, now);
         if self.reduced_motion {
             self.panel_shown.snap_to(self.panel_shown.target(), now);
             self.column_shown.snap_to(self.column_shown.target(), now);
+            self.column_share.snap_to(self.column_share.target(), now);
+            self.expand_shown.snap_to(self.expand_shown.target(), now);
+            self.stack_shown.snap_to(self.stack_shown.target(), now);
+        }
+        // A stacked pane closed is forgotten once the stack has closed over it, or once
+        // another opened in its place.
+        if let Some((_, pane)) = self.stack_closing {
+            if self.panes.len() != 1 || !self.stack_shown.is_active(now) {
+                self.stack_closing = None;
+                if !self.pane_open(pane) {
+                    self.forget_pane(pane);
+                }
+            }
         }
         // The last pane closed is forgotten once the column has shut, or once another opened.
         if let Some(pane) = self.closing {
@@ -1591,14 +1656,24 @@ impl Ui {
     }
 
     pub fn close_pane(&mut self, pane: Pane) {
-        self.panes.retain(|p| *p != pane);
+        let Some(at) = self.panes.iter().position(|p| *p == pane) else {
+            return;
+        };
+        self.panes.remove(at);
         if self.expanded_pane == Some(pane) {
             self.expanded_pane = None;
         }
-        // The last one keeps what it shows while the column shuts; `tick` forgets it after.
+        // The last one keeps what it shows while the column shuts, and one of two while the
+        // stack closes over it; `tick` forgets them after.
         if self.panes.is_empty() {
             if let Some(before) = self.closing.replace(pane).filter(|p| *p != pane) {
                 self.forget_pane(before);
+            }
+        } else if self.panes.len() == 1 {
+            if let Some((_, before)) = self.stack_closing.replace((at, pane)) {
+                if before != pane && !self.pane_open(before) {
+                    self.forget_pane(before);
+                }
             }
         } else {
             self.forget_pane(pane);
@@ -2075,6 +2150,9 @@ fn dragged(ui: &mut Ui, id: &str, position: limn::Point) {
     if id == view::COLUMN_HANDLE && rest > 0.0 {
         let width = view::column_width(rest, (ui.window.width - position.x) / rest);
         ui.column_fraction = Some(width / rest);
+        // Followed at once, not on the spring that widens the column for a pane.
+        ui.column_share
+            .snap_to(width / rest, std::time::Instant::now());
     } else if id == view::PANEL_HANDLE {
         // Followed at once, not on the spring that slides the panel in and out.
         ui.panel_width = view::panel_width(rest, ui.window.width - position.x);
