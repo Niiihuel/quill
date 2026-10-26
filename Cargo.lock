@@ -3356,6 +3356,7 @@ dependencies = [
  "limn-egui",
  "quill-components",
  "quill-engine",
+ "quill-link",
  "quill-model",
  "quill-pty",
  "quill-ui",
@@ -3446,12 +3447,21 @@ dependencies = [
  "limn-egui",
  "limn-language",
  "quill-components",
+ "quill-link",
  "quill-pty",
  "rfd",
  "serde",
  "serde_json",
  "similar",
  "trash",
+]
+
+[[package]]
+name = "quill-link"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
