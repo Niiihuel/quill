@@ -82,6 +82,17 @@ pub struct TerminalPane {
     pub screen: Option<std::sync::Arc<limn::TerminalScreen>>,
 }
 
+/// The editing keys the host takes from egui, which limn's keys do not carry (Alt), for the
+/// editor on screen.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Edit {
+    MoveLines { down: bool },
+    DuplicateLines,
+    AddCursor { below: bool },
+    ToggleComment,
+    DeleteLines,
+}
+
 /// The keys the tree takes.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TreeKey {
@@ -1024,6 +1035,39 @@ impl Ide {
             }
         }
         jobs
+    }
+
+    /// An editing key on the file on screen, as one undoable step; the caret stays in view.
+    pub fn edit(&mut self, edit: Edit) {
+        let Some(buffer) = self.active_buffer() else {
+            return;
+        };
+        let Some(editor) = &buffer.editor else {
+            return;
+        };
+        use limn_editor::EditorCommand::*;
+        let command = match edit {
+            Edit::MoveLines { down } => MoveLines { down },
+            Edit::DuplicateLines => DuplicateLines,
+            Edit::AddCursor { below } => AddCursorVertical {
+                below,
+                tab_width: 4,
+            },
+            Edit::DeleteLines => DeleteLines,
+            Edit::ToggleComment => {
+                let path = buffer.path.to_string_lossy();
+                let language = limn_language::Language::from_path(&path);
+                let (prefix, suffix) = language.comment_markers_for(&path);
+                ToggleLineComment {
+                    prefix: prefix.into(),
+                    suffix: suffix.into(),
+                }
+            }
+        };
+        // What the buffer refuses (lines not in one run, the document's edge) is left as is.
+        if editor.execute(command).is_ok() {
+            self.reveal = true;
+        }
     }
 
     /// The terminal's toggle, its tabs, its new and its closes. `None` when `id` is none of
@@ -2863,6 +2907,24 @@ mod tests {
         );
         ide.loaded(Loaded::File(trash, Ok(None)));
         assert!(ide.buffers.is_empty());
+    }
+
+    #[test]
+    fn editing_keys_move_duplicate_comment_and_delete_lines() {
+        let mut ide = with_files();
+        read(&mut ide, "/r/a.rs", "one\ntwo\n");
+        let text = |ide: &Ide| text_of(&ide.buffers[0]);
+        ide.edit(Edit::MoveLines { down: true });
+        assert_eq!(text(&ide), "two\none\n");
+        ide.edit(Edit::DuplicateLines);
+        assert_eq!(text(&ide), "two\none\none\n");
+        ide.edit(Edit::ToggleComment);
+        assert!(text(&ide).contains("// one"), "{}", text(&ide));
+        ide.edit(Edit::DeleteLines);
+        assert_eq!(text(&ide).lines().count(), 2);
+        ide.edit(Edit::AddCursor { below: false });
+        let editor = ide.buffers[0].editor.as_ref().unwrap();
+        assert_eq!(editor.snapshot().unwrap().selections().count(), 2);
     }
 
     #[test]

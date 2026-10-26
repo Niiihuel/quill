@@ -223,6 +223,37 @@ impl eframe::App for App {
                 id: ide::TERMINAL_TOGGLE.into(),
             });
         }
+        // Editing keys with Alt, and Ctrl+/, which limn's keys do not carry: taken from egui
+        // while the editor has the keys, as VS Code binds them.
+        if self.tree.focused_id().is_some()
+            && self.tree.focused_id() == self.ide.editor_id().as_deref()
+        {
+            use egui::{Key, Modifiers};
+            let (alt, ctrl, shift) = (Modifiers::ALT, Modifiers::CTRL, Modifiers::SHIFT);
+            let bindings = [
+                (
+                    ctrl | alt,
+                    Key::ArrowUp,
+                    ide::Edit::AddCursor { below: false },
+                ),
+                (
+                    ctrl | alt,
+                    Key::ArrowDown,
+                    ide::Edit::AddCursor { below: true },
+                ),
+                (shift | alt, Key::ArrowUp, ide::Edit::DuplicateLines),
+                (shift | alt, Key::ArrowDown, ide::Edit::DuplicateLines),
+                (alt, Key::ArrowUp, ide::Edit::MoveLines { down: false }),
+                (alt, Key::ArrowDown, ide::Edit::MoveLines { down: true }),
+                (ctrl, Key::Slash, ide::Edit::ToggleComment),
+                (ctrl | shift, Key::K, ide::Edit::DeleteLines),
+            ];
+            for (modifiers, key, edit) in bindings {
+                if ctx.input_mut(|i| i.consume_key(modifiers, key)) {
+                    self.ide.edit(edit);
+                }
+            }
+        }
         let focused = self.tree.focused_id().map(str::to_owned);
         for event in limn_egui::events(&ctx, area.min) {
             if self.typed_into_terminal(focused.as_deref(), &event) {
