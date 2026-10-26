@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 
 mod bridge;
+mod servers;
 
 pub use quill_browser::{Frame, Frames};
 use std::sync::{Arc, Mutex};
@@ -22,8 +23,31 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 pub type Sink = Arc<dyn Fn(Event) + Send + Sync>;
 
 /// Site permissions the browser waits on: by card, the site and where the answer goes.
-type SiteWaits =
-    Arc<Mutex<HashMap<String, (String, tokio::sync::oneshot::Sender<quill_browser::Grant>)>>>;
+/// Questions quill itself asks on a permission card: by card, what for (a site, whose
+/// "Always" joins Settings, or a dev server) and where the answer goes.
+type SiteWaits = Arc<
+    Mutex<
+        HashMap<
+            String,
+            (
+                Option<String>,
+                tokio::sync::oneshot::Sender<quill_browser::Grant>,
+            ),
+        >,
+    >,
+>;
+
+/// Ask the person on a permission card of quill's own; `site` is the site a yes "Always"
+/// keeps, if it is one.
+pub(crate) type Ask = Arc<
+    dyn Fn(
+            SessionId,
+            serde_json::Value,
+            Option<String>,
+        ) -> tokio::sync::oneshot::Receiver<quill_browser::Grant>
+        + Send
+        + Sync,
+>;
 
 /// The agents quill has adapters for, as Settings lists them.
 const AGENTS: [&str; 1] = ["claude"];
@@ -197,6 +221,10 @@ struct Router {
     /// Site permissions the browser waits on, by the card's id: the site and where the
     /// answer goes.
     site_waits: SiteWaits,
+    /// Asks the person on a card of quill's own.
+    ask: Ask,
+    /// The dev servers agents started with preview_start.
+    servers: Arc<servers::Servers>,
     /// What the agents' `$BROWSER` hands back; `None` when the person has a `BROWSER` of
     /// their own or there is no private folder for it.
     bridge: Option<bridge::Bridge>,
@@ -235,16 +263,13 @@ impl Router {
             })
         };
         let site_waits: SiteWaits = Arc::default();
-        // A site the agent wants is asked about on a card, as a permission is.
-        let permit: quill_browser::Permit = {
+        // What quill asks itself (a site, a dev server) is a card, as a permission is.
+        let ask: Ask = {
             let (sink, ui, waits) = (sink.clone(), ui.clone(), site_waits.clone());
-            Arc::new(move |session, ask: quill_browser::SiteAsk| {
+            Arc::new(move |session, input, site| {
                 let (answer, heard) = tokio::sync::oneshot::channel();
                 let id = format!("site-{}", uuid::Uuid::new_v4().simple());
-                waits
-                    .lock()
-                    .unwrap()
-                    .insert(id.clone(), (ask.host.clone(), answer));
+                waits.lock().unwrap().insert(id.clone(), (site, answer));
                 sink(Event::Agent {
                     session,
                     request: None,
@@ -252,9 +277,7 @@ impl Router {
                         id,
                         call: None,
                         tool: quill_model::SITE_PERMISSION.into(),
-                        input: serde_json::json!({
-                            "site": ask.host, "url": ask.url, "opening": ask.opening,
-                        }),
+                        input,
                         title: None,
                         interactive: false,
                         suggestions: vec![],
@@ -265,6 +288,15 @@ impl Router {
                     status: SessionStatus::Awaiting,
                 });
                 heard
+            })
+        };
+        let permit: quill_browser::Permit = {
+            let ask = ask.clone();
+            Arc::new(move |session, site: quill_browser::SiteAsk| {
+                let input = serde_json::json!({
+                    "kind": "site", "site": site.host, "url": site.url, "opening": site.opening,
+                });
+                ask(session, input, Some(site.host))
             })
         };
         let browser = {
@@ -301,6 +333,8 @@ impl Router {
             sink,
             config,
             internal,
+            ask,
+            servers: Arc::default(),
             bridge: bridge::Bridge::start(browser.clone()),
             browser,
             site_waits,
@@ -588,7 +622,7 @@ impl Router {
         permission: String,
         decision: quill_model::Decision,
     ) -> bool {
-        let Some((host, answer)) = self.site_waits.lock().unwrap().remove(&permission) else {
+        let Some((site, answer)) = self.site_waits.lock().unwrap().remove(&permission) else {
             return false;
         };
         let grant = match &decision {
@@ -605,10 +639,12 @@ impl Router {
             session,
             status: SessionStatus::Running,
         });
-        if grant == quill_browser::Grant::Always && !self.settings.browser_sites.contains(&host) {
-            let mut settings = self.settings.clone();
-            settings.browser_sites.push(host);
-            self.save_settings(settings).await;
+        if let (quill_browser::Grant::Always, Some(host)) = (grant, site) {
+            if !self.settings.browser_sites.contains(&host) {
+                let mut settings = self.settings.clone();
+                settings.browser_sites.push(host);
+                self.save_settings(settings).await;
+            }
         }
         let _ = answer.send(grant);
         true
@@ -831,6 +867,7 @@ impl Router {
             }
             // The agent is stopped first, so nothing it says lands after its record is gone.
             Intent::Delete { session } => {
+                self.servers.forget(session);
                 let browser = self.browser.clone();
                 tokio::spawn(async move { browser.forget(session).await });
                 self.folders.remove(&session);
@@ -903,6 +940,39 @@ impl Router {
 
     async fn internal(&mut self, note: Internal) {
         match note {
+            // Dev servers are processes, the engine's own; they open in the browser.
+            Internal::HostTool {
+                session,
+                id,
+                name,
+                input,
+            } if name.starts_with("preview_") => {
+                let place = servers::Place {
+                    cwd: self.folders.get(&session).cloned(),
+                    file: self
+                        .started
+                        .get(&session)
+                        .and_then(|new| adapter(&new.agent))
+                        .and_then(|a| a.launch_file()),
+                };
+                let (servers, browser, ask, internal) = (
+                    self.servers.clone(),
+                    self.browser.clone(),
+                    self.ask.clone(),
+                    self.internal.clone(),
+                );
+                tokio::spawn(async move {
+                    let (content, is_error) =
+                        servers::tool(&servers, &browser, &ask, session, place, &name, &input)
+                            .await;
+                    let _ = internal.send(Internal::HostAnswered {
+                        session,
+                        id,
+                        content,
+                        is_error,
+                    });
+                });
+            }
             // The browser's tools wait on pages: they run beside the router, which hears
             // their answer back.
             Internal::HostTool {

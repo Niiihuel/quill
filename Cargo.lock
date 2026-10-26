@@ -2954,6 +2954,7 @@ dependencies = [
 name = "quill-engine"
 version = "0.0.1"
 dependencies = [
+ "libc",
  "quill-agent",
  "quill-agent-claude",
  "quill-browser",

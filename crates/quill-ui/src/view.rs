@@ -2079,6 +2079,10 @@ fn permission_heading(tool: &str, input: &Value) -> String {
     // The browser's own question, Desktop's site card [notes], less the agent's
     // name.
     if tool == quill_model::SITE_PERMISSION {
+        if input["kind"] == "server" {
+            let name = input["name"].as_str().unwrap_or_default();
+            return format!("Allow the agent to start the dev server {name}?");
+        }
         let site = input["site"].as_str().unwrap_or_default();
         return format!("Allow the agent to use the browser on {site}?");
     }
@@ -2949,6 +2953,14 @@ fn browser_step(tool: &str, input: &Value, done: bool) -> (String, String) {
         "tabs_create" => (pick("Opened tab", "Opening tab"), none),
         "tabs_select" => (pick("Switched tabs", "Switching tabs"), none),
         "tabs_close" => (pick("Closed tab", "Closing tab"), none),
+        // Desktop's own for dev servers: "Starting preview".
+        "preview_start" => match (said("name").as_str(), host(&said("url"))) {
+            ("", Some(host)) => (pick("Opened", "Opening"), host),
+            (name, _) => (pick("Started preview", "Starting preview"), name.to_owned()),
+        },
+        "preview_stop" => (pick("Stopped server", "Stopping server"), none),
+        "preview_list" => (pick("Listed servers", "Listing servers"), none),
+        "preview_logs" => (pick("Read server logs", "Reading server logs"), none),
         "browser_batch" => (
             format!(
                 "Batch \u{2014} {} actions",
@@ -3011,7 +3023,10 @@ fn viewport_menu(tab: Option<&quill_model::BrowserTab>, ui: &Ui) -> Element {
 
 /// The tab a browser tool opened, from the line its answer leads with.
 fn opened_tab(name: &str, result: Option<&ToolResult>) -> Option<Value> {
-    if !matches!(name, "mcp__browser__navigate" | "mcp__browser__tabs_create") {
+    if !matches!(
+        name,
+        "mcp__browser__navigate" | "mcp__browser__tabs_create" | "mcp__browser__preview_start"
+    ) {
         return None;
     }
     let result = result.filter(|r| !r.is_error && !r.stopped)?;
@@ -3871,6 +3886,41 @@ fn site_permission(
     palette: ComponentPalette,
 ) -> Element {
     let inner = width - 32.0;
+    // A dev server shows what it runs and where, as a command's card does.
+    if input["kind"] == "server" {
+        let rows = vec![
+            text(permission_heading(quill_model::SITE_PERMISSION, input))
+                .font_family(FontFamily::SansBold)
+                .size(Some(inner), None),
+            muted(input["folder"].as_str().unwrap_or_default().to_owned())
+                .font_size(SMALL)
+                .size(Some(inner), None),
+            Element::panel(
+                text(input["command"].as_str().unwrap_or_default().to_owned())
+                    .font_family(FontFamily::Monospace)
+                    .font_size(SMALL)
+                    .foreground(look::command_ink())
+                    .size(Some(inner - 32.0), None),
+            )
+            .background(look::command_box())
+            .radius(6.0)
+            .padding(14.0),
+            actions(
+                id,
+                true,
+                ("Always allow this server", "Until quill quits"),
+                "Don't allow",
+                ui,
+                palette,
+            ),
+        ];
+        return Element::panel(Element::column(rows).gap(12.0))
+            .background(palette.surface)
+            .border(look::card_border(), 1.0)
+            .radius(12.0)
+            .padding(16.0)
+            .size(Some(width), None);
+    }
     let rows = vec![
         text(permission_heading(quill_model::SITE_PERMISSION, input))
             .font_family(FontFamily::SansBold)

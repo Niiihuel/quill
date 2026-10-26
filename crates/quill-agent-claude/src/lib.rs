@@ -249,6 +249,11 @@ impl AgentAdapter for Claude {
         "Claude Code"
     }
 
+    /// Claude Desktop's own.
+    fn launch_file(&self) -> Option<&'static str> {
+        Some(LAUNCH_FILE)
+    }
+
     fn tested(&self) -> &'static [&'static str] {
         // The versions the fixtures were captured from.
         &["2.1.310"]
@@ -329,7 +334,7 @@ impl AgentAdapter for Claude {
                     "subtype": "initialize",
                     "hooks": { "PostToolUse": [{ "hookCallbackIds": [POST_TOOL_HOOK] }] },
                     "sdkMcpServers": [SERVER, BROWSER_SERVER],
-                    "appendSystemPrompt": format!("{SESSIONS_GUIDE}\n\n{BROWSER_GUIDE}"),
+                    "appendSystemPrompt": format!("{SESSIONS_GUIDE}\n\n{BROWSER_GUIDE}\n\n{LAUNCH_GUIDE}"),
                 }));
                 self.initialize = Some(self.last_request_id());
                 vec![line]
@@ -623,6 +628,10 @@ fn success(id: &Value, response: Value) -> String {
 /// The in-process MCP server that carries quill's own tools ([`HOST_TOOLS`]); the agent sees
 /// them as `mcp__sessions__…`.
 const SERVER: &str = "sessions";
+/// Where a project keeps its dev servers, as Claude Desktop does.
+const LAUNCH_FILE: &str = ".claude/launch.json";
+/// The launch file's place and format, for preview_start, in quill's words.
+const LAUNCH_GUIDE: &str = "# Dev servers\n\npreview_start {name} runs a dev server from .claude/launch.json and opens it in the built-in browser. If the file does not exist, create it in this format:\n{\n  \"version\": \"0.0.1\",\n  \"configurations\": [\n    { \"name\": \"dev\", \"runtimeExecutable\": \"npm\", \"runtimeArgs\": [\"run\", \"dev\"], \"port\": 5173 }\n  ]\n}\nThe server gets its port in PORT. An optional \"url\" opens the preview there instead of http://localhost:<port>.";
 /// The in-process MCP server of the built-in browser's tools ([`BROWSER_TOOLS`]):
 /// `mcp__browser__navigate` and the rest.
 const BROWSER_SERVER: &str = "browser";

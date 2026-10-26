@@ -368,6 +368,11 @@ pub trait AgentAdapter: Send {
     /// The versions of the agent's program quill was tested with.
     fn tested(&self) -> &'static [&'static str];
     fn launch(&self, spec: &SessionSpec) -> LaunchPlan;
+    /// Where, in a session's folder, the agent keeps the dev servers `preview_start` runs
+    /// ([`LaunchConfig`]); `None` when it keeps none.
+    fn launch_file(&self) -> Option<&'static str> {
+        None
+    }
     /// Lines for `command`. Commands the agent answers get an id, reported back as [`AgentEvent::Reply`].
     fn encode(&mut self, command: AgentCommand) -> Vec<String>;
     fn decode(&mut self, line: &str) -> Decoded;
@@ -376,7 +381,23 @@ pub trait AgentAdapter: Send {
 /// The built-in browser's tools (docs/browser.md §4), served like [`HOST_TOOLS`] by a server of
 /// their own, `browser`. Their meaning follows Claude Desktop 3.6556.2's browser tools (ficha
 ///; the words are quill's.
-pub const BROWSER_TOOLS: [(&str, &str, &str); 15] = [
+/// One dev server of a project's launch file (Claude Desktop's format, notes):
+/// `{"version": "0.0.1", "configurations": [{"name", "runtimeExecutable", "runtimeArgs",
+/// "port", "url"?}]}`.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchConfig {
+    pub name: String,
+    pub runtime_executable: String,
+    #[serde(default)]
+    pub runtime_args: Vec<String>,
+    pub port: u16,
+    /// Where the preview opens instead of http://localhost:<port>.
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+pub const BROWSER_TOOLS: [(&str, &str, &str); 19] = [
     (
         "navigate",
         "Open a URL in a tab of the built-in browser, which the user sees beside the conversation, or go \"back\" or \"forward\" in its history. Waits for the page to load. Local addresses (localhost, 127.0.0.1) are always allowed; other sites may need the user's permission.",
@@ -446,6 +467,26 @@ pub const BROWSER_TOOLS: [(&str, &str, &str); 15] = [
         "tabs_close",
         "Close a tab.",
         r#"{"type":"object","properties":{"tabId":{"type":"integer"}},"required":["tabId"]}"#,
+    ),
+    (
+        "preview_start",
+        "Start a dev server of this project by its name in the project's launch file and open it in a tab of the built-in browser, or open url in a tab. Reuses the server if it already runs; the user approves a server the first time. Use this instead of Bash to run dev servers.",
+        r#"{"type":"object","properties":{"name":{"type":"string","description":"The server's name in the launch file."},"url":{"type":"string","description":"An address to open instead of starting a server."}}}"#,
+    ),
+    (
+        "preview_stop",
+        "Stop a dev server started with preview_start.",
+        r#"{"type":"object","properties":{"serverId":{"type":"string"}},"required":["serverId"]}"#,
+    ),
+    (
+        "preview_list",
+        "The dev servers started with preview_start: their ids, names, addresses and whether they run.",
+        r#"{"type":"object","properties":{}}"#,
+    ),
+    (
+        "preview_logs",
+        "A dev server's output, its standard output and errors: level \"error\" keeps the error lines, search the lines that contain it.",
+        r#"{"type":"object","properties":{"serverId":{"type":"string"},"level":{"type":"string","enum":["all","error"]},"search":{"type":"string"}},"required":["serverId"]}"#,
     ),
     (
         "browser_batch",

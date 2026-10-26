@@ -20,3 +20,5 @@ serde_json.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "process", "io-util", "sync", "macros", "time", "net"] }
 # Request ids, as the agent receives them for each prompt.
 uuid = { version = "1", features = ["v4"] }
+# Stopping a dev server's whole process group (kill with a negative pid).
+libc = "0.2"
