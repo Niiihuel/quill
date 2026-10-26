@@ -7,6 +7,7 @@ mod files;
 mod find;
 mod grep;
 mod ide;
+mod lsp;
 mod marks;
 mod packs;
 mod prefs;
@@ -39,6 +40,8 @@ struct App {
     focus_waits: u32,
     /// The folder's shells, kept while the window lives.
     shells: quill_pty::Tabs,
+    /// The language servers.
+    lsp: lsp::Lsp,
 }
 
 impl App {
@@ -139,6 +142,12 @@ impl eframe::App for App {
             self.run(jobs);
         }
         let jobs = self.ide.marks_due();
+        self.run(jobs);
+        let wake: Arc<dyn Fn() + Send + Sync> = {
+            let ctx = ctx.clone();
+            Arc::new(move || ctx.request_repaint())
+        };
+        let jobs = self.lsp.sync(&mut self.ide, &wake);
         self.run(jobs);
         // What an agent or another editor writes shows within a second.
         if self.polled.elapsed() >= POLL {
@@ -259,8 +268,50 @@ impl eframe::App for App {
             if self.typed_into_terminal(focused.as_deref(), &event) {
                 continue;
             }
-            // Opening by name and finding in every file: the arrows move the row Enter opens.
-            if self.ide.quick.is_some() || self.ide.grep.is_some() {
+            // The hover goes with the next key or press.
+            if self.ide.hover.is_some()
+                && matches!(
+                    &event,
+                    limn::UiEvent::Key { .. }
+                        | limn::UiEvent::Text(_)
+                        | limn::UiEvent::PointerDown { .. }
+                )
+            {
+                self.ide.hover = None;
+            }
+            // The language server's keys on the editor, as VS Code's, and Vim's K for hover.
+            let on_editor = focused.is_some() && focused == self.ide.editor_id();
+            if on_editor {
+                let id = match &event {
+                    limn::UiEvent::Key {
+                        key: limn::Key::F12,
+                        shift: false,
+                        ..
+                    } => Some(ide::LSP_DEFINITION),
+                    limn::UiEvent::Key {
+                        key: limn::Key::F12,
+                        shift: true,
+                        ..
+                    } => Some(ide::LSP_REFERENCES),
+                    limn::UiEvent::Key {
+                        key: limn::Key::F2, ..
+                    } => Some(ide::LSP_RENAME),
+                    limn::UiEvent::Text(typed)
+                        if typed == "K" && self.ide.vim_mode == Some(limn::VimMode::Normal) =>
+                    {
+                        Some(ide::LSP_HOVER)
+                    }
+                    _ => None,
+                };
+                if let Some(id) = id {
+                    actions.push(limn::UiAction::Clicked { id: id.into() });
+                    continue;
+                }
+            }
+            // Opening by name, finding in every file and references: the arrows move the row
+            // Enter opens.
+            if self.ide.quick.is_some() || self.ide.grep.is_some() || self.ide.references.is_some()
+            {
                 if let limn::UiEvent::Key {
                     key: key @ (limn::Key::ArrowUp | limn::Key::ArrowDown),
                     ..
@@ -427,6 +478,7 @@ impl eframe::App for App {
                 let typed = match id.as_str() {
                     quick::QUICK_FIELD => self.ide.quick.as_ref().map(|(q, _)| q.clone()),
                     ide::NAME_FIELD => self.ide.naming.as_ref().map(|n| n.value.clone()),
+                    ide::SYMBOL_FIELD => self.ide.renaming_symbol.clone(),
                     _ => None,
                 };
                 if let Some(typed) = typed {
@@ -530,6 +582,7 @@ fn main() -> eframe::Result {
                 kept,
                 focus_waits: 0,
                 shells: quill_pty::Tabs::default(),
+                lsp: lsp::Lsp::default(),
             };
             app.run(jobs);
             Ok(Box::new(app))

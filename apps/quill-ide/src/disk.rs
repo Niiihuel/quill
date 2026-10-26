@@ -53,6 +53,10 @@ pub fn run(job: Job) -> Loaded {
             let done = crate::files::run(&root, &op, crate::files::system_trash);
             Loaded::File(op, done)
         }
+        Job::ApplyEdits(path, edits) => {
+            let done = apply_edits(&path, &edits);
+            Loaded::EditsApplied(path, done)
+        }
         Job::Analyze(path, save) => {
             let structure = crate::structure::analyze(&save.0, &path);
             Loaded::Analyzed(path, structure)
@@ -91,6 +95,20 @@ pub fn run(job: Job) -> Loaded {
                 .collect(),
         ),
     }
+}
+
+/// A language server's edits made to `path` on the disk, whole or not at all.
+fn apply_edits(path: &Path, edits: &str) -> Result<Stamp, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let edits: serde_json::Value = serde_json::from_str(edits).map_err(|e| e.to_string())?;
+    let mut buffer = limn_editor::TextBuffer::new(&text).map_err(|e| format!("{e:?}"))?;
+    let edits =
+        limn_language::lsp::text_edits(&buffer.snapshot(), &edits).map_err(|e| e.message)?;
+    let caret = limn_editor::Selection::caret(0);
+    buffer
+        .apply_transaction(&edits, caret, limn_editor::EditKind::Replace, 0)
+        .map_err(|e| format!("{e:?}"))?;
+    write(path, &buffer.snapshot()).map_err(|e| e.to_string())
 }
 
 /// The HEAD file of the repository `root` is in: `.git/HEAD` in it or a folder above it, or

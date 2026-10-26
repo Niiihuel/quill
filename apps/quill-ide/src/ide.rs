@@ -35,6 +35,16 @@ const NAME_CLOSE: &str = "name:close";
 const TRASH_CONFIRM: &str = "trash:confirm";
 const TRASH_CANCEL: &str = "trash:cancel";
 const FILE_ERROR_DISMISS: &str = "file-error:dismiss";
+pub const LSP_HOVER: &str = "lsp:hover";
+pub const LSP_DEFINITION: &str = "lsp:definition";
+pub const LSP_REFERENCES: &str = "lsp:references";
+pub const LSP_RENAME: &str = "lsp:rename";
+const LSP_FORMAT: &str = "lsp:format";
+const HOVER_DISMISS: &str = "hover:dismiss";
+pub const SYMBOL_FIELD: &str = "symbol:field";
+const SYMBOL_CLOSE: &str = "symbol:close";
+const REFS_FIELD: &str = "refs:field";
+const REFS_CLOSE: &str = "refs:close";
 /// The terminal's share of the window under the editor, its type and its insets, as quill's.
 const TERMINAL_HEIGHT: f32 = 0.36;
 pub const TERMINAL_FONT: f32 = 12.0;
@@ -142,6 +152,8 @@ pub enum Job {
     Analyze(PathBuf, Save),
     /// Make, rename or trash a file of the folder.
     File(PathBuf, Op),
+    /// A language server's edits (JSON) to a file that is not open, made on the disk.
+    ApplyEdits(PathBuf, String),
 }
 
 /// A family's regular and bold faces, for the editor.
@@ -190,6 +202,41 @@ pub enum Loaded {
     Analyzed(PathBuf, Structure),
     /// What a file operation made or moved to, from the folder, or why it did not.
     File(Op, Result<Option<PathBuf>, String>),
+    /// Edits made on the disk, or why not.
+    EditsApplied(PathBuf, Result<Stamp, String>),
+}
+
+/// What the person asks a language server, at a character of a file.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Ask {
+    pub path: PathBuf,
+    pub offset: usize,
+    pub kind: AskKind,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum AskKind {
+    Hover,
+    Definition,
+    References,
+    Rename(String),
+    Format,
+}
+
+/// A server's diagnostic, in the characters of the revision it came for.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Diagnostic {
+    pub range: std::ops::Range<usize>,
+    /// 1 error, 2 warning, 3 information, 4 hint.
+    pub severity: u32,
+    pub message: String,
+}
+
+/// A place a server names: a file and its row.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Location {
+    pub path: PathBuf,
+    pub row: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -328,6 +375,15 @@ pub struct Ide {
     pub naming: Option<Naming>,
     pub trashing: Option<PathBuf>,
     pub file_error: Option<String>,
+    /// Language servers: what was asked and waits for the host to send, each file's
+    /// diagnostics with the revision they came for, the hover shown, the references listed
+    /// with the row Enter opens, the name a symbol is being renamed to, and the last news.
+    pub lsp_asks: Vec<Ask>,
+    pub diagnostics: HashMap<PathBuf, (u64, Vec<Diagnostic>)>,
+    pub hover: Option<String>,
+    pub references: Option<(Vec<Location>, usize)>,
+    pub renaming_symbol: Option<String>,
+    pub lsp_note: Option<String>,
 }
 
 #[derive(Default)]
@@ -408,6 +464,12 @@ impl Ide {
             naming: None,
             trashing: None,
             file_error: None,
+            lsp_asks: vec![],
+            diagnostics: HashMap::new(),
+            hover: None,
+            references: None,
+            renaming_symbol: None,
+            lsp_note: None,
         };
         (ide, jobs)
     }
@@ -462,6 +524,8 @@ impl Ide {
                 self.quick = Some((value.clone(), 0));
             } else if id == GREP_FIELD {
                 return self.grep_for(value);
+            } else if id == SYMBOL_FIELD {
+                self.renaming_symbol = Some(value.clone());
             } else if id == NAME_FIELD {
                 if let Some(naming) = self.naming.as_mut() {
                     naming.value = value.clone();
@@ -486,6 +550,13 @@ impl Ide {
             }
             if id == NAME_FIELD {
                 return self.name_done();
+            }
+            if id == SYMBOL_FIELD {
+                self.rename_symbol();
+            }
+            if id == REFS_FIELD {
+                let chosen = self.references.as_ref().map_or(0, |(_, c)| *c);
+                return self.reference_open(chosen);
             }
             if id == FIND_QUERY {
                 self.find_with(|find, editor| find.step(editor, 1));
@@ -528,6 +599,9 @@ impl Ide {
             return jobs;
         }
         if let Some(jobs) = self.file_clicked(id) {
+            return jobs;
+        }
+        if let Some(jobs) = self.lsp_clicked(id) {
             return jobs;
         }
         if id == TREE_TOGGLE {
@@ -669,6 +743,9 @@ impl Ide {
         }
         if let Some(grep) = self.grep.as_mut() {
             step(&mut grep.chosen, grep.hits.len());
+        }
+        if let Some((found, chosen)) = self.references.as_mut() {
+            step(chosen, found.len());
         }
     }
 
@@ -1037,6 +1114,87 @@ impl Ide {
         jobs
     }
 
+    /// Asks of the language server about the caret, and its answers' dialogs. `None` when `id`
+    /// is none of them.
+    fn lsp_clicked(&mut self, id: &str) -> Option<Vec<Job>> {
+        let ask = |ide: &mut Ide, kind: AskKind| {
+            let buffer = ide.active_buffer();
+            let at =
+                buffer.and_then(|b| Some((b.path.clone(), b.editor.as_ref()?.snapshot().ok()?)));
+            if let Some((path, snapshot)) = at {
+                let offset = snapshot.selection().head;
+                ide.lsp_asks.push(Ask { path, offset, kind });
+            }
+        };
+        match id {
+            LSP_HOVER => ask(self, AskKind::Hover),
+            LSP_DEFINITION => ask(self, AskKind::Definition),
+            LSP_REFERENCES => ask(self, AskKind::References),
+            LSP_FORMAT => ask(self, AskKind::Format),
+            LSP_RENAME => {
+                self.renaming_symbol = Some(self.word_at_caret().unwrap_or_default());
+                self.focus = Some(SYMBOL_FIELD.into());
+            }
+            "symbol:go" => self.rename_symbol(),
+            SYMBOL_CLOSE => self.renaming_symbol = None,
+            HOVER_DISMISS => self.hover = None,
+            REFS_CLOSE => self.references = None,
+            _ => {
+                let at = id.strip_prefix("refs:at:")?.parse().ok()?;
+                return Some(self.reference_open(at));
+            }
+        }
+        Some(vec![])
+    }
+
+    /// The word the caret is in, as the name a rename starts from.
+    fn word_at_caret(&self) -> Option<String> {
+        let snapshot = self.active_buffer()?.editor.as_ref()?.snapshot().ok()?;
+        let head = snapshot.selection().head;
+        let row = snapshot.row_of(head).ok()?;
+        let line = snapshot.line_range(row).ok()?;
+        let text: Vec<char> = snapshot.text_range(line.clone()).ok()?.chars().collect();
+        let at = head - line.start;
+        let word = |c: &char| c.is_alphanumeric() || *c == '_';
+        let start = text[..at.min(text.len())]
+            .iter()
+            .rposition(|c| !word(c))
+            .map_or(0, |i| i + 1);
+        let end = text[at.min(text.len())..]
+            .iter()
+            .position(|c| !word(c))
+            .map_or(text.len(), |i| at + i);
+        Some(text[start..end].iter().collect())
+    }
+
+    fn rename_symbol(&mut self) {
+        let Some(name) = self.renaming_symbol.take().filter(|n| !n.trim().is_empty()) else {
+            return;
+        };
+        let at = self
+            .active_buffer()
+            .and_then(|b| Some((b.path.clone(), b.editor.as_ref()?.snapshot().ok()?)));
+        if let Some((path, snapshot)) = at {
+            let offset = snapshot.selection().head;
+            self.lsp_asks.push(Ask {
+                path,
+                offset,
+                kind: AskKind::Rename(name.trim().to_owned()),
+            });
+        }
+    }
+
+    fn reference_open(&mut self, at: usize) -> Vec<Job> {
+        let Some(found) = self
+            .references
+            .take()
+            .and_then(|(f, _)| f.into_iter().nth(at))
+        else {
+            return vec![];
+        };
+        self.goto(found.path, found.row)
+    }
+
     /// An editing key on the file on screen, as one undoable step; the caret stays in view.
     pub fn edit(&mut self, edit: Edit) {
         let Some(buffer) = self.active_buffer() else {
@@ -1315,6 +1473,11 @@ impl Ide {
                 }
             }
             Loaded::File(op, done) => return self.file_done(op, done),
+            Loaded::EditsApplied(path, done) => {
+                if let Err(error) = done {
+                    self.lsp_note = Some(format!("{}: {error}", name(&path)));
+                }
+            }
             Loaded::Analyzed(path, structure) => {
                 if let Some(buffer) = self.buffers.iter_mut().find(|b| b.path == path) {
                     buffer.structure = Some(structure);
@@ -1452,6 +1615,7 @@ impl Ide {
             (Key::F, true) => Some(GREP_OPEN.into()),
             (Key::G, false) => Some(QUICK_LINE.into()),
             (Key::J, true) => Some(TERMINAL_TOGGLE.into()),
+            (Key::I, true) => Some(LSP_FORMAT.into()),
             // With Vim keys Ctrl+F is a page down, and `/` finds.
             (Key::F, false) if !self.prefs.vim => Some(FIND_OPEN.into()),
             _ => None,
@@ -1630,6 +1794,59 @@ pub fn view(ide: &Ide, window: Size) -> Element {
     };
     let root = match &ide.naming {
         Some(naming) => name_dialog(ide, naming, root),
+        None => root,
+    };
+    let root = match &ide.renaming_symbol {
+        Some(value) => {
+            let row = match value.trim() {
+                "" => Found::new("symbol:go", "Type the new name"),
+                new => Found::new("symbol:go", format!("Rename it {new} everywhere")),
+            };
+            search::dialog(
+                root,
+                SYMBOL_FIELD,
+                SYMBOL_CLOSE,
+                value,
+                "The symbol's new name",
+                vec![("Rename symbol".into(), vec![row])],
+                0,
+            )
+        }
+        None => root,
+    };
+    let root = match &ide.references {
+        Some((found, chosen)) => {
+            let rows = found
+                .iter()
+                .enumerate()
+                .map(|(at, place)| {
+                    let mut row = Found::new(
+                        format!("refs:at:{at}"),
+                        format!("{}:{}", name(&place.path), place.row + 1),
+                    );
+                    let dir = ide
+                        .relative(&place.path)
+                        .parent()
+                        .map(|d| d.display().to_string());
+                    row.detail = dir.filter(|d| !d.is_empty());
+                    row.icon = Some(ide.pack.icon(&place.path, false, false));
+                    row
+                })
+                .collect();
+            let title = match found.len() {
+                1 => "1 reference".to_owned(),
+                n => format!("{n} references"),
+            };
+            search::dialog(
+                root,
+                REFS_FIELD,
+                REFS_CLOSE,
+                "",
+                "References",
+                vec![(title, rows)],
+                *chosen,
+            )
+        }
         None => root,
     };
     let root = match &ide.trashing {
@@ -1972,6 +2189,7 @@ fn editor(ide: &Ide, width: f32, height: f32) -> Element {
                 .folds(buffer.folded.clone())
                 // A match found is not left under the find bar.
                 .reveal_top_inset(if ide.find.is_some() { 48.0 } else { 0.0 })
+                .diagnostics(document, revision, diagnostics(ide, path, revision))
                 .search_matches(
                     matches.map_or(0, |r| r.revision),
                     matches.map(|r| r.matches.clone()).unwrap_or_default(),
@@ -1980,6 +2198,39 @@ fn editor(ide: &Ide, width: f32, height: f32) -> Element {
                 .render()
         }
     });
+    // The server's hover floats at the editor's top end, as the find bar does, until a key.
+    if let Some(words) = &ide.hover {
+        // As tall as its lines, up to a screenful's share; longer, it scrolls.
+        let lines = words.lines().count() as f32;
+        let tall = (lines * 22.0 + 24.0).clamp(48.0, 260.0);
+        let text = limn::Markdown::new(words, look::menu_palette())
+            .width(456.0)
+            .font_size(look::BODY)
+            .render()
+            .element;
+        let card = Element::column(vec![
+            Element::scroll("hover:scroll", text).size(Some(456.0), Some(tall))
+        ])
+        .padding(12.0)
+        .size(Some(480.0), None)
+        .background(look::menu_palette().surface)
+        .radius(10.0)
+        .shadow(
+            limn::Color::rgba(0, 0, 0, 60),
+            limn::Point::new(0.0, 4.0),
+            16.0,
+            0.0,
+        );
+        let anchor = Element::spacer().size(Some(width - 12.0), Some(0.0));
+        let hover = Element::popover(
+            anchor,
+            card,
+            HOVER_DISMISS,
+            limn::PopoverPlacement::BottomEnd,
+        )
+        .popover_non_modal();
+        column.insert(0, hover);
+    }
     // The find bar floats under the end of the line over the editor.
     if let Some(find) = &ide.find {
         let bar = limn::FindBar::new(FIND, find.query.as_str(), look::palette())
@@ -2133,6 +2384,26 @@ fn terminal_pane(ide: &Ide, width: f32, height: f32) -> Element {
     .size(Some(width), Some(height))
 }
 
+/// The server's diagnostics of `path` as the editor underlines them, if they came for
+/// `revision`: errors in quill's failed red, warnings in its amber, the rest muted.
+fn diagnostics(ide: &Ide, path: &Path, revision: u64) -> Vec<limn::CodeDiagnostic> {
+    let Some((_, found)) = ide.diagnostics.get(path).filter(|(r, _)| *r == revision) else {
+        return vec![];
+    };
+    found
+        .iter()
+        .map(|d| limn::CodeDiagnostic {
+            range: d.range.clone(),
+            color: match d.severity {
+                1 => look::failed(),
+                2 => look::awaiting(),
+                _ => look::muted(),
+            },
+            message: d.message.clone(),
+        })
+        .collect()
+}
+
 /// The fold controls and sticky lines of `buffer`'s structure, if it was found in `revision`.
 fn structure_controls(
     buffer: &Buffer,
@@ -2183,6 +2454,12 @@ fn change_marks(changes: &[(std::ops::Range<usize>, Change)]) -> Vec<limn::CodeC
 fn context_actions(vim: bool) -> Vec<limn::ContextMenuEntry> {
     use limn::{ContextMenuEntry::Item, ContextMenuItem};
     vec![
+        Item(ContextMenuItem::new(LSP_DEFINITION, "Go to definition").shortcut("F12")),
+        Item(ContextMenuItem::new(LSP_REFERENCES, "Find references").shortcut("Shift+F12")),
+        Item(ContextMenuItem::new(LSP_HOVER, "Show hover").shortcut(if vim { "K" } else { "" })),
+        Item(ContextMenuItem::new(LSP_RENAME, "Rename symbol").shortcut("F2")),
+        Item(ContextMenuItem::new(LSP_FORMAT, "Format document").shortcut("Ctrl+Shift+I")),
+        limn::ContextMenuEntry::Separator,
         Item(ContextMenuItem::new(FIND_OPEN, "Find").shortcut(if vim { "/" } else { "Ctrl+F" })),
         limn::ContextMenuEntry::Separator,
         Item(ContextMenuItem::new(COPY_PATH, "Copy path")),
@@ -2274,6 +2551,38 @@ fn footer(ide: &Ide, width: f32) -> Element {
             }
         }
         None => lead.push(small(name(&ide.root))),
+    }
+    if let Some((path, revision)) = buffer.and_then(|b| {
+        let snapshot = b.editor.as_ref()?.snapshot().ok()?;
+        Some((b.path.clone(), snapshot.revision()))
+    }) {
+        let found = ide.diagnostics.get(&path).filter(|(r, _)| *r == revision);
+        let count = |severity| {
+            found.map_or(0, |(_, d)| {
+                d.iter().filter(|d| d.severity == severity).count()
+            })
+        };
+        let (errors, warnings) = (count(1), count(2));
+        if errors > 0 {
+            tail.insert(
+                0,
+                small(format!(
+                    "{errors} error{}",
+                    if errors == 1 { "" } else { "s" }
+                ))
+                .foreground(look::failed()),
+            );
+        }
+        if warnings > 0 {
+            let words = format!("{warnings} warning{}", if warnings == 1 { "" } else { "s" });
+            tail.insert(
+                usize::from(errors > 0),
+                small(words).foreground(look::awaiting()),
+            );
+        }
+    }
+    if let Some(note) = &ide.lsp_note {
+        tail.insert(0, small(note.clone()));
     }
     if let Some(branch) = &ide.branch {
         let icon = Element::icon(icons::of(icons::GIT_BRANCH))
@@ -2925,6 +3234,52 @@ mod tests {
         ide.edit(Edit::AddCursor { below: false });
         let editor = ide.buffers[0].editor.as_ref().unwrap();
         assert_eq!(editor.snapshot().unwrap().selections().count(), 2);
+    }
+
+    #[test]
+    fn the_language_server_is_asked_at_the_caret_and_its_answers_open() {
+        let mut ide = with_files();
+        read(&mut ide, "/r/a.rs", "let total = 1;\n");
+        let shared = ide.buffers[0].editor.as_ref().unwrap().shared_buffer();
+        shared
+            .lock()
+            .unwrap()
+            .set_selection(Selection::caret(6))
+            .unwrap();
+        click(&mut ide, LSP_DEFINITION);
+        let at = |kind| Ask {
+            path: "/r/a.rs".into(),
+            offset: 6,
+            kind,
+        };
+        assert_eq!(ide.lsp_asks, vec![at(AskKind::Definition)]);
+        ide.lsp_asks.clear();
+        // Rename starts from the word under the caret.
+        click(&mut ide, LSP_RENAME);
+        assert_eq!(ide.renaming_symbol.as_deref(), Some("total"));
+        ide.update(&UiAction::InputChanged {
+            id: SYMBOL_FIELD.into(),
+            value: "sum".into(),
+        });
+        ide.update(&UiAction::Submitted {
+            id: SYMBOL_FIELD.into(),
+            value: "sum".into(),
+        });
+        assert_eq!(ide.lsp_asks, vec![at(AskKind::Rename("sum".into()))]);
+        assert!(ide.renaming_symbol.is_none());
+        // References list; Enter opens the one chosen.
+        let place = |row| Location {
+            path: "/r/b.rs".into(),
+            row,
+        };
+        ide.references = Some((vec![place(3), place(9)], 0));
+        ide.step_chosen(1);
+        let jobs = ide.update(&UiAction::Submitted {
+            id: REFS_FIELD.into(),
+            value: String::new(),
+        });
+        assert_eq!(jobs, vec![Job::Read("/r/b.rs".into())]);
+        assert_eq!(ide.pending_goto, Some(("/r/b.rs".into(), 9)));
     }
 
     #[test]
