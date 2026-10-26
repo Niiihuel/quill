@@ -36,6 +36,17 @@ pub fn run(job: Job) -> Loaded {
             let theme = crate::packs::load(&json);
             Loaded::Pack(json, theme)
         }
+        Job::Branch(root) => {
+            let head = head_file(&root);
+            let branch = head.as_deref().and_then(branch_in);
+            Loaded::Branch(
+                branch,
+                head.map(|h| {
+                    let stamp = stamp(&h);
+                    (h, stamp)
+                }),
+            )
+        }
         Job::Stat(watched) => Loaded::Changed(
             watched
                 .into_iter()
@@ -45,6 +56,31 @@ pub fn run(job: Job) -> Loaded {
                 })
                 .collect(),
         ),
+    }
+}
+
+/// The HEAD file of the repository `root` is in: `.git/HEAD` in it or a folder above it, or
+/// where a worktree's `.git` file points.
+fn head_file(root: &Path) -> Option<std::path::PathBuf> {
+    let git = root
+        .ancestors()
+        .map(|dir| dir.join(".git"))
+        .find(|git| git.exists())?;
+    if git.is_dir() {
+        return Some(git.join("HEAD"));
+    }
+    let pointer = std::fs::read_to_string(&git).ok()?;
+    let dir = pointer.trim().strip_prefix("gitdir:")?.trim();
+    Some(git.parent()?.join(dir).join("HEAD"))
+}
+
+/// The branch HEAD names, or the start of the commit it holds when none is checked out.
+fn branch_in(head: &Path) -> Option<String> {
+    let head = std::fs::read_to_string(head).ok()?;
+    let head = head.trim();
+    match head.strip_prefix("ref: refs/heads/") {
+        Some(branch) => Some(branch.to_owned()),
+        None => Some(head.get(..7)?.to_owned()),
     }
 }
 
@@ -117,6 +153,24 @@ fn list(dir: &Path) -> Vec<Entry> {
 mod tests {
     use super::*;
     use crate::ide::Save;
+
+    #[test]
+    fn the_branch_is_read_from_head_in_a_repository_and_in_a_worktree() {
+        let dir = std::env::temp_dir().join(format!("quill-ide-head-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (main, linked) = (dir.join("main"), dir.join("linked"));
+        std::fs::create_dir_all(main.join(".git/worktrees/linked")).unwrap();
+        std::fs::create_dir_all(linked.join("src")).unwrap();
+        std::fs::write(main.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let linked_head = main.join(".git/worktrees/linked/HEAD");
+        std::fs::write(&linked_head, "0123456789abcdef\n").unwrap();
+        let gitdir = format!("gitdir: {}\n", main.join(".git/worktrees/linked").display());
+        std::fs::write(linked.join(".git"), gitdir).unwrap();
+        let read = |root: &Path| head_file(root).as_deref().and_then(branch_in);
+        let found = (read(&main.join(".git/..")), read(&linked.join("src")));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(found, (Some("main".into()), Some("0123456".into())));
+    }
 
     #[test]
     fn a_folder_lists_as_git_sees_it() {

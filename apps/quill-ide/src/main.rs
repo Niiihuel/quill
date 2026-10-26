@@ -91,7 +91,15 @@ impl eframe::App for App {
             .input(|i| i.pointer.hover_pos())
             .map(|p| limn::Point::new(p.x - area.min.x, p.y - area.min.y));
         self.ide.hovered = self.tree.hovered_id().map(str::to_owned);
+        self.ide.vim_mode = self
+            .ide
+            .editor_id()
+            .and_then(|id| self.tree.code_editor_vim_mode(&id));
         self.ide.tick();
+        self.ide.vim_mode = self
+            .ide
+            .editor_id()
+            .and_then(|id| self.tree.code_editor_vim_mode(&id));
         self.tree.set_root(ide::view(&self.ide, window));
         self.tree.layout(window);
         let mut actions = vec![];

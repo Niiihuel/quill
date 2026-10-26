@@ -19,6 +19,7 @@ When they are all merged, point `Cargo.toml` back at `../lienzo` and drop the br
 | — | `feat/modal-flush-body` | Settings' modal, a body without padding | local, not pushed |
 | — | `feat/select-plain` | Settings' plain selects | local, not pushed |
 | — | `feat/focus-area` | the browser pane's input surface (`Element::focus_area` public) | local, not pushed |
+| — | `feat/code-editor-host-look` | quill-ide's editor in quill's code inks, and its own mode in the footer (on `feat/markdown-code-highlight`, #73) | local, not pushed |
 
 Updating the branch: `git -C ../limn-quill-integration merge <branch>`; the only conflicts so
 far were rows added side by side in `docs/components.md`, `CHANGELOG.md` and `lib.rs`, and

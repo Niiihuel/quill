@@ -20,6 +20,8 @@ pub const TREE_TOGGLE: &str = "tree:toggle";
 /// A row of the file tree: denser than the sidebar's 32 px, as a reader's tree is.
 const ROW: f32 = 26.0;
 const NOTICE: f32 = 40.0;
+/// The line under the editor: mode, file, caret, language and branch.
+const FOOTER: f32 = 26.0;
 
 /// When a file or folder last changed on the disk; `None` when it is not there.
 pub type Stamp = Option<SystemTime>;
@@ -37,6 +39,8 @@ pub enum Job {
     FindPacks(Vec<PathBuf>),
     /// Read the icon theme at this JSON.
     LoadPack(PathBuf),
+    /// The branch checked out in this folder's repository.
+    Branch(PathBuf),
 }
 
 /// The text a save writes: the buffer as it was when the person asked.
@@ -61,6 +65,9 @@ pub enum Loaded {
     Packs(Vec<Offered>),
     Pack(PathBuf, Result<Theme, String>),
     PrefsSaved,
+    /// The branch, or the commit when none is checked out, and the HEAD file it was read
+    /// from, to read again when it changes.
+    Branch(Option<String>, Option<(PathBuf, Stamp)>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -124,12 +131,18 @@ pub struct Ide {
     pub pointer: Option<Point>,
     pub hovered: Option<String>,
     pub reduced_motion: bool,
+    /// The Vim mode of the file on screen, which the host reads from limn every frame.
+    pub vim_mode: Option<limn::VimMode>,
+    pub branch: Option<String>,
+    /// The repository's HEAD file and when it last changed.
+    pub head: Option<(PathBuf, Stamp)>,
 }
 
 impl Ide {
     pub fn new(root: PathBuf, prefs: Prefs) -> (Self, Vec<Job>) {
         let mut jobs = vec![
             Job::List(root.clone()),
+            Job::Branch(root.clone()),
             Job::FindPacks(packs::roots(&prefs.icon_folders)),
         ];
         let pack = match prefs.icons.as_str() {
@@ -163,6 +176,9 @@ impl Ide {
             pointer: None,
             hovered: None,
             reduced_motion: false,
+            vim_mode: None,
+            branch: None,
+            head: None,
         };
         (ide, jobs)
     }
@@ -351,6 +367,7 @@ impl Ide {
             .map(|(p, s)| (p.clone(), *s))
             .collect();
         watched.extend(self.buffers.iter().map(|b| (b.path.clone(), b.stamp)));
+        watched.extend(self.head.clone());
         vec![Job::Stat(watched)]
     }
 
@@ -363,6 +380,10 @@ impl Ide {
             Loaded::Read(path, text, stamp) => self.read(path, text, stamp),
             Loaded::Packs(offered) => self.offered = offered,
             Loaded::PrefsSaved => {}
+            Loaded::Branch(branch, head) => {
+                self.branch = branch;
+                self.head = head;
+            }
             // Only the theme still chosen is put in use.
             Loaded::Pack(json, theme) => {
                 if self.prefs.icons.strip_prefix(packs::THEME) == json.to_str() {
@@ -393,6 +414,9 @@ impl Ide {
                 self.polling = false;
                 let mut jobs = vec![];
                 for (path, stamp) in changed {
+                    if self.head.as_ref().is_some_and(|(head, _)| *head == path) {
+                        jobs.push(Job::Branch(self.root.clone()));
+                    }
                     if self.dir_stamps.contains_key(&path) {
                         jobs.push(Job::List(path.clone()));
                     }
@@ -459,6 +483,11 @@ impl Ide {
             (Key::PageUp, false) => step(-1),
             _ => None,
         }
+    }
+
+    /// The editor on screen's id, for what the host reads of it.
+    pub fn editor_id(&self) -> Option<String> {
+        self.active_buffer().map(Buffer::editor_id)
     }
 
     fn active_buffer(&self) -> Option<&Buffer> {
@@ -740,7 +769,7 @@ fn editor(ide: &Ide, width: f32, height: f32) -> Element {
         Element::column(vec![fill(), muted(s).centered_x(), fill()]).flex(1.0)
     };
     let mut column = notices(ide, width);
-    let height = height - column.len() as f32 * NOTICE;
+    let height = height - column.len() as f32 * NOTICE - FOOTER;
     column.push(match ide.active_buffer() {
         None => note("Pick a file to read it"),
         Some(Buffer { editor: None, .. }) => note("This file can't be shown as text."),
@@ -761,12 +790,115 @@ fn editor(ide: &Ide, width: f32, height: f32) -> Element {
                 .vim_mode(ide.prefs.vim)
                 .soft_wrap(ide.prefs.wrap)
                 .minimap(ide.prefs.minimap)
-                .status_bar(true)
+                .vim_mode_label(false)
+                .syntax_colors(syntax_colors())
                 .height(height)
                 .render()
         }
     });
+    column.push(footer(ide, width));
     Element::column(column)
+}
+
+/// Code in quill's inks, as its conversation's code blocks: keywords orange, strings the
+/// added green, functions the cursor's blue, interpolations the removed red.
+fn syntax_colors() -> limn::CodeSyntaxColors {
+    limn::CodeSyntaxColors {
+        text: look::palette().text,
+        string: look::added(),
+        keyword: look::keyword(),
+        function: Some(look::cursor()),
+        interpolation: Some(look::removed()),
+        ..limn::CodeSyntaxColors::for_palette(look::palette())
+    }
+}
+
+/// The line under the editor, quiet as quill's pane headers: the Vim mode, the file and
+/// whether it is saved, then the caret, the language, the line ending and the branch.
+fn footer(ide: &Ide, width: f32) -> Element {
+    let small = |s: String| muted(s).font_size(SMALL).centered_y();
+    let mut lead = vec![hgap(12.0)];
+    let buffer = ide.active_buffer();
+    if let Some(mode) = ide.vim_mode.filter(|_| buffer.is_some() && ide.prefs.vim) {
+        let ink = match mode {
+            limn::VimMode::Insert => look::running(),
+            limn::VimMode::Normal => look::muted(),
+            _ => look::pro(),
+        };
+        lead.push(
+            text(mode.label())
+                .font_family(limn::FontFamily::Monospace)
+                .font_size(11.0)
+                .foreground(ink)
+                .centered_y(),
+        );
+    }
+    let mut tail = vec![];
+    match buffer {
+        Some(buffer) => {
+            let path = buffer.path.strip_prefix(&ide.root).unwrap_or(&buffer.path);
+            lead.push(small(path.display().to_string()));
+            if buffer.dirty() {
+                lead.push(small("Unsaved".into()));
+            }
+            let snapshot = buffer.editor.as_ref().and_then(|e| e.snapshot().ok());
+            if let Some(snapshot) = snapshot {
+                let head = snapshot.selection().head;
+                let at = snapshot.position_of(head).unwrap_or_default();
+                let selected = snapshot.selection().range().len();
+                let mut caret = format!("Ln {}, Col {}", at.row + 1, at.column + 1);
+                if selected > 0 {
+                    caret.push_str(&format!(" ({selected} selected)"));
+                }
+                tail.push(small(caret));
+                let ext = buffer
+                    .path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("");
+                tail.push(small(language_name(ext).into()));
+                let ending = match snapshot.preferred_line_ending() {
+                    limn_editor::LineEnding::CrLf => "CRLF",
+                    _ => "LF",
+                };
+                tail.push(small(ending.into()));
+            }
+        }
+        None => lead.push(small(name(&ide.root))),
+    }
+    if let Some(branch) = &ide.branch {
+        let icon = Element::icon(icons::of(icons::GIT_BRANCH))
+            .foreground(look::muted())
+            .size(Some(13.0), Some(13.0))
+            .centered_y();
+        tail.push(Element::row(vec![icon, small(branch.clone())]).gap(4.0));
+    }
+    tail.push(hgap(8.0));
+    let mut row = lead;
+    row.push(Element::spacer().flex(1.0));
+    row.extend(tail);
+    Element::column(vec![
+        hline(width, look::pane_border()),
+        Element::row(row).gap(12.0).size(None, Some(FOOTER - 1.0)),
+    ])
+}
+
+/// The name of the language limn colors `extension` in.
+fn language_name(extension: &str) -> &'static str {
+    use limn::CodeLanguage::*;
+    match limn::CodeLanguage::from_code_fence(extension) {
+        Plain => "Plain text",
+        Rust => "Rust",
+        Json => "JSON",
+        JavaScript => "JavaScript",
+        TypeScript => "TypeScript",
+        Tsx => "TSX",
+        Python => "Python",
+        Toml => "TOML",
+        Css => "CSS",
+        Html => "HTML",
+        Markdown => "Markdown",
+    }
 }
 
 #[cfg(test)]
