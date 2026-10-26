@@ -407,8 +407,8 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
         );
     }
     let content = Element::column(vec![
-        top_bar(session, ui),
-        hline(rest, look::pane_border()),
+        top_bar(session, ui, layout.main),
+        hline(rest, look::theme().background),
         Element::row(row).size(Some(rest), Some(below)),
     ])
     .size(Some(rest), Some(window.height));
@@ -430,6 +430,31 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     let root = Element::row(root)
         .background(look::theme().background)
         .size(Some(window.width), Some(window.height));
+    // The hidden sidebar peeking over the page, the page staying where it is [3.6556.2
+    // `shared-16`]; its shadow is inferred.
+    let peek = ui.peek_shown.value(Instant::now()).round();
+    let root = if !ui.sidebar_open && peek > 0.0 {
+        let sidebar = Element::row(vec![
+            sidebar(store, ui, window.height, palette),
+            vline(window.height),
+        ])
+        .translate(limn::Point::new(peek - look::SIDEBAR_WIDTH, 0.0))
+        .size(Some(peek), Some(window.height))
+        .clip_children()
+        .shadow(
+            limn::Color::rgba(0, 0, 0, 60),
+            limn::Point::new(0.0, 0.0),
+            24.0,
+            0.0,
+        );
+        Element::stack(vec![
+            root,
+            Element::row(vec![sidebar, Element::spacer().flex(1.0)]),
+        ])
+        .size(Some(window.width), Some(window.height))
+    } else {
+        root
+    };
     let root = search_dialog(store, ui, root, palette);
     let root = settings_dialog(store, ui, root, window, palette);
     // Desktop's own wording for both closes (Ion `cccc2cf0a`,) and for a delete
@@ -807,7 +832,10 @@ fn lettered(id: String, label: &str, key: &str) -> limn::DropdownMenuItem {
 /// The session's title, Stop while it works, and the toggles of the panel and the panes
 ///. The title's chevron opens its menu, and Rename turns it into a field
 ///.
-fn top_bar(session: Option<&Session>, ui: &Ui) -> Element {
+/// The top bar: the session's title centered over the conversation, between the sidebars
+/// that are open, and its tools at the ends. No line under it: the transcript fades out
+/// beneath it instead.
+fn top_bar(session: Option<&Session>, ui: &Ui, main: f32) -> Element {
     // An expanded pane leaves the bar empty, as Desktop's does.
     if ui.expanded_pane.is_some() {
         return Element::spacer().size(None, Some(look::TOP_BAR));
@@ -817,9 +845,10 @@ fn top_bar(session: Option<&Session>, ui: &Ui) -> Element {
     } else {
         vec![hgap(9.0), sidebar_toggle(ui), hgap(12.0)]
     };
+    let mut heading = vec![];
     match (session, &ui.title_edit) {
         (Some(_), Some(value)) => {
-            row.push(rename_field(TITLE_FIELD, value, 320.0, look::palette()))
+            heading.push(rename_field(TITLE_FIELD, value, 320.0, look::palette()))
         }
         (Some(s), None) => {
             let title = session_title(s);
@@ -840,8 +869,8 @@ fn top_bar(session: Option<&Session>, ui: &Ui) -> Element {
                 limn::DropdownMenuEntry::Separator,
             ]);
             entries.extend(archive_and_delete(s));
-            row.push(text(title).centered_y());
-            row.push(
+            heading.push(text(title).centered_y());
+            heading.push(
                 menu(
                     chevron,
                     entries,
@@ -853,7 +882,7 @@ fn top_bar(session: Option<&Session>, ui: &Ui) -> Element {
                 .centered_y(),
             );
         }
-        (None, _) => row.push(muted("New session").centered_y()),
+        (None, _) => heading.push(muted("New session").centered_y()),
     }
     row.push(Element::spacer().flex(1.0));
     // Stop lives in the composer, as in Desktop.
@@ -890,7 +919,17 @@ fn top_bar(session: Option<&Session>, ui: &Ui) -> Element {
         ));
     }
     row.push(hgap(8.0));
-    Element::row(row).gap(4.0).size(None, Some(look::TOP_BAR))
+    let centered = Element::row(vec![
+        Element::spacer().flex(1.0),
+        Element::row(heading).gap(4.0),
+        Element::spacer().flex(1.0),
+    ])
+    .size(Some(main), Some(look::TOP_BAR));
+    Element::stack(vec![
+        Element::row(row).gap(4.0).size(None, Some(look::TOP_BAR)),
+        Element::row(vec![centered, Element::spacer().flex(1.0)]),
+    ])
+    .size(None, Some(look::TOP_BAR))
 }
 
 /// Desktop's sidebar: its toggle, New and Search, the pinned
@@ -1611,7 +1650,8 @@ fn transcript(
         .size(Some(outer), None)
         .padding(16.0)
         .centered_x();
-    let scroll = Element::scroll(format!("transcript:{}", session.id), content);
+    let scroll = Element::scroll(format!("transcript:{}", session.id), content)
+        .top_fade(look::theme().background, 24.0);
     if ui.at_end {
         return scroll;
     }

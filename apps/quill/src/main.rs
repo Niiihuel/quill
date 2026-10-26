@@ -270,7 +270,11 @@ impl eframe::App for App {
                 .tree
                 .is_scroll_at_end(quill_ui::view::TERMINAL_SCROLL, 4.0);
         self.sync_terminal(&ctx, window);
-
+        // The hidden sidebar peeks while the pointer is on its button or the window's edge.
+        self.ui.pointer = ctx
+            .input(|i| i.pointer.hover_pos())
+            .map(|p| limn::Point::new(p.x - area.min.x, p.y - area.min.y));
+        self.ui.hovered = self.tree.hovered_id().map(str::to_owned);
         self.ui.tick(&self.store);
         self.tree
             .set_root(quill_ui::view(&self.store, &self.ui, window));

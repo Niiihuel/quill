@@ -1863,3 +1863,31 @@ fn token_counts_read_as_desktop_writes_them() {
         .collect();
     assert_eq!(counts, ["254", "999", "15.8K", "1M", "1M", "1.3M"]);
 }
+
+#[test]
+fn the_hidden_sidebar_peeks_from_its_button_and_goes_once_the_pointer_left() {
+    let (store, mut ui) = store_with_session();
+    ui.sidebar_open = false;
+    ui.hovered = Some(view::SIDEBAR_TOGGLE.into());
+    ui.pointer = Some(limn::Point::new(20.0, 18.0));
+    ui.tick(&store);
+    assert!(ui.peek);
+    // On the sidebar it stays; off it, it goes after 180 ms.
+    ui.hovered = None;
+    ui.pointer = Some(limn::Point::new(120.0, 300.0));
+    ui.tick(&store);
+    assert!(ui.peek);
+    ui.pointer = Some(limn::Point::new(700.0, 300.0));
+    ui.tick(&store);
+    assert!(ui.peek);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    ui.tick(&store);
+    assert!(!ui.peek);
+    // The window's edge opens it once the pointer rested there.
+    ui.pointer = Some(limn::Point::new(4.0, 300.0));
+    ui.tick(&store);
+    assert!(!ui.peek);
+    std::thread::sleep(std::time::Duration::from_millis(120));
+    ui.tick(&store);
+    assert!(ui.peek);
+}

@@ -733,6 +733,17 @@ pub struct Ui {
     /// The widths the sidebar and the right panel are drawn at, on springs to 0 or their
     /// own width as they close and open.
     pub sidebar_shown: limn::ScalarSpring,
+    /// Where the pointer is in the window and the control under it, which the host sets
+    /// every frame, for the hidden sidebar's peek.
+    pub pointer: Option<limn::Point>,
+    pub hovered: Option<String>,
+    /// The hidden sidebar shown over the page while the pointer is on it (Desktop's peek):
+    /// whether it is, since when the pointer rests at the window's edge and since when it
+    /// left, and the width it is drawn at.
+    pub peek: bool,
+    pub peek_edge: Option<std::time::Instant>,
+    pub peek_left: Option<std::time::Instant>,
+    pub peek_shown: limn::ScalarSpring,
     pub panel_shown: limn::ScalarSpring,
     /// The session whose sidebar row has its "···" menu open.
     pub row_menu: Option<SessionId>,
@@ -851,6 +862,13 @@ fn session_clicked(store: &Store, ui: &mut Ui, id: &str) -> Option<Vec<Intent>> 
     let session = |prefix: &str| -> Option<SessionId> { id.strip_prefix(prefix)?.parse().ok() };
     if id == view::SIDEBAR_TOGGLE {
         ui.sidebar_open = !ui.sidebar_open;
+        // Pinned from its peek, it stays where it is instead of sliding in again.
+        if ui.sidebar_open && ui.peek {
+            let now = std::time::Instant::now();
+            ui.sidebar_shown.snap_to(look::SIDEBAR_WIDTH, now);
+            ui.peek = false;
+            ui.peek_shown.snap_to(0.0, now);
+        }
     } else if id == view::SEARCH {
         ui.search = Some(String::new());
     } else if id == view::SEARCH_CLOSE {
@@ -1220,6 +1238,12 @@ impl Ui {
             terminal: TerminalPane::default(),
             sidebar_open: true,
             sidebar_shown: limn::ScalarSpring::new(look::SIDEBAR_WIDTH, std::time::Instant::now()),
+            pointer: None,
+            hovered: None,
+            peek: false,
+            peek_edge: None,
+            peek_left: None,
+            peek_shown: limn::ScalarSpring::new(0.0, std::time::Instant::now()),
             panel_shown: limn::ScalarSpring::new(look::PANEL_WIDTH, std::time::Instant::now()),
             row_menu: None,
             title_edit: None,
@@ -1255,12 +1279,46 @@ impl Ui {
         }
     }
 
+    /// The hidden sidebar peeks as Desktop's does (3.6556.2 `shared-16`): at once while the
+    /// pointer is on its button, or after it rests 100 ms within 16 px of the window's edge;
+    /// it goes 180 ms after the pointer left it and the button, unless a menu is open.
+    fn follow_pointer(&mut self, now: std::time::Instant) {
+        use std::time::Duration;
+        let x = self.pointer.map(|p| p.x);
+        let on_button = self.hovered.as_deref() == Some(view::SIDEBAR_TOGGLE);
+        if self.sidebar_open {
+            self.peek = false;
+        } else if !self.peek {
+            let at_edge = x.is_some_and(|x| x <= 16.0);
+            self.peek_edge = at_edge.then(|| self.peek_edge.unwrap_or(now));
+            let dwelt = self
+                .peek_edge
+                .is_some_and(|since| now.duration_since(since) >= Duration::from_millis(100));
+            self.peek = on_button || dwelt;
+        } else {
+            let on =
+                on_button || self.open_menu.is_some() || x.is_some_and(|x| x < look::SIDEBAR_WIDTH);
+            self.peek_left = (!on).then(|| self.peek_left.unwrap_or(now));
+            self.peek = self
+                .peek_left
+                .is_none_or(|since| now.duration_since(since) < Duration::from_millis(180));
+        }
+        if !self.peek {
+            self.peek_left = None;
+        } else {
+            self.peek_edge = None;
+        }
+    }
+
     /// Something the UI moves itself is still moving, so the host keeps painting.
     pub fn animating(&self) -> bool {
         let now = std::time::Instant::now();
         self.effort_thumb.is_some_and(|thumb| thumb.is_active(now))
             || self.sidebar_shown.is_active(now)
             || self.panel_shown.is_active(now)
+            || self.peek_shown.is_active(now)
+            || self.peek_edge.is_some()
+            || self.peek_left.is_some()
     }
 
     /// When the host should paint again for what moves on its own: at once for a moving
@@ -1350,10 +1408,14 @@ impl Ui {
             .launch(open(self.sidebar_open, look::SIDEBAR_WIDTH), motion, now);
         self.panel_shown
             .launch(open(self.panel_open, self.panel_width), motion, now);
+        self.follow_pointer(now);
+        self.peek_shown
+            .launch(open(self.peek, look::SIDEBAR_WIDTH), motion, now);
         if self.reduced_motion {
             let (sidebar, panel) = (self.sidebar_shown.target(), self.panel_shown.target());
             self.sidebar_shown.snap_to(sidebar, now);
             self.panel_shown.snap_to(panel, now);
+            self.peek_shown.snap_to(self.peek_shown.target(), now);
         }
         let ultra = view::effort_shown(store, self).as_deref() == Some("ultracode");
         match (ultra, self.ultra_since) {
@@ -2081,6 +2143,8 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
             ui.mark_new(store, session);
         }
         ui.selected = Some(session);
+        // Going somewhere from the peek puts it away, as Desktop's does ("navigated").
+        ui.peek = false;
         // A session beside another goes with it: shown on its own, or from elsewhere, it closes.
         let beside = ui.side_chat.and_then(|s| store.session(s));
         if beside.is_none_or(|s| s.id == session || s.parent != Some(session)) {
