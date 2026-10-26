@@ -6,6 +6,18 @@ use std::path::PathBuf;
 pub const QUICK_OPEN: &str = "quick:open";
 pub const QUICK_FIELD: &str = "quick:field";
 pub const QUICK_CLOSE: &str = "quick:close";
+/// Opening by name with `:` typed: going to a line of the file on screen.
+pub const QUICK_LINE: &str = "quick:line";
+
+/// The one-based line `:42` asks for, as a zero-based row.
+pub fn line(query: &str) -> Option<usize> {
+    query
+        .strip_prefix(':')?
+        .trim()
+        .parse::<usize>()
+        .ok()
+        .map(|n| n.saturating_sub(1))
+}
 /// The most it lists.
 pub const SHOWN: usize = 50;
 
@@ -75,5 +87,9 @@ mod tests {
         );
         assert_eq!(best("engmd", &files)[0], &PathBuf::from("docs/engine.md"));
         assert_eq!(best("", &files).len(), 4);
+        assert_eq!(
+            (line(":42"), line(": 1"), line(":"), line("42")),
+            (Some(41), Some(0), None, None)
+        );
     }
 }

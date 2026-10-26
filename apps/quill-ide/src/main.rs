@@ -33,6 +33,8 @@ struct App {
     picked: Arc<Mutex<Option<PathBuf>>>,
     /// What was open when it was last kept.
     kept: session::Session,
+    /// How many frames a control asked to take the keys has not been there yet.
+    focus_waits: u32,
 }
 
 impl App {
@@ -144,6 +146,53 @@ impl eframe::App for App {
                     continue;
                 }
             }
+            // On a row of the tree, nvim's keys and the arrows walk it.
+            if let Some(row) = focused
+                .as_deref()
+                .filter(|f| f.starts_with("dir:") || f.starts_with("file:"))
+            {
+                let key = match &event {
+                    limn::UiEvent::Key {
+                        key: limn::Key::ArrowUp,
+                        ctrl: false,
+                        ..
+                    } => Some(ide::TreeKey::Up),
+                    limn::UiEvent::Key {
+                        key: limn::Key::ArrowDown,
+                        ctrl: false,
+                        ..
+                    } => Some(ide::TreeKey::Down),
+                    limn::UiEvent::Key {
+                        key: limn::Key::ArrowLeft,
+                        ctrl: false,
+                        ..
+                    } => Some(ide::TreeKey::Left),
+                    limn::UiEvent::Key {
+                        key: limn::Key::ArrowRight,
+                        ctrl: false,
+                        ..
+                    } => Some(ide::TreeKey::Right),
+                    limn::UiEvent::Key {
+                        key: limn::Key::Escape,
+                        ..
+                    } => Some(ide::TreeKey::Escape),
+                    limn::UiEvent::Text(typed) => match typed.as_str() {
+                        "k" => Some(ide::TreeKey::Up),
+                        "j" => Some(ide::TreeKey::Down),
+                        "h" => Some(ide::TreeKey::Left),
+                        "l" => Some(ide::TreeKey::Right),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let Some(key) = key {
+                    let (taken, jobs) = self.ide.tree_key(row, key);
+                    self.run(jobs);
+                    if taken {
+                        continue;
+                    }
+                }
+            }
             // In the find bar, Escape closes it, as its own close does.
             if focused.as_deref().is_some_and(|f| f.starts_with("find:"))
                 && matches!(
@@ -156,6 +205,17 @@ impl eframe::App for App {
             {
                 actions.push(limn::UiAction::Clicked {
                     id: "find:dismiss".into(),
+                });
+                continue;
+            }
+            // `:` in Vim's Normal mode goes to a line, as `:42` does in Vim.
+            if matches!(&event, limn::UiEvent::Text(typed) if typed == ":")
+                && self.ide.vim_mode == Some(limn::VimMode::Normal)
+                && focused.is_some()
+                && focused == self.ide.editor_id()
+            {
+                actions.push(limn::UiAction::Clicked {
+                    id: quick::QUICK_LINE.into(),
                 });
                 continue;
             }
@@ -177,6 +237,13 @@ impl eframe::App for App {
                 shift,
             } = &event
             {
+                let on_tree = focused
+                    .as_deref()
+                    .is_some_and(|f| f.starts_with("dir:") || f.starts_with("file:"));
+                if *key == limn::Key::E && *shift && on_tree {
+                    self.ide.focus = self.ide.editor_id();
+                    continue;
+                }
                 if let Some(id) = self.ide.shortcut(*key, *shift) {
                     actions.push(limn::UiAction::Clicked { id });
                     continue;
@@ -207,7 +274,26 @@ impl eframe::App for App {
         let mut frame = self.tree.layout(window);
         // What the IDE asked of the tree: a control to take the keys, the caret in view.
         if let Some(id) = self.ide.focus.take() {
-            if self.tree.focus(&id) {
+            let focused = self.tree.focus(&id);
+            // A tree row comes once its folder is listed: it is asked for again a while.
+            if !focused && self.focus_waits < 60 {
+                self.focus_waits += 1;
+                self.ide.focus = Some(id.clone());
+                ctx.request_repaint();
+            } else {
+                self.focus_waits = 0;
+            }
+            if focused {
+                // The field opened with `:` in it takes what is typed after it.
+                if id == quick::QUICK_FIELD {
+                    let query = self
+                        .ide
+                        .quick
+                        .as_ref()
+                        .map_or(String::new(), |(q, _)| q.clone());
+                    self.tree.set_input_value(&id, query.clone());
+                    self.tree.set_input_cursor(&id, query.chars().count());
+                }
                 frame = self.tree.layout(window);
             }
         }
@@ -303,6 +389,7 @@ fn main() -> eframe::Result {
                 polled: std::time::Instant::now(),
                 picked: Arc::default(),
                 kept,
+                focus_waits: 0,
             };
             app.run(jobs);
             Ok(Box::new(app))

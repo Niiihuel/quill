@@ -6,7 +6,7 @@ use crate::grep::{Hit, GREP_CLOSE, GREP_FIELD, GREP_OPEN};
 use crate::marks::Change;
 use crate::packs::{self, Offered, Pack, Theme};
 use crate::prefs::{self, Prefs};
-use crate::quick::{self, QUICK_CLOSE, QUICK_FIELD, QUICK_OPEN};
+use crate::quick::{self, QUICK_CLOSE, QUICK_FIELD, QUICK_LINE, QUICK_OPEN};
 use crate::session::Session;
 use limn::{
     CodeEditor, Component, ComponentPalette, EditorController, Element, Key, Point, Size, TreeRow,
@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 pub const TREE_TOGGLE: &str = "tree:toggle";
+pub const TREE_FOCUS: &str = "tree:focus";
 const COPY_PATH: &str = "editor:copy-path";
 const COPY_RELATIVE: &str = "editor:copy-relative";
 const REVEAL: &str = "editor:reveal";
@@ -31,6 +32,16 @@ const ROW: f32 = 26.0;
 const NOTICE: f32 = 40.0;
 /// The line under the editor: mode, file, caret, language and branch.
 const FOOTER: f32 = 26.0;
+
+/// The keys the tree takes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TreeKey {
+    Up,
+    Down,
+    Left,
+    Right,
+    Escape,
+}
 
 /// When a file or folder last changed on the disk; `None` when it is not there.
 pub type Stamp = Option<SystemTime>;
@@ -416,6 +427,8 @@ impl Ide {
         }
         if id == TREE_TOGGLE {
             self.sidebar.toggle();
+        } else if id == TREE_FOCUS {
+            return self.focus_tree();
         } else if let Some(dir) = id.strip_prefix("dir:").map(PathBuf::from) {
             if !self.expanded.remove(&dir) {
                 self.expanded.insert(dir.clone());
@@ -517,9 +530,17 @@ impl Ide {
             self.quick = Some((String::new(), 0));
             return Some(vec![Job::FindFiles(self.root.clone())]);
         }
+        if id == QUICK_LINE {
+            self.quick = Some((":".into(), 0));
+            self.focus = Some(QUICK_FIELD.into());
+            return Some(vec![]);
+        }
         if id == QUICK_CLOSE {
             self.quick = None;
             return Some(vec![]);
+        }
+        if id == "quick:go" {
+            return Some(self.quick_chosen());
         }
         let path = id.strip_prefix("quick:file:")?;
         self.quick = None;
@@ -608,6 +629,12 @@ impl Ide {
     }
 
     fn quick_chosen(&mut self) -> Vec<Job> {
+        let query = self.quick.as_ref().map_or("", |(q, _)| q.as_str());
+        if query.starts_with(':') {
+            let target = quick::line(query).zip(self.active_buffer().map(|b| b.path.clone()));
+            self.quick = None;
+            return target.map_or(vec![], |(row, path)| self.goto(path, row));
+        }
         let chosen = self.quick.as_ref().map_or(0, |(_, c)| *c);
         let Some(path) = self.quick_found().get(chosen).map(|p| self.root.join(p)) else {
             return vec![];
@@ -708,6 +735,78 @@ impl Ide {
         }
         self.reveal_row = Some(format!("file:{}", path.display()));
         jobs
+    }
+
+    /// The tree takes the keys, open, on the file on screen or its first row.
+    fn focus_tree(&mut self) -> Vec<Job> {
+        if !self.sidebar.open {
+            self.sidebar.toggle();
+        }
+        let mut jobs = vec![];
+        let row = match self.active_buffer().map(|b| b.path.clone()) {
+            Some(path) => {
+                jobs = self.reveal_in_tree(&path);
+                Some(format!("file:{}", path.display()))
+            }
+            None => self.visible_rows().first().map(|(id, _)| id.clone()),
+        };
+        self.focus = row;
+        jobs
+    }
+
+    /// The tree's rows as they show, by id, and whether each is an open folder.
+    fn visible_rows(&self) -> Vec<(String, bool)> {
+        let mut rows = vec![];
+        tree_rows(self, &self.root, 0, &mut rows);
+        rows.into_iter()
+            .map(|(entry, _)| {
+                let kind = if entry.dir { "dir" } else { "file" };
+                let open = entry.dir && self.expanded.contains(&entry.path);
+                (format!("{kind}:{}", entry.path.display()), open)
+            })
+            .collect()
+    }
+
+    /// A key on the tree's row `focused`, as nvim's file trees take them: up and down move,
+    /// right opens a folder or the file, left shuts a folder or goes to the folder above,
+    /// Escape gives the keys back to the editor. False when `key` is none of them.
+    pub fn tree_key(&mut self, focused: &str, key: TreeKey) -> (bool, Vec<Job>) {
+        let rows = self.visible_rows();
+        let Some(at) = rows.iter().position(|(id, _)| id == focused) else {
+            return (false, vec![]);
+        };
+        let open = rows[at].1;
+        let path = PathBuf::from(focused.split_once(':').map_or("", |(_, p)| p));
+        let mut jobs = vec![];
+        let next = match key {
+            TreeKey::Down => rows.get(at + 1).map(|(id, _)| id.clone()),
+            TreeKey::Up => at.checked_sub(1).map(|up| rows[up].0.clone()),
+            TreeKey::Right if focused.starts_with("file:") => {
+                jobs = self.open(path);
+                None
+            }
+            TreeKey::Right if open => rows.get(at + 1).map(|(id, _)| id.clone()),
+            TreeKey::Right => {
+                jobs = self.update(&UiAction::Clicked {
+                    id: focused.to_owned(),
+                });
+                None
+            }
+            TreeKey::Left if open => {
+                self.expanded.remove(&path);
+                None
+            }
+            TreeKey::Left => path
+                .parent()
+                .filter(|dir| *dir != self.root)
+                .map(|dir| format!("dir:{}", dir.display())),
+            TreeKey::Escape => self.editor_id(),
+        };
+        if next.is_some() {
+            self.reveal_row.clone_from(&next);
+            self.focus = next;
+        }
+        (true, jobs)
     }
 
     /// What is open now, to open again next time.
@@ -928,7 +1027,7 @@ impl Ide {
     }
 
     /// The control a Ctrl shortcut clicks. Vim's own Ctrl keys (B, F, U, D, J, N, R) stay
-    /// the editor's; Ctrl+P opens a file by its name.
+    /// the editor's; Ctrl+P opens a file by its name, and Ctrl+G goes to a line.
     pub fn shortcut(&self, key: Key, shift: bool) -> Option<String> {
         let step = |by: isize| {
             let n = self.buffers.len() as isize;
@@ -936,13 +1035,14 @@ impl Ide {
                 .map(|a| format!("buffer:{}", (a as isize + by).rem_euclid(n)))
         };
         match (key, shift) {
-            (Key::E, true) => Some(TREE_TOGGLE.into()),
+            (Key::E, true) => Some(TREE_FOCUS.into()),
             (Key::W, false) => self.active.map(|a| format!("close:{a}")),
             (Key::PageDown, false) => step(1),
             (Key::PageUp, false) => step(-1),
             // Over Vim's Ctrl+P, a line up as `k` is.
             (Key::P, false) => Some(QUICK_OPEN.into()),
             (Key::F, true) => Some(GREP_OPEN.into()),
+            (Key::G, false) => Some(QUICK_LINE.into()),
             // With Vim keys Ctrl+F is a page down, and `/` finds.
             (Key::F, false) if !self.prefs.vim => Some(FIND_OPEN.into()),
             _ => None,
@@ -1026,6 +1126,30 @@ pub fn view(ide: &Ide, window: Size) -> Element {
     .size(Some(window.width), Some(window.height))
     .background(look::palette().surface);
     let root = match &ide.quick {
+        Some((query, _)) if query.starts_with(':') => {
+            let lines = ide
+                .active_buffer()
+                .and_then(|b| b.editor.as_ref()?.snapshot().ok());
+            let lines = lines.map_or(0, |s| s.line_count());
+            let row = match (quick::line(query), ide.active_buffer()) {
+                (_, None) => Found::new(QUICK_CLOSE, "Open a file to go to one of its lines"),
+                (Some(row), Some(_)) => {
+                    let mut found = Found::new("quick:go", format!("Go to line {}", row + 1));
+                    found.detail = Some(format!("of {lines}"));
+                    found
+                }
+                (None, Some(_)) => Found::new("quick:go", format!("A line from 1 to {lines}")),
+            };
+            search::dialog(
+                root,
+                QUICK_FIELD,
+                QUICK_CLOSE,
+                query,
+                "Open a file by its name",
+                vec![("Go to line".into(), vec![row])],
+                0,
+            )
+        }
         Some((query, chosen)) => {
             let rows = ide
                 .quick_found()
@@ -1903,6 +2027,60 @@ mod tests {
     }
 
     #[test]
+    fn the_tree_walks_with_nvims_keys() {
+        let mut ide = with_files();
+        click(&mut ide, TREE_TOGGLE);
+        click(&mut ide, TREE_FOCUS);
+        assert!(ide.sidebar.open);
+        assert_eq!(ide.focus.as_deref(), Some("dir:/r/src"));
+        let key = |ide: &mut Ide, at: &str, key| ide.tree_key(at, key);
+        // Right opens the folder, and once open goes into it.
+        let (_, jobs) = key(&mut ide, "dir:/r/src", TreeKey::Right);
+        assert_eq!(jobs, vec![Job::List("/r/src".into())]);
+        let entry = |p: &str| Entry {
+            path: p.into(),
+            dir: false,
+        };
+        ide.loaded(Loaded::Listed(
+            "/r/src".into(),
+            vec![entry("/r/src/m.rs")],
+            None,
+        ));
+        key(&mut ide, "dir:/r/src", TreeKey::Right);
+        assert_eq!(ide.focus.as_deref(), Some("file:/r/src/m.rs"));
+        // Left from a file goes to its folder, and on the open folder shuts it.
+        key(&mut ide, "file:/r/src/m.rs", TreeKey::Left);
+        assert_eq!(ide.focus.as_deref(), Some("dir:/r/src"));
+        key(&mut ide, "dir:/r/src", TreeKey::Left);
+        assert!(!ide.expanded.contains(Path::new("/r/src")));
+        key(&mut ide, "dir:/r/src", TreeKey::Down);
+        assert_eq!(ide.focus.as_deref(), Some("file:/r/a.rs"));
+        let (_, jobs) = key(&mut ide, "file:/r/a.rs", TreeKey::Right);
+        assert_eq!(jobs, vec![Job::Read("/r/a.rs".into())]);
+        assert!(!key(&mut ide, "file:/r/nowhere", TreeKey::Up).0);
+    }
+
+    #[test]
+    fn a_colon_and_a_number_go_to_that_line() {
+        let mut ide = with_files();
+        read(&mut ide, "/r/a.rs", "a\nb\nc\n");
+        click(&mut ide, QUICK_LINE);
+        assert_eq!(ide.quick, Some((":".into(), 0)));
+        assert_eq!(ide.focus.take().as_deref(), Some(QUICK_FIELD));
+        ide.update(&UiAction::InputChanged {
+            id: QUICK_FIELD.into(),
+            value: ":3".into(),
+        });
+        let jobs = ide.update(&UiAction::Submitted {
+            id: QUICK_FIELD.into(),
+            value: ":3".into(),
+        });
+        assert!(jobs.is_empty() && ide.quick.is_none());
+        let editor = ide.buffers[0].editor.as_ref().unwrap();
+        assert_eq!(editor.snapshot().unwrap().selection().head, 4);
+    }
+
+    #[test]
     fn the_shut_tree_peeks_from_its_toggle_and_goes_once_the_pointer_left() {
         let mut ide = with_files();
         let on_toggle = |ide: &mut Ide| {
@@ -1946,7 +2124,7 @@ mod tests {
             Some("buffer:0")
         );
         assert_eq!(ide.shortcut(Key::W, false).as_deref(), Some("close:1"));
-        assert_eq!(ide.shortcut(Key::E, true).as_deref(), Some(TREE_TOGGLE));
+        assert_eq!(ide.shortcut(Key::E, true).as_deref(), Some(TREE_FOCUS));
     }
 
     #[test]
