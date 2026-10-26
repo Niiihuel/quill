@@ -1188,3 +1188,54 @@ fn the_branch_bar_writes_its_counts_with_commas() {
     assert_eq!(view::thousands(5318), "5,318");
     assert_eq!(view::thousands(1_234_567), "1,234,567");
 }
+
+#[test]
+fn the_effort_thumb_follows_a_drag_and_springs_to_the_level_let_go_at() {
+    let (mut store, mut ui) = store_with_session();
+    agent(
+        &mut store,
+        AgentEvent::Ready {
+            version: "2.1.310".into(),
+            capabilities: quill_model::AgentCapabilities {
+                models: vec![quill_model::ModelInfo {
+                    id: "opus".into(),
+                    name: "Opus 5.5".into(),
+                    efforts: vec!["low".into(), "medium".into(), "high".into()],
+                }],
+                ..Default::default()
+            },
+            mode: None,
+        },
+    );
+    ui.model = Some("opus".into());
+    let slide = |ui: &mut Ui, fraction: f32, committed: bool| {
+        update(
+            &store,
+            ui,
+            &UiAction::SliderChanged {
+                id: view::EFFORT_SLIDER.into(),
+                fraction,
+                committed,
+            },
+        )
+    };
+    // While dragged nothing is chosen: the thumb is where the pointer holds it.
+    assert!(slide(&mut ui, 0.7, false).is_empty());
+    assert!(ui.effort_dragging);
+    let now = std::time::Instant::now();
+    assert_eq!(
+        ui.effort_thumb.unwrap().value(now),
+        0.7 * view::EFFORT_TRAVEL
+    );
+    // Let go, the nearest level is chosen and the thumb travels on to it.
+    assert_eq!(
+        slide(&mut ui, 1.0, true),
+        vec![Intent::SetEffort {
+            session: 1,
+            effort: "high".into()
+        }]
+    );
+    assert!(!ui.effort_dragging);
+    assert!(ui.animating());
+    assert_eq!(ui.effort_thumb.unwrap().target(), view::EFFORT_TRAVEL);
+}

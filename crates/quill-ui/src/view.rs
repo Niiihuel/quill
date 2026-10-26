@@ -59,6 +59,14 @@ pub const PR_CREATE: &str = "pr:create";
 pub const PR_MENU: &str = "pr-menu";
 pub const BAR_CLOSE: &str = "branch-bar:close";
 pub const FILTER_RESET: &str = "filter:reset";
+/// The effort slider, its width, and the way its thumb travels.
+pub const EFFORT_SLIDER: &str = "effort:slider";
+const EFFORT_WIDTH: f32 = 192.0;
+/// The stops and the thumb's middle sit 16 px in, so the thumb at an end keeps 6 px of the
+/// track beside it, as the person asked; Desktop's dots sit 13.5 px in
+///.
+const EFFORT_INSET: f32 = 16.0;
+pub const EFFORT_TRAVEL: f32 = EFFORT_WIDTH - 2.0 * EFFORT_INSET;
 pub const DELETE_CONFIRM: &str = "delete:confirm";
 pub const DELETE_CANCEL: &str = "delete:cancel";
 const TERMINAL_FONT: f32 = 12.0;
@@ -3098,7 +3106,7 @@ fn composer_footer(
         mode_menu(session, ui),
         Element::spacer().flex(1.0),
         model_menu(store, session, ui, palette),
-        effort_menu(store, session, ui),
+        effort_menu(store, ui),
         usage_menu(store, session, ui),
     ])
     .gap(2.0)
@@ -3541,95 +3549,184 @@ fn current_model<'a>(
     })
 }
 
-/// The effort chip and its popover, as the person's Desktop has them:
-/// "Effort  Low", "Faster … Smarter" over a slider with a stop per level the model
-/// accepts, and "Recommended" under medium.
-fn effort_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
-    let efforts = current_model(store, session, ui)
+/// The efforts the composer's model accepts, the slider's stops in order.
+pub fn efforts(store: &Store, ui: &Ui) -> Vec<String> {
+    let session = ui.selected.and_then(|id| store.session(id));
+    current_model(store, session, ui)
         .map(|m| m.efforts.clone())
-        .unwrap_or_default();
-    if efforts.is_empty() {
-        return Element::spacer().size(Some(0.0), Some(0.0));
+        .unwrap_or_default()
+}
+
+/// Where the effort slider stands: its stops, the level chosen, where the thumb is, and
+/// the level it is nearest, which the heading names as it goes.
+struct EffortState {
+    efforts: Vec<String>,
+    chosen: usize,
+    thumb_x: f32,
+    shown: usize,
+}
+
+fn effort_state(store: &Store, ui: &Ui) -> Option<EffortState> {
+    let efforts = efforts(store, ui);
+    let n = efforts.len();
+    if n == 0 {
+        return None;
     }
-    let open = ui.open_menu == Some(EFFORT_MENU);
-    let effort = ui
+    let last = n.saturating_sub(1).max(1) as f32;
+    let chosen = ui
         .effort
-        .clone()
-        .filter(|e| efforts.contains(e))
-        .unwrap_or_else(|| efforts[0].clone());
+        .as_ref()
+        .and_then(|e| efforts.iter().position(|x| x == e))
+        .unwrap_or(0);
+    let rest = if n > 1 { chosen as f32 / last } else { 0.5 };
+    // The thumb is where the pointer holds it, or on its way to its stop, else on the level.
+    let now = std::time::Instant::now();
+    let thumb_x = match ui.effort_thumb {
+        Some(thumb) if ui.effort_dragging || thumb.is_active(now) => thumb.value(now),
+        _ => rest * EFFORT_TRAVEL,
+    }
+    .clamp(-4.0, EFFORT_TRAVEL + 4.0);
+    let shown = ((thumb_x / EFFORT_TRAVEL * last).round().max(0.0) as usize).min(n - 1);
+    Some(EffortState {
+        efforts,
+        chosen,
+        thumb_x,
+        shown,
+    })
+}
+
+/// The level the effort slider's thumb is nearest, while its popover is open.
+pub fn effort_shown(store: &Store, ui: &Ui) -> Option<String> {
+    if ui.open_menu != Some(EFFORT_MENU) {
+        return None;
+    }
+    effort_state(store, ui).map(|s| s.efforts[s.shown].clone())
+}
+
+/// The effort chip and its popover, as the person's Desktop has them
+///: "Effort  High", "Faster … Smarter" over a slider with a stop
+/// per level the model accepts, and "Recommended" under medium. The slider is Desktop's
+/// (3.6556.2 `c2d9b9a76`): a 28 px control whose 24 px track fills from its start to the
+/// thumb's middle, a white 20 × 24 thumb that grows to 1.12 while held, 3 px dots and a
+/// 3 × 9 tick. On Ultracode the heading turns violet and the track is the reference
+/// selector's pixel field.
+fn effort_menu(store: &Store, ui: &Ui) -> Element {
+    let Some(state) = effort_state(store, ui) else {
+        return Element::spacer().size(Some(0.0), Some(0.0));
+    };
+    let EffortState {
+        efforts,
+        chosen,
+        thumb_x,
+        shown,
+    } = state;
+    let open = ui.open_menu == Some(EFFORT_MENU);
     let anchor = chip(
         EFFORT_MENU,
-        vec![chip_text(effort_label(&effort), look::palette().text)],
+        vec![chip_text(
+            effort_label(&efforts[chosen]),
+            look::palette().text,
+        )],
         open,
         "Effort",
         None,
     );
-    let width = 188.0;
-    let recommended = efforts.iter().position(|e| e == "medium");
-    // Desktop's slider: a 23 px #E6E6E6 pill, a white 20 px thumb on the level,
-    // a tick on the recommended one and dots on the rest; each stop is a click away.
-    // The ends sit 11.5 px in, a thumb's half and a hair; the stops between share the rest.
+    let width = EFFORT_WIDTH;
     let n = efforts.len();
-    let step = if n > 1 {
-        (width - 23.0) / (n - 1) as f32
-    } else {
-        0.0
+    let last = n.saturating_sub(1).max(1) as f32;
+    let rest = if n > 1 { chosen as f32 / last } else { 0.5 };
+    let recommended = efforts.iter().position(|e| e == "medium");
+    let ultra = efforts[shown] == "ultracode";
+    let stop_x = |i: usize| {
+        if n > 1 {
+            i as f32 / last * EFFORT_TRAVEL
+        } else {
+            EFFORT_TRAVEL / 2.0
+        }
     };
-    let stops: Vec<Element> = efforts
-        .iter()
-        .enumerate()
-        .map(|(i, e)| {
-            let (mark, side) = if *e == effort {
-                (
-                    Element::spacer()
-                        .background(look::palette().surface)
-                        .border(look::composer_border(), 1.0)
-                        .radius(10.0)
-                        .size(Some(20.0), Some(20.0)),
-                    20.0,
-                )
-            } else if Some(i) == recommended {
-                (
-                    Element::spacer()
-                        .background(look::slider_mark())
-                        .radius(1.0)
-                        .size(Some(2.0), Some(9.0)),
-                    2.0,
-                )
+    let at_x = |x: f32, side: f32, height: f32, mark: Element| {
+        Element::row(vec![hgap(EFFORT_INSET + x - side / 2.0), mark.centered_y()])
+            .size(Some(width), Some(height))
+    };
+    let mut track: Vec<Element> = vec![];
+    if ultra {
+        track.push(
+            Element::spacer()
+                .horizontal_gradient(look::ultra_track())
+                .size(Some(width), Some(24.0)),
+        );
+        track.push(pixel_field(ui, width, 24.0));
+    } else {
+        // The fill runs from the start to the thumb's middle, under it.
+        track.push(
+            Element::row(vec![Element::spacer()
+                .background(look::slider_fill())
+                .radius(6.0)
+                .size(Some(EFFORT_INSET + thumb_x), Some(24.0))])
+            .size(Some(width), Some(24.0)),
+        );
+        for i in 0..n {
+            let (w, h) = if Some(i) == recommended {
+                (3.0, 9.0)
             } else {
-                (
-                    Element::spacer()
-                        .background(look::slider_mark())
-                        .radius(1.5)
-                        .size(Some(3.0), Some(3.0)),
-                    3.0,
-                )
+                (3.0, 3.0)
             };
-            let inset = 11.5 - side / 2.0;
-            let end = 11.5 + step / 2.0;
-            let (cell, content) = if n == 1 {
-                (width, mark.centered())
-            } else if i == 0 {
-                (end, Element::row(vec![hgap(inset), mark]).centered_y())
-            } else if i == n - 1 {
-                (
-                    end,
-                    Element::row(vec![hgap(end - inset - side), mark]).centered_y(),
-                )
-            } else {
-                (step, mark.centered())
-            };
-            Element::clickable(format!("effort:{e}"), content).size(Some(cell), Some(23.0))
-        })
-        .collect();
-    let track = Element::row(stops)
+            track.push(at_x(
+                stop_x(i),
+                w,
+                24.0,
+                Element::spacer()
+                    .background(look::slider_mark())
+                    .radius(1.5)
+                    .size(Some(w), Some(h)),
+            ));
+        }
+    }
+    let track = Element::stack(track)
         .background(look::slider_track())
-        .radius(11.5)
-        .size(Some(width), Some(23.0));
+        .radius(6.0)
+        .clip_children()
+        .size(Some(width), Some(24.0));
+    // Held, the thumb grows a little, as Desktop's does.
+    let thumb = at_x(
+        thumb_x,
+        20.0,
+        28.0,
+        Element::spacer()
+            .background(limn::Color::WHITE)
+            .border(look::slider_thumb_edge(), 1.0)
+            .radius(6.0)
+            .size(Some(20.0), Some(24.0))
+            .animate_scale_about(
+                "effort:thumb",
+                if ui.effort_dragging { 1.12 } else { 1.0 },
+                limn::Point::new(0.5, 0.5),
+            ),
+    );
+    let control = Element::stack(vec![
+        Element::column(vec![Element::spacer().size(None, Some(2.0)), track])
+            .size(Some(width), Some(28.0)),
+        thumb,
+    ]);
+    let control = Element::clickable(EFFORT_SLIDER, control)
+        .slider(rest, n, EFFORT_INSET)
+        .accessibility_label("Effort")
+        .size(Some(width), Some(28.0));
+    let effort = efforts[shown].clone();
+    let name = text(effort_label(&effort)).font_size(BODY);
+    // Ultracode reads in Desktop's "pro" accent [3.6556.2 `shared-7`: text-pro].
+    let name = if ultra {
+        name.foreground(look::pro())
+    } else {
+        name
+    };
     let mut rows = vec![
         Element::row(vec![
             muted("Effort").font_size(BODY),
-            text(effort_label(&effort)).font_size(BODY),
+            // The level's name slides in as the thumb reaches it [reference selector].
+            limn::Ticker::new("effort:level", effort.clone(), name.size(None, Some(18.0)))
+                .height(18.0)
+                .render(),
             Element::spacer().flex(1.0),
             limn::Tooltip::new(
                 Element::icon(icons::of(icons::QUESTION))
@@ -3650,11 +3747,11 @@ fn effort_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
             muted("Smarter").font_size(SMALL),
         ])
         .size(Some(width), None),
-        track,
+        control,
     ];
     if let Some(recommended) = recommended {
         // Under its stop, as Desktop labels the recommended level.
-        let x = (11.5 + step * recommended as f32 - 42.0).max(0.0);
+        let x = (EFFORT_INSET + stop_x(recommended) - 42.0).max(0.0_f32);
         rows.push(Element::row(vec![
             hgap(x),
             muted("Recommended").font_size(SMALL),
@@ -3670,6 +3767,36 @@ fn effort_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
         width + 32.0,
         limn::PopoverPlacement::TopEnd,
     )
+}
+
+/// The Ultracode track's lilac cells, sweeping in from the right over its first second
+/// (`pixels.rs`, after the reference selector); still and whole under reduced motion.
+fn pixel_field(ui: &Ui, width: f32, height: f32) -> Element {
+    let elapsed = ui
+        .ultra_since
+        .map_or(0.0, |since| since.elapsed().as_secs_f32() * 1000.0);
+    let t = (elapsed / 1000.0).clamp(0.0, 1.0);
+    let reveal = t * t * (3.0 - 2.0 * t);
+    let left = look::ultra_left();
+    let (columns, cells) = crate::pixels::field(width, height, elapsed, reveal, left);
+    let rows = cells
+        .chunks(columns)
+        .map(|row| {
+            Element::row(
+                row.iter()
+                    .map(|cell| {
+                        match cell {
+                            Some(color) => Element::panel(Element::spacer().background(*color))
+                                .padding(crate::pixels::INSET),
+                            None => Element::spacer(),
+                        }
+                        .size(Some(crate::pixels::CELL), Some(crate::pixels::CELL))
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    Element::column(rows).size(Some(width), Some(height))
 }
 
 /// What one request changed, under its turn: every file with how it changed,

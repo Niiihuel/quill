@@ -35,6 +35,8 @@ pub struct Claude {
     turn_tokens: u64,
     live_tokens: u64,
     task_tokens: HashMap<String, u64>,
+    /// The CLI's `/effort` takes `ultracode`: it is offered as the slider's last stop.
+    ultracode: bool,
 }
 
 impl Claude {
@@ -246,9 +248,19 @@ impl AgentAdapter for Claude {
             }
             // As Desktop changes it; verified on CLI 2.1.310, which answers
             // success even to a level it does not know, so only the model's levels are sent.
-            AgentCommand::SetEffort(effort) => vec![self.request(json!({
-                "subtype": "apply_flag_settings", "settings": { "effortLevel": effort },
-            }))],
+            // Ultracode is extra high effort with dynamic workflows on, as Desktop applies it
+            // (`{effortLevel: "xhigh", ultracode: true}`, 3.6556.2 `cc43287c9`/`shared-28`);
+            // any other level turns it off again.
+            AgentCommand::SetEffort(effort) => {
+                let settings = match effort.as_str() {
+                    ULTRACODE => json!({ "effortLevel": "xhigh", "ultracode": true }),
+                    _ if self.ultracode => json!({ "effortLevel": effort, "ultracode": false }),
+                    _ => json!({ "effortLevel": effort }),
+                };
+                vec![self.request(json!({
+                    "subtype": "apply_flag_settings", "settings": settings,
+                }))]
+            }
             AgentCommand::Rewind { request, dry_run } => vec![self.request(json!({
                 "subtype": "rewind_files", "user_message_id": request, "dry_run": dry_run,
             }))],
@@ -271,7 +283,8 @@ impl AgentAdapter for Claude {
                 let ok = response["subtype"] == "success";
                 let body = response["response"].clone();
                 if ok && self.initialize.as_deref() == Some(id.as_str()) {
-                    decoded.events.push(ready(&body));
+                    self.ultracode = offers_ultracode(&body);
+                    decoded.events.push(ready(&body, self.ultracode));
                 }
                 decoded.events.push(AgentEvent::Reply { id, ok, body });
             }
@@ -452,8 +465,25 @@ fn success(id: &Value, response: Value) -> String {
         .to_string()
 }
 
-/// The answer to `initialize` describes the agent ([F:simple]).
-fn ready(body: &Value) -> AgentEvent {
+/// The effort level Desktop adds over the model's own, its slider's last stop
+/// ("Added Ultracode to the effort slider", 3.6556.2 `cb63ed069`).
+const ULTRACODE: &str = "ultracode";
+
+/// Whether `/effort` takes `ultracode`, as its argument hint says ([F:simple]:
+/// `<low|medium|high|xhigh|max|auto|ultracode [on|off]>`).
+fn offers_ultracode(body: &Value) -> bool {
+    body["commands"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|command| {
+            command["name"] == "effort" && text(&command["argumentHint"]).contains(ULTRACODE)
+        })
+}
+
+/// The answer to `initialize` describes the agent ([F:simple]). With `ultracode`, every model
+/// with effort levels also offers Ultracode above them.
+fn ready(body: &Value, ultracode: bool) -> AgentEvent {
     let models = body["models"]
         .as_array()
         .into_iter()
@@ -464,12 +494,21 @@ fn ready(body: &Value) -> AgentEvent {
                 .as_str()
                 .map_or_else(|| text(&m["resolvedModel"]), str::to_owned),
             name: text(&m["displayName"]),
-            efforts: m["supportedEffortLevels"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(text)
-                .collect(),
+            efforts: {
+                let mut efforts: Vec<String> = m["supportedEffortLevels"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(text)
+                    .collect();
+                // Every model with effort levels offers it (inferred: Desktop showed it for
+                // Opus 5.5; the person expects it on Haiku 5.5 too). It is applied as
+                // Desktop applies it, whatever the model's own top level.
+                if ultracode && !efforts.is_empty() {
+                    efforts.push(ULTRACODE.into());
+                }
+                efforts
+            },
         });
     AgentEvent::Ready {
         version: text(&body["claude_code_version"]),

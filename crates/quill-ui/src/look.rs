@@ -97,9 +97,15 @@ tones! {
     /// The usage ring's track: Desktop's #E5E5E5 at rest, #CDCDCD under the pointer, met
     /// halfway so it shows on both.
     ring_track = hex(0xd6d6d6), hex(0x404040);
-    /// The effort slider's pill and its marks.
-    slider_track = hex(0xe6e6e6), hex(0x333333);
-    slider_mark = hex(0xafafaf), hex(0x6a6a6a);
+    /// The effort slider: its track (#454545 dark),
+    /// the fill laid over it up to the thumb (Desktop's 20 % ink, 35 % light on dark:
+    /// #868686 over the track), its marks at 25 %, and the thumb's edge.
+    slider_track = hex(0xe6e6e6), hex(0x454545);
+    slider_fill = Color::rgba(0x19, 0x19, 0x19, 51), Color::rgba(0xff, 0xff, 0xff, 89);
+    slider_mark = Color::rgba(0x19, 0x19, 0x19, 64), Color::rgba(0xff, 0xff, 0xff, 64);
+    slider_thumb_edge = Color::rgba(0x19, 0x19, 0x19, 30), Color::rgba(0xff, 0xff, 0xff, 0);
+    /// Ultracode's violet: the reference selector's accent, lighter on dark (inferred).
+    pro = hex(0x8c73c9), hex(0xa996e0);
     /// An active toggle or tab.
     active = hex(0xe5e5e5), hex(0x303030);
     /// The branch bar over the composer and its chips: the person's dark Desktop draws them
@@ -155,6 +161,30 @@ pub fn palette() -> limn::ComponentPalette {
         text: pick(hex(0x191919), hex(0xefefef)),
         muted: muted(),
         shadow: pick(Color::rgba(0, 0, 0, 24), Color::rgba(0, 0, 0, 80)),
+    }
+}
+
+/// The Ultracode track under its pixel field: the reference selector's gray-to-lilac
+/// gradient, and on dark the same climb from the dark track (inferred).
+pub fn ultra_track() -> Vec<Color> {
+    let stops: [u32; 7] = if is_dark() {
+        [
+            0x454545, 0x464547, 0x4a4650, 0x4e4858, 0x524a60, 0x554b65, 0x574c68,
+        ]
+    } else {
+        [
+            0xeeebe9, 0xece9e7, 0xe2dce3, 0xd9d0df, 0xd0c1da, 0xcdbcd9, 0xcbbad8,
+        ]
+    };
+    stops.into_iter().map(hex).collect()
+}
+
+/// The color the pixel field starts from at the track's left end: the track's own.
+pub fn ultra_left() -> [f32; 3] {
+    if is_dark() {
+        [69.0, 69.0, 69.0]
+    } else {
+        [210.0, 206.0, 214.0]
     }
 }
 

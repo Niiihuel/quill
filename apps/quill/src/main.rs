@@ -210,6 +210,7 @@ impl eframe::App for App {
                 .is_scroll_at_end(quill_ui::view::TERMINAL_SCROLL, 4.0);
         self.sync_terminal(&ctx, window);
 
+        self.ui.tick(&self.store);
         self.tree
             .set_root(quill_ui::view(&self.store, &self.ui, window));
         self.tree.layout(window);
@@ -397,6 +398,7 @@ impl eframe::App for App {
             self.tree.scroll_to_end(&format!("transcript:{id}"));
         }
         self.transcript = mark;
+        self.ui.tick(&self.store);
         self.tree
             .set_root(quill_ui::view(&self.store, &self.ui, window));
         let mut frame = self.tree.layout(window);
@@ -422,6 +424,10 @@ impl eframe::App for App {
         limn_egui::paint_at(ui, &frame, area.min);
         limn_egui::set_cursor(&ctx, self.tree.cursor());
         if let Some(after) = self.tree.animation_repaint_after() {
+            ctx.request_repaint_after(after);
+        }
+        // The effort thumb's spring and the Ultracode field are quill's own, not the tree's.
+        if let Some(after) = self.ui.repaint_after() {
             ctx.request_repaint_after(after);
         }
     }

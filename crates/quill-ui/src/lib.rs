@@ -4,6 +4,7 @@
 
 pub mod icons;
 pub mod look;
+mod pixels;
 pub mod view;
 
 pub use view::{menu_digit, view};
@@ -617,6 +618,14 @@ pub struct Ui {
     pub filter_menu: Option<String>,
     /// A fork was asked for: the session the engine makes next is it, and opens.
     pub waiting_fork: bool,
+    /// The effort slider's thumb in pixels along its travel: where the pointer holds it,
+    /// then the spring that carries it to its stop once let go.
+    pub effort_thumb: Option<limn::ScalarSpring>,
+    pub effort_dragging: bool,
+    /// Where the thumb was in the drag's last moments, for the speed it is let go at.
+    pub effort_samples: Vec<(std::time::Instant, f32)>,
+    /// Since when the open effort slider has stood on Ultracode, for its pixel field.
+    pub ultra_since: Option<std::time::Instant>,
 }
 
 /// The sidebar's groups: by folder, Desktop's default, by status, or one list.
@@ -942,6 +951,37 @@ impl Ui {
             live: Default::default(),
             filter_menu: None,
             waiting_fork: false,
+            effort_thumb: None,
+            effort_dragging: false,
+            effort_samples: vec![],
+            ultra_since: None,
+        }
+    }
+
+    /// Something the UI moves itself is still moving, so the host keeps painting.
+    pub fn animating(&self) -> bool {
+        self.effort_thumb
+            .is_some_and(|thumb| thumb.is_active(std::time::Instant::now()))
+    }
+
+    /// When the host should paint again for what moves on its own: at once for a moving
+    /// thumb, every 33 ms for the Ultracode field, as the reference draws it.
+    pub fn repaint_after(&self) -> Option<std::time::Duration> {
+        if self.animating() {
+            Some(std::time::Duration::ZERO)
+        } else {
+            self.ultra_since
+                .map(|_| std::time::Duration::from_millis(33))
+        }
+    }
+
+    /// Before each frame: the Ultracode field starts over each time the slider reaches it.
+    pub fn tick(&mut self, store: &Store) {
+        let ultra = view::effort_shown(store, self).as_deref() == Some("ultracode");
+        match (ultra, self.ultra_since) {
+            (true, None) => self.ultra_since = Some(std::time::Instant::now()),
+            (false, Some(_)) => self.ultra_since = None,
+            _ => {}
         }
     }
 
@@ -1139,6 +1179,11 @@ pub fn update(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Intent
                 }
             }
         }
+        UiAction::SliderChanged {
+            id,
+            fraction,
+            committed,
+        } if id == view::EFFORT_SLIDER => effort_slid(store, ui, *fraction, *committed),
         UiAction::Clicked { id } => clicked(store, ui, id),
         UiAction::DragStarted { id, position } | UiAction::DragMoved { id, position, .. } => {
             dragged(ui, id, *position);
@@ -1146,6 +1191,56 @@ pub fn update(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Intent
         }
         _ => vec![],
     }
+}
+
+/// The effort slider moved: while dragged the thumb follows the pointer, pulled
+/// towards the nearest stop by limn's magnetic steps; let go, it springs on to the stop it
+/// was let go towards at the pointer's speed, and that level is chosen, as the person's
+/// reference selector does (github.com/zanwei/claude-model-selector: stiffness 920, damping
+/// 40, the speed of the last 90 ms, at most 8 stops a second).
+fn effort_slid(store: &Store, ui: &mut Ui, fraction: f32, committed: bool) -> Vec<Intent> {
+    use std::time::{Duration, Instant};
+    let now = Instant::now();
+    let x = fraction * view::EFFORT_TRAVEL;
+    let efforts = view::efforts(store, ui);
+    let last = efforts.len().saturating_sub(1).max(1) as f32;
+    let thumb = ui.effort_thumb.get_or_insert_with(|| {
+        limn::ScalarSpring::new(x, now).motion(limn::SpringMotion {
+            damping_ratio: 0.66,
+            stiffness: 920.0,
+        })
+    });
+    if !committed {
+        ui.effort_dragging = true;
+        thumb.snap_to(x, now);
+        ui.effort_samples.push((now, x));
+        ui.effort_samples
+            .retain(|(at, _)| now.duration_since(*at) < Duration::from_millis(90));
+        return vec![];
+    }
+    let velocity = match (ui.effort_samples.first(), ui.effort_samples.last()) {
+        (Some(first), Some(end)) if ui.effort_dragging => {
+            let seconds = end.0.duration_since(first.0).as_secs_f32().max(0.016);
+            let most = 8.0 * view::EFFORT_TRAVEL / last;
+            ((end.1 - first.1) / seconds).clamp(-most, most)
+        }
+        _ => 0.0,
+    };
+    thumb.release(thumb.value(now), velocity, x, now);
+    ui.effort_dragging = false;
+    ui.effort_samples.clear();
+    let Some(effort) = efforts.get((fraction * last).round() as usize) else {
+        return vec![];
+    };
+    ui.effort = Some(effort.clone());
+    ui.selected
+        .map(|session| {
+            vec![Intent::SetEffort {
+                session,
+                effort: effort.clone(),
+            }]
+        })
+        .unwrap_or_default()
 }
 
 /// A boundary followed the pointer to `position`: the column's left edge, or the top of the

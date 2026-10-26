@@ -90,6 +90,32 @@ fn initialize_reports_models_with_their_efforts() {
         .find(|m| m.name == "Opus 5.5")
         .expect("Opus 5.5");
     assert!(opus.efforts.iter().any(|e| e == "low") && opus.efforts.iter().any(|e| e == "max"));
+    // `/effort` takes ultracode: every model with levels offers it last.
+    assert_eq!(opus.efforts.last().map(String::as_str), Some("ultracode"));
+    assert!(capabilities
+        .models
+        .iter()
+        .filter(|m| !m.efforts.is_empty())
+        .all(|m| m.efforts.last().map(String::as_str) == Some("ultracode")));
+}
+
+#[test]
+fn ultracode_is_extra_high_effort_with_workflows_on() {
+    let (mut claude, _, _) = replay("simple");
+    let settings = |claude: &mut Claude, effort: &str| -> Value {
+        let line = claude
+            .encode(AgentCommand::SetEffort(effort.into()))
+            .remove(0);
+        serde_json::from_str::<Value>(&line).unwrap()["request"]["settings"].clone()
+    };
+    assert_eq!(
+        settings(&mut claude, "ultracode"),
+        serde_json::json!({ "effortLevel": "xhigh", "ultracode": true })
+    );
+    assert_eq!(
+        settings(&mut claude, "high"),
+        serde_json::json!({ "effortLevel": "high", "ultracode": false })
+    );
 }
 
 #[test]
