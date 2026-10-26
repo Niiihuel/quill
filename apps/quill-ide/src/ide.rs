@@ -72,6 +72,7 @@ const PANE_TERMINAL: &str = "pane:terminal";
 const PANE_PROBLEMS: &str = "pane:problems";
 const PANE_CLOSE: &str = "pane:close";
 const LSP_RESTART: &str = "lsp:restart";
+const ASK_AGENT: &str = "ide:ask";
 
 /// A name being typed for the tree: of something new in a folder (ending in `/`, a folder),
 /// or of a file or folder renamed. Its words, and why the last try failed.
@@ -512,6 +513,9 @@ pub struct Ide {
     /// Each language's server, for the footer, and those to start again.
     pub lsp_servers: HashMap<limn_language::Language, Server>,
     pub lsp_restart: Vec<limn_language::Language>,
+    /// What waits to go to quill, and how the last went.
+    pub link_out: Vec<quill_link::Message>,
+    pub link_note: Option<String>,
     /// The "···" menu over the editor is open; the diagrams of a preview shown as source; an
     /// address a link asks the host to open in the desktop's browser.
     pub more_open: bool,
@@ -610,6 +614,8 @@ impl Ide {
             lsp_note: None,
             lsp_servers: HashMap::new(),
             lsp_restart: vec![],
+            link_out: vec![],
+            link_note: None,
             more_open: false,
             diagram_sources: vec![],
             open_url: None,
@@ -1459,6 +1465,7 @@ impl Ide {
         match id {
             MORE => self.more_open = !self.more_open,
             PROBLEM_NEXT => self.next_problem(),
+            ASK_AGENT => self.ask_agent(),
             LSP_RESTART => {
                 if let Some(buffer) = self.active_buffer() {
                     let path = buffer.path.to_string_lossy();
@@ -2095,6 +2102,7 @@ impl Ide {
             (Key::P, false) => Some(QUICK_OPEN.into()),
             (Key::F, true) => Some(GREP_OPEN.into()),
             (Key::G, false) => Some(QUICK_LINE.into()),
+            (Key::L, false) => Some(ASK_AGENT.into()),
             (Key::J, true) => Some(TERMINAL_TOGGLE.into()),
             (Key::I, true) => Some(LSP_FORMAT.into()),
             // Not V: egui reads Ctrl+Shift+V as a paste.
@@ -2153,6 +2161,41 @@ impl Ide {
             }
         }
         list
+    }
+
+    /// The selection, or the file when nothing is selected, sent to quill for the person to
+    /// ask an agent about.
+    fn ask_agent(&mut self) {
+        let Some(buffer) = self.active_buffer() else {
+            return;
+        };
+        let Some(snapshot) = buffer.editor.as_ref().and_then(|e| e.snapshot().ok()) else {
+            return;
+        };
+        let range = snapshot.selection().range();
+        let (lines, text) = if range.is_empty() {
+            (None, String::new())
+        } else {
+            let first = snapshot.position_of(range.start).unwrap_or_default().row;
+            let end = snapshot.position_of(range.end).unwrap_or_default();
+            // A selection ending where a line starts leaves that line out.
+            let last = if end.column == 0 && end.row > first {
+                end.row - 1
+            } else {
+                end.row
+            };
+            let text = snapshot
+                .slice(range)
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            (Some((first as u32 + 1, last as u32 + 1)), text)
+        };
+        self.link_out.push(quill_link::Message::Ask {
+            root: self.root.clone(),
+            path: buffer.path.clone(),
+            lines,
+            text,
+        });
     }
 
     /// The caret to the next error or warning after it, or to the first.
@@ -3046,6 +3089,8 @@ fn crumb_bar(ide: &Ide, buffer: &Buffer, width: f32) -> Element {
         item(LSP_RENAME, "Rename symbol", "F2"),
         item(LSP_FORMAT, "Format document", "Ctrl+Shift+I"),
         limn::DropdownMenuEntry::Separator,
+        item(ASK_AGENT, "Ask agent", "Ctrl+L"),
+        limn::DropdownMenuEntry::Separator,
         item(QUICK_LINE, "Go to line", "Ctrl+G"),
         limn::DropdownMenuEntry::from(
             limn::DropdownMenuItem::new(WRAP, "Wrap long lines").selected(ide.prefs.wrap),
@@ -3389,6 +3434,8 @@ fn context_actions(vim: bool) -> Vec<limn::ContextMenuEntry> {
         Item(ContextMenuItem::new(LSP_RENAME, "Rename symbol").shortcut("F2")),
         Item(ContextMenuItem::new(LSP_FORMAT, "Format document").shortcut("Ctrl+Shift+I")),
         limn::ContextMenuEntry::Separator,
+        Item(ContextMenuItem::new(ASK_AGENT, "Ask agent").shortcut("Ctrl+L")),
+        limn::ContextMenuEntry::Separator,
         Item(ContextMenuItem::new(FIND_OPEN, "Find").shortcut(if vim { "/" } else { "Ctrl+F" })),
         limn::ContextMenuEntry::Separator,
         Item(ContextMenuItem::new(COPY_PATH, "Copy path")),
@@ -3445,7 +3492,7 @@ fn footer(ide: &Ide, width: f32) -> Element {
         lead.push(text(label).font_size(SMALL).foreground(ink).centered_y());
     }
     let mut tail = vec![];
-    if let Some(note) = &ide.lsp_note {
+    for note in [&ide.link_note, &ide.lsp_note].into_iter().flatten() {
         tail.push(small(note.clone()));
     }
     let Some(buffer) = buffer else {
@@ -4431,6 +4478,40 @@ mod tests {
         assert!(ide.terminal.open && !ide.terminal.problems);
         click(&mut ide, TERMINAL_TOGGLE);
         assert!(!ide.terminal.open);
+    }
+
+    #[test]
+    fn ask_agent_sends_the_lines_picked_or_the_file() {
+        let mut ide = with_files();
+        read(&mut ide, "/r/a.rs", "one\ntwo\nthree\n");
+        click(&mut ide, ASK_AGENT);
+        let file = quill_link::Message::Ask {
+            root: "/r".into(),
+            path: "/r/a.rs".into(),
+            lines: None,
+            text: String::new(),
+        };
+        assert_eq!(ide.link_out, [file]);
+        ide.link_out.clear();
+        // "two\nthree\n" ends where line 4 starts, which is left out.
+        let editor = ide.buffers[0].editor.clone().unwrap();
+        editor
+            .shared_buffer()
+            .lock()
+            .unwrap()
+            .set_selection(Selection {
+                anchor: 4,
+                head: 14,
+            })
+            .unwrap();
+        click(&mut ide, ASK_AGENT);
+        let lines = quill_link::Message::Ask {
+            root: "/r".into(),
+            path: "/r/a.rs".into(),
+            lines: Some((2, 3)),
+            text: "two\nthree\n".into(),
+        };
+        assert_eq!(ide.link_out, [lines]);
     }
 
     #[test]

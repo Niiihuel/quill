@@ -48,6 +48,10 @@ struct App {
     browser_shown: Option<(SessionId, quill_model::BrowserView)>,
     /// What the address bar was last set to.
     address: Option<String>,
+    /// Messages from quill-ide since the last frame, and the socket they come on while quill
+    /// listens on it.
+    linked: Arc<Mutex<Vec<quill_link::Message>>>,
+    _link: Option<quill_link::Listener>,
 }
 
 impl App {
@@ -387,6 +391,32 @@ impl App {
     }
 
     /// Put `prompt` in the composer, its editor and the UI's copy alike, and give it the keys.
+    /// Code from quill-ide: its folder's session on screen, or a new one there, and the file
+    /// and lines added to the message, for the person to say what they want of them.
+    fn ask_from_editor(
+        &mut self,
+        root: &std::path::Path,
+        path: &std::path::Path,
+        lines: Option<(u32, u32)>,
+        text: &str,
+    ) {
+        let session = quill_ui::session_for(&self.store, &self.ui, root);
+        let id = session.map_or(quill_ui::view::NEW_SESSION.to_owned(), |s| {
+            format!("session:{s}")
+        });
+        let intents = quill_ui::update(&self.store, &mut self.ui, &limn::UiAction::Clicked { id });
+        self.dispatch(intents);
+        if session.is_none() {
+            self.ui.cwd = root.to_path_buf();
+        }
+        let mut prompt = self.ui.prompt.trim_end().to_owned();
+        if !prompt.is_empty() {
+            prompt.push_str(if lines.is_some() { "\n\n" } else { " " });
+        }
+        prompt.push_str(&quill_ui::mention(root, path, lines, text));
+        self.set_prompt(prompt);
+    }
+
     fn set_prompt(&mut self, prompt: String) {
         self.tree.set_input_value(quill_ui::view::COMPOSER, &prompt);
         self.ui.prompt = prompt;
@@ -552,6 +582,19 @@ impl eframe::App for App {
             .set_context_menu_palette(quill_ui::look::menu_palette());
         self.tree
             .set_context_menu_sizing(quill_components::pieces::menu_sizing(240.0));
+        let linked = std::mem::take(&mut *self.linked.lock().unwrap());
+        for message in linked {
+            if let quill_link::Message::Ask {
+                root,
+                path,
+                lines,
+                text,
+            } = message
+            {
+                self.ask_from_editor(&root, &path, lines, &text);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
+        }
         let attached = std::mem::take(&mut *self.attached.lock().unwrap());
         if !attached.is_empty() {
             // Paths inside the folder are written from it, as the agent reads them.
@@ -769,6 +812,28 @@ impl eframe::App for App {
                         .arg(&session.cwd)
                         .spawn();
                 }
+                // "Open in › <editor>" shows the session's folder in the editor of Settings.
+                if let Some(session) = id
+                    .strip_prefix("open-in:editor:")
+                    .and_then(|s| s.parse().ok())
+                    .and_then(|s| self.store.session(s))
+                {
+                    open_in_editor(&self.ui.settings.editor, &session.cwd, None, None);
+                }
+                // A changed file's button: that file at its first changed line.
+                if let Some((line, path)) = id
+                    .strip_prefix(quill_ui::view::OPEN_FILE)
+                    .and_then(|rest| rest.split_once(':'))
+                {
+                    let root = quill_ui::folder(&self.store, &self.ui);
+                    let path = root.join(path);
+                    open_in_editor(
+                        &self.ui.settings.editor,
+                        &root,
+                        Some(&path),
+                        line.parse().ok(),
+                    );
+                }
                 // Settings › Browser: the Chromium to run, from the platform's dialog.
                 if id == quill_ui::view::BROWSER_PROGRAM_CHOOSE {
                     let (chromium, ctx) = (self.chromium.clone(), ctx.clone());
@@ -953,6 +1018,59 @@ fn open_url(url: &str) -> bool {
             .is_ok_and(|status| status.success())
 }
 
+/// Show `path` of the folder `root`, or the folder, in the editor `editor` of Settings, at
+/// `line` when given: quill-ide in its window of that folder when one is open, else a new one;
+/// the others by their own command line.
+fn open_in_editor(
+    editor: &str,
+    root: &std::path::Path,
+    path: Option<&std::path::Path>,
+    line: Option<u32>,
+) {
+    let at = path.map(|p| match line {
+        Some(line) => format!("{}:{line}", p.display()),
+        None => p.display().to_string(),
+    });
+    let mut command = match editor {
+        "code" | "cursor" => {
+            let mut command = std::process::Command::new(editor);
+            command.arg(root);
+            if let Some(at) = &at {
+                command.arg("--goto").arg(at);
+            }
+            command
+        }
+        "zed" => {
+            let mut command = std::process::Command::new("zed");
+            command.arg(at.as_deref().map_or(root.as_os_str(), std::ffi::OsStr::new));
+            command
+        }
+        _ => {
+            let open = quill_link::Message::Open {
+                root: root.to_path_buf(),
+                path: path.unwrap_or(root).to_path_buf(),
+                line,
+                column: None,
+            };
+            if quill_link::send(&quill_link::ide_socket(root), &open).is_ok() {
+                return;
+            }
+            // Beside quill when they were built together, else the one on PATH.
+            let program = std::env::current_exe()
+                .ok()
+                .and_then(|exe| Some(exe.parent()?.join("quill-ide")))
+                .filter(|p| p.is_file())
+                .unwrap_or_else(|| "quill-ide".into());
+            let mut command = std::process::Command::new(program);
+            command.arg(root).args(at);
+            command
+        }
+    };
+    if let Err(error) = command.spawn() {
+        eprintln!("quill: {editor} did not start: {error}");
+    }
+}
+
 fn main() -> eframe::Result {
     // Chromium's own processes are quill run again; they do their work and leave.
     if let Some(code) = quill_engine::native::subprocess() {
@@ -1048,7 +1166,19 @@ fn main() -> eframe::Result {
                     },
                 ),
             };
+            // quill-ide sends code to ask about; a second quill leaves the socket to the first.
+            let linked: Arc<Mutex<Vec<quill_link::Message>>> = Arc::default();
+            let link = {
+                let (linked, ctx) = (linked.clone(), creation.egui_ctx.clone());
+                quill_link::listen(&quill_link::quill_socket(), move |message| {
+                    linked.lock().unwrap().push(message);
+                    ctx.request_repaint();
+                })
+                .ok()
+            };
             Ok(Box::new(App {
+                linked,
+                _link: link,
                 tree: UiTree::new(Element::spacer()),
                 store: Store::default(),
                 ui: Ui {

@@ -85,6 +85,8 @@ pub struct Settings {
     /// Draw the browser's pages with Chromium in quill's own process, without the headless
     /// one's delay. From the next start.
     pub browser_native: bool,
+    /// The editor quill opens files in: "quill-ide", "code", "cursor" or "zed".
+    pub editor: String,
     /// Each agent's own, by its id.
     pub agents: std::collections::BTreeMap<String, AgentSettings>,
 }
@@ -106,6 +108,7 @@ impl Default for Settings {
             browser_sites: vec![],
             browser_program: None,
             browser_native: false,
+            editor: "quill-ide".into(),
             agents: Default::default(),
         }
     }

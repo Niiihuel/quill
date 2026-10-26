@@ -21,3 +21,5 @@ quill-pty = { path = "../../crates/quill-pty" }
 bytemuck = { version = "1", features = ["extern_crate_alloc"] }
 # `quill --open-url`, the agents' $BROWSER, speaks a line of JSON to the window's bridge.
 serde_json.workspace = true
+# Files open in quill-ide's window of their folder, and code from it comes as a message.
+quill-link = { path = "../../crates/quill-link" }
