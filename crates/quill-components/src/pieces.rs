@@ -204,3 +204,18 @@ pub fn menu(
     .placement(placement)
     .render()
 }
+
+/// A pane's header: what it shows on the left, its tools on the right, 44 px over a
+/// hairline.
+pub fn pane_header(lead: Element, tools: Vec<Element>, width: f32) -> Element {
+    let mut row = vec![hgap(12.0), lead, Element::spacer().flex(1.0)];
+    // At their own height in the middle, a button as much as an icon.
+    row.extend(tools.into_iter().map(Element::centered_y));
+    row.push(hgap(4.0));
+    Element::column(vec![
+        Element::row(row)
+            .gap(8.0)
+            .size(Some(width), Some(look::PANE_HEADER)),
+        hline(width, look::pane_border()),
+    ])
+}

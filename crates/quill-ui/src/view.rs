@@ -9,7 +9,8 @@ use limn::{
     TextShimmer,
 };
 use quill_components::pieces::{
-    hgap, hline, icon_tool, keyed_button, menu, muted, text, toggle, tool_surface, vline,
+    hgap, hline, icon_tool, keyed_button, menu, muted, pane_header, text, toggle, tool_surface,
+    vline,
 };
 use quill_components::settings::{
     self, choices, setting, setting_button, setting_switch, Setting, SettingsPage,
@@ -539,21 +540,6 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     .render()
 }
 
-/// A pane's header: what it shows on the left, its tools on the right, 44 px over a
-/// hairline.
-fn pane_header(lead: Element, tools: Vec<Element>, width: f32) -> Element {
-    let mut row = vec![hgap(12.0), lead, Element::spacer().flex(1.0)];
-    // At their own height in the middle, a button as much as an icon.
-    row.extend(tools.into_iter().map(Element::centered_y));
-    row.push(hgap(4.0));
-    Element::column(vec![
-        Element::row(row)
-            .gap(8.0)
-            .size(Some(width), Some(look::PANE_HEADER)),
-        hline(width, look::pane_border()),
-    ])
-}
-
 /// Expand and close, the tools every pane carries.
 fn pane_tools(pane: Pane, ui: &Ui, palette: ComponentPalette) -> Vec<Element> {
     let expanded = ui.expanded_pane == Some(pane);
@@ -665,6 +651,8 @@ fn terminal_pane(
             )
             .font_size(TERMINAL_FONT)
             .background(look::theme().background)
+            // The shell's default ink is near black, lost on the dark page without it.
+            .min_contrast(4.5)
             // Desktop's terminal marks its focus with the cursor alone.
             .focus_ring(false)
             .render(),

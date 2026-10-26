@@ -3084,6 +3084,7 @@ dependencies = [
  "limn-egui",
  "limn-language",
  "quill-components",
+ "quill-pty",
  "rfd",
  "serde",
  "serde_json",

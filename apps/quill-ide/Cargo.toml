@@ -15,6 +15,8 @@ limn-editor.workspace = true
 limn-language = { path = "../../../limn-quill-integration/crates/limn-language" }
 eframe.workspace = true
 quill-components = { path = "../../crates/quill-components" }
+# The terminal's shells, as quill runs them.
+quill-pty = { path = "../../crates/quill-pty" }
 # Lists a folder as git sees it, .gitignore and all, as ripgrep does.
 ignore = "0.4"
 serde.workspace = true

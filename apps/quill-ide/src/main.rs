@@ -36,9 +36,84 @@ struct App {
     kept: session::Session,
     /// How many frames a control asked to take the keys has not been there yet.
     focus_waits: u32,
+    /// The folder's shells, kept while the window lives.
+    shells: quill_pty::Tabs,
 }
 
 impl App {
+    /// Start, size and read the shells while their pane shows, and do what was asked of
+    /// them, as quill does for a session's folder.
+    fn sync_terminal(&mut self, ctx: &egui::Context, window: Size) {
+        let (cols, rows) = self.ide.terminal_grid(window);
+        let pane = &mut self.ide.terminal;
+        pane.screen = None;
+        if !pane.open {
+            pane.requests.clear();
+            return;
+        }
+        let wake = || {
+            let ctx = ctx.clone();
+            move || ctx.request_repaint()
+        };
+        let had = !self.shells.is_empty();
+        let root = self.ide.root.clone();
+        for request in std::mem::take(&mut pane.requests) {
+            match request {
+                ide::TerminalRequest::New => {
+                    if let Err(error) = self.shells.open(&root, cols, rows, wake()) {
+                        eprintln!("quill-ide: no terminal in {}: {error}", root.display());
+                    }
+                }
+                ide::TerminalRequest::Select(tab) => self.shells.select(tab),
+                ide::TerminalRequest::Close(tab) => self.shells.close(tab),
+            }
+        }
+        self.shells.reap();
+        if self.shells.is_empty() && !had {
+            if let Err(error) = self.shells.open(&root, cols, rows, wake()) {
+                eprintln!("quill-ide: no terminal in {}: {error}", root.display());
+            }
+        }
+        // The last one closed, or `exit` in it, hides the pane; opening it again starts one.
+        let Some(shell) = self.shells.active_mut() else {
+            pane.tabs.clear();
+            pane.open = false;
+            return;
+        };
+        shell.resize(cols, rows);
+        pane.screen = Some(shell.screen());
+        pane.tabs = self
+            .shells
+            .list()
+            .into_iter()
+            .map(|tab| tab.title)
+            .collect();
+        pane.active = self.shells.active();
+    }
+
+    /// What is typed while the terminal has the keys goes to its shell, Ctrl keys too.
+    fn typed_into_terminal(&mut self, focused: Option<&str>, event: &limn::UiEvent) -> bool {
+        if focused != Some(ide::TERMINAL) {
+            return false;
+        }
+        let bytes = match event {
+            limn::UiEvent::Text(text) => text.as_bytes().to_vec(),
+            limn::UiEvent::Paste(text) => text.as_bytes().to_vec(),
+            limn::UiEvent::Key { key, shift, ctrl } => {
+                match quill_pty::key_bytes(*key, *ctrl, *shift) {
+                    Some(bytes) => bytes,
+                    // Plain letters come again as Text.
+                    None => return true,
+                }
+            }
+            _ => return false,
+        };
+        if let Some(shell) = self.shells.active_mut() {
+            shell.write(&bytes);
+        }
+        true
+    }
+
     fn run(&self, jobs: Vec<ide::Job>) {
         for job in jobs {
             let (inbox, ctx) = (self.inbox.clone(), self.ctx.clone());
@@ -124,8 +199,17 @@ impl eframe::App for App {
             .ide
             .editor_id()
             .and_then(|id| self.tree.code_editor_vim_mode(&id));
+        // New output keeps the terminal at its end only if the person left it there.
+        let shown = self.ide.terminal.screen.clone();
+        let follow = shown.is_none() || self.tree.is_scroll_at_end(ide::TERMINAL_SCROLL, 4.0);
+        self.sync_terminal(&ctx, window);
         self.tree.set_root(ide::view(&self.ide, window));
         self.tree.layout(window);
+        // Ctrl+` shows and hides the terminal, as in quill; limn has no key for it.
+        let mut toggled = false;
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Backtick)) {
+            toggled = true;
+        }
         let mut actions = vec![];
         // Ctrl+, opens Settings, as quill's; limn has no key for it.
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Comma)) {
@@ -133,8 +217,16 @@ impl eframe::App for App {
                 id: quill_components::settings::SETTINGS_OPEN.into(),
             });
         }
+        if toggled {
+            actions.push(limn::UiAction::Clicked {
+                id: ide::TERMINAL_TOGGLE.into(),
+            });
+        }
         let focused = self.tree.focused_id().map(str::to_owned);
         for event in limn_egui::events(&ctx, area.min) {
+            if self.typed_into_terminal(focused.as_deref(), &event) {
+                continue;
+            }
             // Opening by name and finding in every file: the arrows move the row Enter opens.
             if self.ide.quick.is_some() || self.ide.grep.is_some() {
                 if let limn::UiEvent::Key {
@@ -271,8 +363,18 @@ impl eframe::App for App {
             self.run(jobs);
         }
         self.ide.tick();
+        self.sync_terminal(&ctx, window);
+        let changed = match (&shown, &self.ide.terminal.screen) {
+            (Some(before), Some(now)) => !Arc::ptr_eq(before, now),
+            (None, Some(_)) => true,
+            _ => false,
+        };
         self.tree.set_root(ide::view(&self.ide, window));
         let mut frame = self.tree.layout(window);
+        if follow && changed {
+            self.tree.scroll_to_end(ide::TERMINAL_SCROLL);
+            frame = self.tree.layout(window);
+        }
         // What the IDE asked of the tree: a control to take the keys, the caret in view.
         if let Some(id) = self.ide.focus.take() {
             let focused = self.tree.focus(&id);
@@ -391,6 +493,7 @@ fn main() -> eframe::Result {
                 picked: Arc::default(),
                 kept,
                 focus_waits: 0,
+                shells: quill_pty::Tabs::default(),
             };
             app.run(jobs);
             Ok(Box::new(app))

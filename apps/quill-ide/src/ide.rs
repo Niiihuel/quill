@@ -25,6 +25,14 @@ use std::time::SystemTime;
 
 pub const TREE_TOGGLE: &str = "tree:toggle";
 pub const TREE_FOCUS: &str = "tree:focus";
+pub const TERMINAL: &str = "terminal";
+pub const TERMINAL_SCROLL: &str = "terminal:scroll";
+pub const TERMINAL_TOGGLE: &str = "terminal:toggle";
+const TERMINAL_NEW: &str = "terminal:new";
+/// The terminal's share of the window under the editor, its type and its insets, as quill's.
+const TERMINAL_HEIGHT: f32 = 0.36;
+pub const TERMINAL_FONT: f32 = 12.0;
+const TERMINAL_PADDING: [f32; 2] = [12.0, 8.0];
 const COPY_PATH: &str = "editor:copy-path";
 const COPY_RELATIVE: &str = "editor:copy-relative";
 const REVEAL: &str = "editor:reveal";
@@ -33,6 +41,25 @@ const ROW: f32 = 26.0;
 const NOTICE: f32 = 40.0;
 /// The line under the editor: mode, file, caret, language and branch.
 const FOOTER: f32 = 26.0;
+
+/// What the person asked of the shells, for the host, which runs them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TerminalRequest {
+    New,
+    Select(usize),
+    Close(usize),
+}
+
+/// The shells under the editor, in the folder: whether they show, what was asked of them,
+/// their tabs' names and which is on screen, and its screen as the host read it.
+#[derive(Default)]
+pub struct TerminalPane {
+    pub open: bool,
+    pub requests: Vec<TerminalRequest>,
+    pub tabs: Vec<String>,
+    pub active: usize,
+    pub screen: Option<std::sync::Arc<limn::TerminalScreen>>,
+}
 
 /// The keys the tree takes.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -255,6 +282,7 @@ pub struct Ide {
     pub grep_count: u64,
     /// A file's row to take the caret to once it is read.
     pub pending_goto: Option<(PathBuf, usize)>,
+    pub terminal: TerminalPane,
 }
 
 #[derive(Default)]
@@ -331,6 +359,7 @@ impl Ide {
             grep: None,
             grep_count: 0,
             pending_goto: None,
+            terminal: TerminalPane::default(),
         };
         (ide, jobs)
     }
@@ -437,6 +466,9 @@ impl Ide {
             return jobs;
         }
         if let Some(jobs) = self.structure_clicked(id) {
+            return jobs;
+        }
+        if let Some(jobs) = self.terminal_clicked(id) {
             return jobs;
         }
         if id == TREE_TOGGLE {
@@ -771,6 +803,43 @@ impl Ide {
         jobs
     }
 
+    /// The terminal's toggle, its tabs, its new and its closes. `None` when `id` is none of
+    /// them.
+    fn terminal_clicked(&mut self, id: &str) -> Option<Vec<Job>> {
+        let terminal = &mut self.terminal;
+        if id == TERMINAL_TOGGLE {
+            terminal.open = !terminal.open;
+            self.focus = if terminal.open {
+                Some(TERMINAL.into())
+            } else {
+                self.editor_id()
+            };
+        } else if id == TERMINAL_NEW {
+            terminal.requests.push(TerminalRequest::New);
+            self.focus = Some(TERMINAL.into());
+        } else if let Some(tab) = id.strip_prefix("terminal:tab:") {
+            terminal
+                .requests
+                .push(TerminalRequest::Select(tab.parse().ok()?));
+            self.focus = Some(TERMINAL.into());
+        } else if let Some(tab) = id.strip_prefix("terminal:close:") {
+            terminal
+                .requests
+                .push(TerminalRequest::Close(tab.parse().ok()?));
+        } else {
+            return None;
+        }
+        Some(vec![])
+    }
+
+    /// The terminal's grid in cells, for the shells to be sized to, in `window`.
+    pub fn terminal_grid(&self, window: Size) -> (u16, u16) {
+        let width = window.width - self.sidebar.docked_width() - 2.0 * TERMINAL_PADDING[0];
+        let height = terminal_height(window) - look::PANE_HEADER - 1.0 - 2.0 * TERMINAL_PADDING[1];
+        let (cols, rows) = limn::TerminalView::grid_size(Size::new(width, height), TERMINAL_FONT);
+        (cols as u16, rows as u16)
+    }
+
     /// The tree takes the keys, open, on the file on screen or its first row.
     fn focus_tree(&mut self) -> Vec<Job> {
         if !self.sidebar.open {
@@ -1091,6 +1160,7 @@ impl Ide {
             (Key::P, false) => Some(QUICK_OPEN.into()),
             (Key::F, true) => Some(GREP_OPEN.into()),
             (Key::G, false) => Some(QUICK_LINE.into()),
+            (Key::J, true) => Some(TERMINAL_TOGGLE.into()),
             // With Vim keys Ctrl+F is a page down, and `/` finds.
             (Key::F, false) if !self.prefs.vim => Some(FIND_OPEN.into()),
             _ => None,
@@ -1160,7 +1230,16 @@ pub fn view(ide: &Ide, window: Size) -> Element {
     let with_line = || Element::row(vec![tree(ide, below), vline(below)]);
     let mut body: Vec<Element> = ide.sidebar.docked(with_line(), below).into_iter().collect();
     let width = window.width - ide.sidebar.docked_width();
-    body.push(editor(ide, width, below).flex(1.0));
+    let shell = if ide.terminal.open {
+        terminal_height(window)
+    } else {
+        0.0
+    };
+    let mut column = vec![editor(ide, width, below - shell).flex(1.0)];
+    if shell > 0.0 {
+        column.push(terminal_pane(ide, width, shell));
+    }
+    body.push(Element::column(column).flex(1.0));
     let body = Element::row(body).size(Some(window.width), Some(below));
     // Shut, the tree peeks over the editor under the pointer, as quill's sidebar does.
     let body = ide
@@ -1541,6 +1620,96 @@ fn editor(ide: &Ide, width: f32, height: f32) -> Element {
     }
     column.push(footer(ide, width));
     Element::column(column)
+}
+
+fn terminal_height(window: Size) -> f32 {
+    ((window.height - look::TOP_BAR) * TERMINAL_HEIGHT)
+        .round()
+        .max(120.0)
+}
+
+/// The folder's shells under the editor, as quill's terminal pane: "Terminal" and
+/// the folder while there is one, pills once there are more, then its new and its close.
+fn terminal_pane(ide: &Ide, width: f32, height: f32) -> Element {
+    let palette = look::palette();
+    let terminal = &ide.terminal;
+    let folder = name(&ide.root);
+    let new = icon_tool(
+        TERMINAL_NEW,
+        icons::of(icons::ADD),
+        "New terminal",
+        28.0,
+        palette,
+    );
+    let lead = if terminal.tabs.len() <= 1 {
+        Element::row(vec![
+            text(terminal.tabs.first().cloned().unwrap_or("Terminal".into())).centered_y(),
+            muted(folder).centered_y(),
+            hgap(4.0),
+            new,
+        ])
+        .gap(8.0)
+    } else {
+        let mut pills: Vec<Element> = terminal
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(i, title)| {
+                let close = icon_tool(
+                    &format!("terminal:close:{i}"),
+                    icons::of(icons::CLOSE),
+                    "Close terminal",
+                    20.0,
+                    palette,
+                );
+                let pill = Element::row(vec![hgap(8.0), text(title.clone()).centered_y(), close])
+                    .gap(6.0)
+                    .size(None, Some(28.0))
+                    .radius(8.0);
+                let pill = if i == terminal.active {
+                    pill.background(look::active())
+                } else {
+                    pill
+                };
+                Element::clickable(format!("terminal:tab:{i}"), pill).centered_y()
+            })
+            .collect();
+        pills.push(new);
+        Element::row(pills).gap(4.0)
+    };
+    let close = icon_tool(
+        TERMINAL_TOGGLE,
+        icons::of(icons::CLOSE),
+        "Close",
+        28.0,
+        palette,
+    );
+    let header = pane_header(lead, vec![close], width);
+    let body = match &terminal.screen {
+        // Its cursor in the palette's text: quill's is the blue of its ANSI palette.
+        Some(screen) => limn::TerminalView::new(
+            TERMINAL,
+            screen.clone(),
+            ComponentPalette {
+                text: look::cursor(),
+                ..palette
+            },
+        )
+        .font_size(TERMINAL_FONT)
+        .background(look::theme().background)
+        // The shell's own dark ink would be lost on a dark page.
+        .min_contrast(4.5)
+        .focus_ring(false)
+        .render()
+        .padding(TERMINAL_PADDING[1]),
+        None => Element::spacer(),
+    };
+    Element::column(vec![
+        hline(width, look::pane_border()),
+        header,
+        body.flex(1.0),
+    ])
+    .size(Some(width), Some(height))
 }
 
 /// The fold controls and sticky lines of `buffer`'s structure, if it was found in `revision`.
@@ -2229,6 +2398,28 @@ mod tests {
         assert_eq!(editor.snapshot().unwrap().selection().head, 16);
         type_in(&ide.buffers[0], 0, "x");
         assert_eq!(analyze(&mut ide), 1, "an edit is looked at again");
+    }
+
+    #[test]
+    fn the_terminal_opens_under_the_editor_and_asks_the_host_for_shells() {
+        let mut ide = with_files();
+        click(&mut ide, TERMINAL_TOGGLE);
+        assert!(ide.terminal.open);
+        assert_eq!(ide.focus.take().as_deref(), Some(TERMINAL));
+        click(&mut ide, TERMINAL_NEW);
+        click(&mut ide, "terminal:tab:0");
+        click(&mut ide, "terminal:close:1");
+        use TerminalRequest::*;
+        assert_eq!(ide.terminal.requests, vec![New, Select(0), Close(1)]);
+        let window = Size::new(1408.0, 844.0);
+        let (cols, rows) = ide.terminal_grid(window);
+        assert!(cols > 80 && rows > 10, "{cols}x{rows}");
+        ide.terminal.screen = Some(std::sync::Arc::default());
+        let frame = UiTree::new(view(&ide, window)).layout(window);
+        let shell = frame.regions.iter().find(|r| r.id == TERMINAL).unwrap();
+        assert!(shell.rect.y > 500.0, "under the editor");
+        click(&mut ide, TERMINAL_TOGGLE);
+        assert!(!ide.terminal.open);
     }
 
     #[test]
