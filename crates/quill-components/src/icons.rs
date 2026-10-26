@@ -156,6 +156,10 @@ pub const WARNING: &str = icon!(
     "<path d='M10 2.75L18 16.75H2z'/><path d='M10 8v4'/><circle cx='10' cy='14.25' r='0.7' fill='currentColor' stroke='none'/>"
 );
 
+/// An error: a ring with a cross, as `CHECK_CIRCLE` holds a check.
+pub const ERROR: &str =
+    icon!("<circle cx='10' cy='10' r='7.5'/><path d='M7.5 7.5l5 5M12.5 7.5l-5 5'/>");
+
 /// A waiting task's dashed ring.
 pub const TASK_PENDING: &str = icon!("<circle cx='10' cy='10' r='7' stroke-dasharray='2.4 2.3'/>");
 
@@ -170,6 +174,7 @@ pub const ALL: &[(&str, &str)] = &[
     ("close", CLOSE),
     ("check", CHECK),
     ("check_circle", CHECK_CIRCLE),
+    ("error", ERROR),
     ("copy", COPY),
     ("search", SEARCH),
     ("filter", FILTER),

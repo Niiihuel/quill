@@ -66,6 +66,7 @@ const ROW: f32 = 26.0;
 const NOTICE: f32 = 40.0;
 /// The line under the editor: mode, file, caret, language and branch.
 const FOOTER: f32 = 26.0;
+const PROBLEM_NEXT: &str = "footer:problem";
 
 /// A name being typed for the tree: of something new in a folder (ending in `/`, a folder),
 /// or of a file or folder renamed. Its words, and why the last try failed.
@@ -312,6 +313,16 @@ pub fn carry(items: &[Diagnostic], old: &str, new: &str) -> Vec<Diagnostic> {
         .collect()
 }
 
+/// A language's server as the footer shows it: its program, whether it answers yet, and why
+/// it does not run, when it does not, with what may help.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Server {
+    pub name: String,
+    pub ready: bool,
+    pub failure: Option<String>,
+    pub hint: Option<String>,
+}
+
 /// A place a server names: a file and its row.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Location {
@@ -480,6 +491,8 @@ pub struct Ide {
     pub references: Option<(Vec<Location>, usize)>,
     pub renaming_symbol: Option<String>,
     pub lsp_note: Option<String>,
+    /// Each language's server, for the footer.
+    pub lsp_servers: HashMap<limn_language::Language, Server>,
     /// The "···" menu over the editor is open; the diagrams of a preview shown as source; an
     /// address a link asks the host to open in the desktop's browser.
     pub more_open: bool,
@@ -576,6 +589,7 @@ impl Ide {
             references: None,
             renaming_symbol: None,
             lsp_note: None,
+            lsp_servers: HashMap::new(),
             more_open: false,
             diagram_sources: vec![],
             open_url: None,
@@ -1424,6 +1438,7 @@ impl Ide {
         let mut save = false;
         match id {
             MORE => self.more_open = !self.more_open,
+            PROBLEM_NEXT => self.next_problem(),
             "editor:more:dismiss" => self.more_open = false,
             WRAP => {
                 self.prefs.wrap = !self.prefs.wrap;
@@ -2049,6 +2064,39 @@ impl Ide {
     /// The editor on screen's id, for what the host reads of it.
     pub fn editor_id(&self) -> Option<String> {
         self.active_buffer().map(Buffer::editor_id)
+    }
+
+    /// The caret to the next error or warning after it, or to the first.
+    fn next_problem(&mut self) {
+        let Some(buffer) = self.active_buffer() else {
+            return;
+        };
+        let Some(editor) = &buffer.editor else {
+            return;
+        };
+        let Ok(snapshot) = editor.snapshot() else {
+            return;
+        };
+        let found = self
+            .diagnostics
+            .get(&buffer.path)
+            .and_then(|d| d.at(snapshot.revision()));
+        let mut starts: Vec<usize> = found
+            .unwrap_or_default()
+            .iter()
+            .filter(|d| d.severity <= 2)
+            .map(|d| d.range.start)
+            .collect();
+        starts.sort_unstable();
+        let head = snapshot.selection().head;
+        let Some(&to) = starts.iter().find(|&&at| at > head).or(starts.first()) else {
+            return;
+        };
+        if let Ok(mut text) = editor.shared_buffer().lock() {
+            let _ = text.set_selection(Selection::caret(to));
+        }
+        self.focus = Some(buffer.editor_id());
+        self.reveal = true;
     }
 
     fn active_buffer(&self) -> Option<&Buffer> {
@@ -3205,71 +3253,100 @@ fn footer(ide: &Ide, width: f32) -> Element {
         );
     }
     let mut tail = vec![];
-    match buffer {
-        Some(buffer) => {
-            if buffer.dirty() {
-                lead.push(small("Unsaved".into()));
-            }
-            let snapshot = buffer.editor.as_ref().and_then(|e| e.snapshot().ok());
-            if let Some(snapshot) = snapshot {
-                let head = snapshot.selection().head;
-                let at = snapshot.position_of(head).unwrap_or_default();
-                let selected = snapshot.selection().range().len();
-                let mut caret = format!("Ln {}, Col {}", at.row + 1, at.column + 1);
-                if selected > 0 {
-                    caret.push_str(&format!(" ({selected} selected)"));
-                }
-                tail.push(small(caret));
-                let ext = buffer
-                    .path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("");
-                tail.push(small(language_name(ext).into()));
-                let ending = match snapshot.preferred_line_ending() {
-                    limn_editor::LineEnding::CrLf => "CRLF",
-                    _ => "LF",
-                };
-                tail.push(small(ending.into()));
-            }
-        }
-        None => lead.push(small(name(&ide.root))),
-    }
-    if let Some((path, revision)) = buffer.and_then(|b| {
-        let snapshot = b.editor.as_ref()?.snapshot().ok()?;
-        Some((b.path.clone(), snapshot.revision()))
-    }) {
-        let found = ide.diagnostics.get(&path).and_then(|d| d.at(revision));
-        let count =
-            |severity| found.map_or(0, |d| d.iter().filter(|d| d.severity == severity).count());
-        let (errors, warnings) = (count(1), count(2));
-        if errors > 0 {
-            tail.insert(
-                0,
-                small(format!(
-                    "{errors} error{}",
-                    if errors == 1 { "" } else { "s" }
-                ))
-                .foreground(look::failed()),
-            );
-        }
-        if warnings > 0 {
-            let words = format!("{warnings} warning{}", if warnings == 1 { "" } else { "s" });
-            tail.insert(
-                usize::from(errors > 0),
-                small(words).foreground(look::awaiting()),
-            );
-        }
-    }
     if let Some(note) = &ide.lsp_note {
-        tail.insert(0, small(note.clone()));
+        tail.push(small(note.clone()));
     }
+    let Some(buffer) = buffer else {
+        lead.push(small(name(&ide.root)));
+        return footer_row(ide, lead, tail, width);
+    };
+    if buffer.dirty() {
+        lead.push(small("Unsaved".into()));
+    }
+    let Some(snapshot) = buffer.editor.as_ref().and_then(|e| e.snapshot().ok()) else {
+        return footer_row(ide, lead, tail, width);
+    };
+    // Errors and warnings, each by its mark; a press goes to the next.
+    let found = ide
+        .diagnostics
+        .get(&buffer.path)
+        .and_then(|d| d.at(snapshot.revision()));
+    let count = |severity| found.map_or(0, |d| d.iter().filter(|d| d.severity == severity).count());
+    let mut problems = vec![];
+    for (icon, ink, n) in [
+        (icons::ERROR, look::failed(), count(1)),
+        (icons::WARNING, look::awaiting(), count(2)),
+    ] {
+        if n > 0 {
+            problems.push(
+                Element::icon(icons::of(icon))
+                    .foreground(ink)
+                    .size(Some(13.0), Some(13.0))
+                    .centered_y(),
+            );
+            problems.push(small(n.to_string()));
+        }
+    }
+    if !problems.is_empty() {
+        tail.push(chip(PROBLEM_NEXT, problems, "Next problem", None));
+    }
+    // The file's language server: a dot of its state, and what it is in the tooltip.
+    let language = limn_language::Language::from_path(&buffer.path.to_string_lossy());
+    if let Some(server) = ide.lsp_servers.get(&language) {
+        let (ink, says) = match (&server.failure, server.ready) {
+            (Some(why), _) => (look::failed(), why.clone()),
+            (None, true) => (look::running(), format!("{} is running", server.name)),
+            (None, false) => (look::awaiting(), format!("{} is starting", server.name)),
+        };
+        let dot = limn::StatusDot::new(ink).size(6.0).render().centered_y();
+        let item = Element::row(vec![hgap(6.0), dot, small(server.name.clone()), hgap(6.0)])
+            .gap(6.0)
+            .size(None, Some(22.0));
+        let tip = limn::Tooltip::new(item, "footer:server", says, look::palette());
+        let tip = match &server.hint {
+            Some(hint) => tip.description(hint.clone()),
+            None => tip,
+        };
+        tail.push(tip.render().centered_y());
+    }
+    let at = snapshot
+        .position_of(snapshot.selection().head)
+        .unwrap_or_default();
+    let selected = snapshot.selection().range().len();
+    let mut caret = format!("Ln {}, Col {}", at.row + 1, at.column + 1);
+    if selected > 0 {
+        caret.push_str(&format!(" ({selected} selected)"));
+    }
+    tail.push(chip(
+        QUICK_LINE,
+        vec![small(caret)],
+        "Go to line",
+        Some("Ctrl+G"),
+    ));
+    let ext = buffer
+        .path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    tail.push(small(language_name(ext).into()));
+    let ending = match snapshot.preferred_line_ending() {
+        limn_editor::LineEnding::CrLf => "CRLF",
+        _ => "LF",
+    };
+    tail.push(small(ending.into()));
+    footer_row(ide, lead, tail, width)
+}
+
+/// The footer's line: what is said of the file on the left, the rest and the branch on the
+/// right, under a hairline.
+fn footer_row(ide: &Ide, lead: Vec<Element>, mut tail: Vec<Element>, width: f32) -> Element {
     if let Some(branch) = &ide.branch {
         let icon = Element::icon(icons::of(icons::GIT_BRANCH))
             .foreground(look::muted())
             .size(Some(13.0), Some(13.0))
             .centered_y();
-        tail.push(Element::row(vec![icon, small(branch.clone())]).gap(4.0));
+        let name = muted(branch.clone()).font_size(SMALL).centered_y();
+        tail.push(Element::row(vec![icon, name]).gap(4.0));
     }
     tail.push(hgap(8.0));
     let mut row = lead;
@@ -3277,8 +3354,30 @@ fn footer(ide: &Ide, width: f32) -> Element {
     row.extend(tail);
     Element::column(vec![
         hline(width, look::pane_border()),
-        Element::row(row).gap(12.0).size(None, Some(FOOTER - 1.0)),
+        Element::row(row).gap(8.0).size(None, Some(FOOTER - 1.0)),
     ])
+}
+
+/// A footer item that does something, as quill's composer chips: filled under
+/// the pointer, with what it does, and its keys, in its tooltip.
+fn chip(id: &str, content: Vec<Element>, tip: &str, keys: Option<&str>) -> Element {
+    let mut items = vec![hgap(6.0)];
+    items.extend(content);
+    items.push(hgap(6.0));
+    let row = Element::row(items).gap(4.0).size(None, Some(22.0));
+    let chip = ComponentPalette {
+        hover: look::chip_hover(),
+        ..look::palette()
+    }
+    .interactive_surface(Element::clickable(id, row))
+    .radius(6.0);
+    let tip = limn::Tooltip::new(chip, id, tip, look::palette());
+    match keys {
+        Some(keys) => tip.shortcut(keys),
+        None => tip,
+    }
+    .render()
+    .centered_y()
 }
 
 /// The name of the language limn colors `extension` in.
@@ -4006,6 +4105,43 @@ mod tests {
             .unwrap()
             .to_vec();
         assert_eq!(shown, vec![mark(6..7), mark(17..18), mark(10..12)]);
+    }
+
+    #[test]
+    fn the_footers_problems_take_the_caret_to_the_next_one_and_round() {
+        let mark = |range: std::ops::Range<usize>, severity| Diagnostic {
+            range,
+            severity,
+            message: "x".into(),
+        };
+        let mut ide = with_files();
+        read(&mut ide, "/r/a.rs", "let a = 1;\nlet b = 2;\nlet c = 3;\n");
+        let caret = |ide: &Ide| {
+            let snapshot = ide.buffers[0].editor.as_ref().unwrap().snapshot().unwrap();
+            snapshot.selection().head
+        };
+        let revision = ide.buffers[0]
+            .editor
+            .as_ref()
+            .unwrap()
+            .snapshot()
+            .unwrap()
+            .revision();
+        // A hint is not a problem; the two others are visited in order, then the first again.
+        let items = vec![mark(26..27, 2), mark(15..16, 4), mark(4..5, 1)];
+        ide.diagnostics.insert(
+            "/r/a.rs".into(),
+            Diagnostics {
+                revision,
+                text: "".into(),
+                items,
+                carried: None,
+            },
+        );
+        for expected in [4, 26, 4] {
+            click(&mut ide, PROBLEM_NEXT);
+            assert_eq!(caret(&ide), expected);
+        }
     }
 
     #[test]
