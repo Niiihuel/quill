@@ -82,6 +82,9 @@ pub struct Settings {
     /// The Chromium the built-in browser runs; `None` takes `QUILL_CHROME` or the first on
     /// `PATH`.
     pub browser_program: Option<String>,
+    /// In a Wayland session, run quill on XWayland so the browser's pages are native windows
+    /// inside quill's, without delay; in an X11 session they always are. From the next start.
+    pub browser_native: bool,
     /// Each agent's own, by its id.
     pub agents: std::collections::BTreeMap<String, AgentSettings>,
 }
@@ -102,6 +105,7 @@ impl Default for Settings {
             open_at_login: false,
             browser_sites: vec![],
             browser_program: None,
+            browser_native: false,
             agents: Default::default(),
         }
     }
