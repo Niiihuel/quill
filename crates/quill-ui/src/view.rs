@@ -181,6 +181,13 @@ pub const MIN_PANE: f32 = 120.0;
 /// pointer.
 pub const COLUMN_HANDLE: &str = "split:column";
 pub const STACK_HANDLE: &str = "split:stack";
+/// The right panel's left edge: dragged it sets the panel's width, clicked it hides the
+/// panel, as Desktop's side column does ("Click to collapse", "Drag to resize", 3.6556.2
+/// `ca2ef848d`).
+pub const PANEL_HANDLE: &str = "split:panel";
+/// The widest the right panel gets; inferred, Desktop's column has no fixed limit but the
+/// conversation's.
+const MAX_PANEL: f32 = 560.0;
 const HANDLE: f32 = 2.0;
 
 /// The column's width for a share of the space right of the sidebar, within the minimums.
@@ -188,6 +195,16 @@ const HANDLE: f32 = 2.0;
 /// than all of it while it slides.
 pub fn sidebar_width(ui: &Ui) -> f32 {
     ui.sidebar_shown.value(Instant::now()).round()
+}
+
+/// The right panel's width for `wanted`: no narrower than its cards are drawn for, and
+/// leaving the conversation its minimum.
+pub fn panel_width(rest: f32, wanted: f32) -> f32 {
+    wanted
+        .min(MAX_PANEL)
+        .min(rest - MIN_CHAT)
+        .max(look::PANEL_WIDTH)
+        .round()
 }
 
 pub fn column_width(rest: f32, fraction: f32) -> f32 {
@@ -358,14 +375,33 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     }
     if let (Some(session), true) = (session, layout.panel > 0.0) {
         // Laid out at its full width and cut to what has slid in, so nothing in it rewraps.
+        let width = ui.panel_width;
+        let blue = ComponentPalette {
+            hover: look::handle(),
+            selected: look::handle(),
+            ..palette
+        };
+        let edge = Element::row(vec![
+            limn::Tooltip::new(
+                limn::ResizeHandle::vertical(PANEL_HANDLE, blue)
+                    .thickness(HANDLE)
+                    .accessibility_label("Resize panel")
+                    .render(),
+                PANEL_HANDLE,
+                "Click to collapse",
+                look::palette(),
+            )
+            .description("Drag to resize")
+            .placement(limn::TooltipPlacement::Left)
+            .render(),
+            Element::spacer().flex(1.0),
+        ]);
         row.push(
-            Element::row(vec![right_panel(
-                session,
-                ui,
-                look::PANEL_WIDTH,
-                below,
-                palette,
-            )])
+            Element::row(vec![Element::stack(vec![
+                right_panel(store, session, ui, width, below, palette),
+                edge,
+            ])
+            .size(Some(width), Some(below))])
             .size(Some(layout.panel), Some(below))
             .clip_children(),
         );
@@ -3774,7 +3810,11 @@ fn composer_footer(
 /// within a day, else the local day and hour, "Resets Sun 3:00 AM". `offset` is the local
 /// time's distance from UTC in seconds.
 pub fn resets_in(resets_at: u64, now: u64, offset: i64) -> String {
-    let left = resets_at.saturating_sub(now);
+    // A window already over says nothing until the agent reports the next one.
+    if resets_at <= now {
+        return String::new();
+    }
+    let left = resets_at - now;
     if left < 86_400 {
         let (hours, minutes) = (left / 3_600, left % 3_600 / 60);
         return if hours == 0 {
@@ -3798,14 +3838,25 @@ pub fn resets_in(resets_at: u64, now: u64, offset: i64) -> String {
     format!("Resets {day} {twelve}:{minute:02} {half}")
 }
 
-/// A 4 px bar, gray, filled blue to `share`.
+/// The share of a plan window spent: none once it started again, until the agent reports
+/// the new one.
+fn spent(window: &quill_model::UsageWindow, now: u64) -> f32 {
+    if window.resets_at <= now {
+        0.0
+    } else {
+        window.utilization
+    }
+}
+
+/// A 4 px bar filled blue to `share`, on Desktop's chart ground so it shows on
+/// the page, a card and a menu alike.
 fn usage_bar(share: f32, width: f32) -> Element {
     let fill = (width * share.clamp(0.0, 1.0)).max(if share > 0.0 { 4.0 } else { 0.0 });
     Element::row(vec![Element::spacer()
         .background(look::handle())
         .radius(2.0)
         .size(Some(fill), Some(4.0))])
-    .background(look::active())
+    .background(look::chart_tint())
     .radius(2.0)
     .size(Some(width), Some(4.0))
 }
@@ -3834,7 +3885,10 @@ fn usage_row(label: &str, detail: String, share: f32, width: f32, muted_label: b
 fn usage_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
     let open = ui.open_menu == Some(USAGE_MENU);
     let limits = store.limits.unwrap_or_default();
-    let spent = limits.session.map_or(0.0, |w| w.utilization);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let session_spent = limits.session.map_or(0.0, |w| spent(&w, now));
     // A 14 px ring, blue over gray, as Desktop's.
     let ring_palette = ComponentPalette {
         text: look::handle(),
@@ -3842,7 +3896,7 @@ fn usage_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
         selected: look::ring_track(),
         ..look::palette()
     };
-    let ring = limn::Progress::new(spent, ring_palette)
+    let ring = limn::Progress::new(session_spent, ring_palette)
         .ring(14.0)
         .render()
         .centered();
@@ -3860,9 +3914,6 @@ fn usage_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
         anchor
     };
     let width = 328.0;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
     let (tokens, share) = session.map_or((0, 0.0), |s| {
         let share = if s.context_window > 0 {
             s.context_tokens as f32 / s.context_window as f32
@@ -3912,9 +3963,9 @@ fn usage_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
                 format!(
                     "{}  {}%",
                     resets_in(w.resets_at, now, ui.utc_offset),
-                    (w.utilization * 100.0).round() as u32
+                    (spent(&w, now) * 100.0).round() as u32
                 ),
-                w.utilization,
+                spent(&w, now),
                 width,
                 false,
             ));
@@ -3933,7 +3984,7 @@ fn usage_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
     if let Some(w) = limits.weekly {
         tip = tip.description(format!(
             "Weekly · all models: {}% · {}",
-            (w.utilization * 100.0).round() as u32,
+            (spent(&w, now) * 100.0).round() as u32,
             resets_in(w.resets_at, now, ui.utc_offset)
         ));
     }
@@ -4860,11 +4911,22 @@ fn panel_card(
     head.push(Element::spacer().flex(1.0));
     head.extend(trailing);
     let head = Element::clickable(id, Element::row(head).gap(6.0).size(None, Some(20.0)));
-    let mut content = vec![head];
-    if open {
-        content.extend(rows);
-    }
-    Element::panel(Element::column(content).gap(14.0))
+    // The rows open and close on limn's spring, the gap above them inside the slot.
+    let body = open.then(|| {
+        Element::column(
+            std::iter::once(Element::spacer().size(None, Some(0.0)))
+                .chain(rows)
+                .collect(),
+        )
+        .gap(14.0)
+    });
+    let content = vec![
+        head,
+        limn::Collapse::new(format!("{id}:body"), body)
+            .expand()
+            .render(),
+    ];
+    Element::panel(Element::column(content))
         .background(look::palette().surface)
         .border(look::card_border(), 1.0)
         .radius(12.0)
@@ -4887,6 +4949,7 @@ fn panel_row(icon: limn::Icon, words: Element) -> Element {
 
 /// Where the session works, how full its context is and what it changed.
 fn right_panel(
+    store: &Store,
     session: &Session,
     ui: &Ui,
     width: f32,
@@ -4995,15 +5058,25 @@ fn right_panel(
             context_rows,
             inner,
         ),
-        panel_card(
-            "Changes",
-            "panel:changes",
-            open("panel:changes", true),
-            vec![],
-            vec![changes],
-            inner,
-        ),
     ];
+    if let Some(rows) = usage_rows(store, ui, inner - 36.0) {
+        cards.push(panel_card(
+            "Usage",
+            "panel:usage",
+            open("panel:usage", true),
+            vec![],
+            rows,
+            inner,
+        ));
+    }
+    cards.extend([panel_card(
+        "Changes",
+        "panel:changes",
+        open("panel:changes", true),
+        vec![],
+        vec![changes],
+        inner,
+    )]);
     let outputs = outputs(session);
     if !outputs.is_empty() {
         cards.push(panel_card(
@@ -5032,10 +5105,47 @@ fn right_panel(
             inner,
         ));
     }
-    Element::column(cards)
-        .gap(8.0)
-        .padding(8.0)
+    // Taller than the window, as an open breakdown gets, the cards scroll.
+    Element::scroll("panel:scroll", Element::column(cards).gap(8.0).padding(8.0))
+        .scrollbar_appearance(limn::ScrollbarAppearance::overlay())
         .size(Some(width), Some(height))
+}
+
+/// The Usage card's rows, as Desktop's rail draws them (screenshot the person shared,
+/// threads.com/@testingcatalog/post/DdutukbgswG): each plan window's name and share, when
+/// it resets, and its bar. `None` until the agent reported its limits.
+fn usage_rows(store: &Store, ui: &Ui, width: f32) -> Option<Vec<Element>> {
+    let limits = store.limits?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let rows: Vec<Element> = [("5-hour limit", limits.session), ("Weekly", limits.weekly)]
+        .into_iter()
+        .filter_map(|(label, window)| {
+            let w = window?;
+            Some(
+                Element::column(vec![
+                    Element::row(vec![
+                        Element::row(vec![
+                            text(label).font_size(SMALL).centered_y(),
+                            muted(format!("{}%", (spent(&w, now) * 100.0).round() as u32))
+                                .font_size(SMALL)
+                                .centered_y(),
+                        ])
+                        .gap(5.0),
+                        Element::spacer().flex(1.0),
+                        muted(resets_in(w.resets_at, now, ui.utc_offset))
+                            .font_size(SMALL)
+                            .centered_y(),
+                    ])
+                    .size(Some(width), Some(20.0)),
+                    usage_bar(spent(&w, now), width),
+                ])
+                .gap(6.0),
+            )
+        })
+        .collect();
+    (!rows.is_empty()).then_some(rows)
 }
 
 /// The files the session made or changed and still has, newest first: the panel's Outputs, as

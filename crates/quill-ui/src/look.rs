@@ -124,6 +124,11 @@ tones! {
     /// The permission card's hairline and the ink of the command it shows.
     card_border = hex(0xebebeb), hex(0x353535);
     command_ink = hex(0x616161), hex(0xb0b0b0);
+    /// The context meter [3.6556.2 `c6a992d55.css`]: what is past its first series, the
+    /// autocompact buffer and the deferred, and the ground and the free share.
+    chart_reference = hex(0x898781), hex(0x97958d);
+    chart_muted = hex(0xc3c2b7), hex(0x5f5e5a);
+    chart_tint = Color::rgba(0x89, 0x87, 0x81, 38), Color::rgba(0x97, 0x95, 0x8d, 38);
     /// A boundary under the pointer or being dragged.
     handle = hex(0x257de0), hex(0x257de0);
     /// The composer: its box's edge and shadow, its buttons under the pointer and

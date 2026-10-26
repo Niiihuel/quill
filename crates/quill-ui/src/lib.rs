@@ -689,6 +689,8 @@ pub struct Ui {
     pub expanded_pane: Option<Pane>,
     /// Whether the right panel (Environment, Context, Changes) shows while no pane is open.
     pub panel_open: bool,
+    /// The right panel's width, once the person dragged its edge.
+    pub panel_width: f32,
     /// Folders whose sessions the sidebar folds away.
     pub collapsed: Vec<PathBuf>,
     /// The person's first name for the new session's greeting, when the host knows it.
@@ -1194,6 +1196,7 @@ impl Ui {
             panes: vec![],
             expanded_pane: None,
             panel_open: true,
+            panel_width: look::PANEL_WIDTH,
             collapsed: vec![],
             last_allow: Allow::Once,
             name: None,
@@ -1342,7 +1345,7 @@ impl Ui {
         self.sidebar_shown
             .launch(open(self.sidebar_open, look::SIDEBAR_WIDTH), motion, now);
         self.panel_shown
-            .launch(open(self.panel_open, look::PANEL_WIDTH), motion, now);
+            .launch(open(self.panel_open, self.panel_width), motion, now);
         if self.reduced_motion {
             let (sidebar, panel) = (self.sidebar_shown.target(), self.panel_shown.target());
             self.sidebar_shown.snap_to(sidebar, now);
@@ -1737,6 +1740,11 @@ fn dragged(ui: &mut Ui, id: &str, position: limn::Point) {
     if id == view::COLUMN_HANDLE && rest > 0.0 {
         let width = view::column_width(rest, (ui.window.width - position.x) / rest);
         ui.column_fraction = Some(width / rest);
+    } else if id == view::PANEL_HANDLE {
+        // Followed at once, not on the spring that slides the panel in and out.
+        ui.panel_width = view::panel_width(rest, ui.window.width - position.x);
+        ui.panel_shown
+            .snap_to(ui.panel_width, std::time::Instant::now());
     } else if id == view::STACK_HANDLE {
         let room = ui.window.height - look::TOP_BAR - 1.0 - 2.0;
         if room > 0.0 {
@@ -1875,7 +1883,8 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         }
         return vec![];
     }
-    if id == view::PANEL_TOGGLE {
+    // Desktop's edge collapses the panel on a click ("Click to collapse").
+    if id == view::PANEL_TOGGLE || id == view::PANEL_HANDLE {
         ui.panel_open = !ui.panel_open;
         return vec![];
     }

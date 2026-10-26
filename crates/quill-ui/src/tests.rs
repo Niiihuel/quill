@@ -512,6 +512,39 @@ fn dragging_the_boundary_resizes_the_panes_within_their_minimums() {
 }
 
 #[test]
+fn the_panel_edge_resizes_the_panel_and_a_click_hides_it() {
+    let store = Store::default();
+    let mut ui = Ui::new("/tmp".into());
+    let drag = |ui: &mut Ui, x: f32| {
+        update(
+            &store,
+            ui,
+            &UiAction::DragMoved {
+                id: view::PANEL_HANDLE.into(),
+                position: limn::Point::new(x, 400.0),
+                over: None,
+            },
+        );
+    };
+    drag(&mut ui, 1008.0);
+    assert_eq!(ui.panel_width, 400.0);
+    // No narrower than its cards are drawn for, nor wider than its limit.
+    drag(&mut ui, 1300.0);
+    assert_eq!(ui.panel_width, look::PANEL_WIDTH);
+    drag(&mut ui, 400.0);
+    assert_eq!(ui.panel_width, 560.0);
+    assert!(ui.panel_open);
+    update(
+        &store,
+        &mut ui,
+        &UiAction::Clicked {
+            id: view::PANEL_HANDLE.into(),
+        },
+    );
+    assert!(!ui.panel_open);
+}
+
+#[test]
 fn tab_menu_renames_closes_others_and_keys_move_tabs() {
     let store = Store::default();
     let mut ui = Ui::new("/tmp".into());
@@ -630,6 +663,8 @@ fn limits_reset_as_desktop_says_it() {
         "Resets in 4 hr 53 min"
     );
     assert_eq!(resets_in(now + 300, now, 0), "Resets in 5 min");
+    // A window already over is not counted down.
+    assert_eq!(resets_in(now - 60, now, 0), "");
     // 1793512800 is Sunday 2026-11-01 06:00 UTC: 3:00 AM at UTC-3.
     assert_eq!(
         resets_in(1_793_512_800, now, -3 * 3_600),
