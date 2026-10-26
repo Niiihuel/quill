@@ -9,7 +9,11 @@ use limn_language::{offset_to_utf16, utf16_to_offset, Language};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
+
+/// A language's server found and started, with its program's name, or what to say when
+/// none would start.
+type Started = (Language, Result<(LanguageServer, String), Option<String>>);
 
 /// The servers of the window, the documents each holds, and what was asked of them.
 #[derive(Default)]
@@ -19,6 +23,8 @@ pub struct Lsp {
     names: HashMap<Language, String>,
     /// Languages a server was looked for, found or not, so none is looked for each frame.
     tried: HashSet<Language>,
+    /// Servers being looked for off the UI thread.
+    starting: Vec<mpsc::Receiver<Started>>,
     open: HashMap<PathBuf, Language>,
     pending: HashMap<RequestId, (PathBuf, AskKind)>,
 }
@@ -27,6 +33,21 @@ impl Lsp {
     /// One frame's work: servers started, documents opened, changed and closed, the IDE's
     /// asks sent and the servers' news taken. Returns the jobs the answers need.
     pub fn sync(&mut self, ide: &mut Ide, wake: &Arc<dyn Fn() + Send + Sync>) -> Vec<Job> {
+        self.starting.retain(|receiver| match receiver.try_recv() {
+            Ok((language, Ok((server, program)))) => {
+                self.servers.insert(language, server);
+                self.names.insert(language, program);
+                false
+            }
+            Ok((_, Err(note))) => {
+                if note.is_some() {
+                    ide.lsp_note = note;
+                }
+                false
+            }
+            Err(mpsc::TryRecvError::Empty) => true,
+            Err(mpsc::TryRecvError::Disconnected) => false,
+        });
         let mut shown: HashSet<PathBuf> = HashSet::new();
         for buffer in ide.buffers.iter().filter(|b| !b.loading) {
             let Some(snapshot) = buffer.editor.as_ref().and_then(|e| e.snapshot().ok()) else {
@@ -87,29 +108,17 @@ impl Lsp {
         jobs
     }
 
-    /// Start the server for `language` once, if one is on this computer.
+    /// Start the server for `language` once, if one is on this computer. Each program is
+    /// asked its version first, which can take seconds, so it is looked for off the UI thread.
     fn start(&mut self, language: Language, root: &Path, wake: &Arc<dyn Fn() + Send + Sync>) {
         if self.tried.insert(language) {
-            let candidates = lsp::server_candidates(language);
-            let last = candidates.len().saturating_sub(1);
-            for (at, executable) in candidates.into_iter().enumerate() {
-                // A program that does not even say its version (rustup's proxy without the
-                // component) gives way to the next one on the PATH.
-                if at < last && lsp::probe(&executable, &["--version"]).is_err() {
-                    continue;
-                }
-                let program = executable
-                    .file_name()
-                    .map_or(String::new(), |n| n.to_string_lossy().into_owned());
-                let mut config = ServerConfig::new(&executable, root);
-                config.args = lsp::stdio_args(&executable);
-                if let Ok(server) = LanguageServer::spawn(config) {
-                    server.set_waker(wake.clone());
-                    self.servers.insert(language, server);
-                    self.names.insert(language, program);
-                    break;
-                }
-            }
+            let (sender, receiver) = mpsc::channel();
+            self.starting.push(receiver);
+            let (root, wake) = (root.to_path_buf(), wake.clone());
+            std::thread::spawn(move || {
+                let _ = sender.send((language, find(language, &root, &wake)));
+                wake();
+            });
         }
     }
 
@@ -215,6 +224,47 @@ impl Lsp {
 
 fn drain(server: &LanguageServer) -> Vec<Event> {
     std::iter::from_fn(|| server.try_recv()).collect()
+}
+
+/// The first server for `language` that starts, or what to say when one is on the PATH but
+/// none starts.
+fn find(
+    language: Language,
+    root: &Path,
+    wake: &Arc<dyn Fn() + Send + Sync>,
+) -> Result<(LanguageServer, String), Option<String>> {
+    let candidates = lsp::server_candidates(language);
+    let last = candidates.len().saturating_sub(1);
+    let mut failed = None;
+    for (at, executable) in candidates.into_iter().enumerate() {
+        let program = executable
+            .file_name()
+            .map_or(String::new(), |n| n.to_string_lossy().into_owned());
+        // A program that does not even say its version gives way to the next one. Some servers
+        // answer only over stdio, so the last is tried anyway; but rust-analyzer always says
+        // it, and rustup's proxy without the component never does.
+        if (at < last || language == Language::Rust)
+            && lsp::probe(&executable, &["--version"]).is_err()
+        {
+            failed.get_or_insert(program);
+            continue;
+        }
+        let mut config = ServerConfig::new(&executable, root);
+        config.args = lsp::stdio_args(&executable);
+        match LanguageServer::spawn(config) {
+            Ok(server) => {
+                server.set_waker(wake.clone());
+                return Ok((server, program));
+            }
+            Err(_) => {
+                failed.get_or_insert(program);
+            }
+        }
+    }
+    Err(failed.map(|program| match language {
+        Language::Rust => format!("{program} won't start: rustup component add rust-analyzer"),
+        _ => format!("{program} won't start"),
+    }))
 }
 
 fn name(language: Language) -> &'static str {

@@ -191,8 +191,11 @@ impl eframe::App for App {
         }
         // Context menus read as quill's other menus, in the theme in force.
         self.tree.set_context_menu_palette(look::menu_palette());
-        self.tree
-            .set_context_menu_sizing(quill_components::pieces::menu_sizing(240.0));
+        // The editor's menu has more rows than quill's: all of them show, no rail taking width.
+        self.tree.set_context_menu_sizing(limn::SelectorSizing {
+            max_visible_items: 16,
+            ..quill_components::pieces::menu_sizing(240.0)
+        });
         limn_egui::normalize_keyboard_input(&ctx);
         let area = ui.max_rect();
         let window = Size::new(area.width(), area.height());

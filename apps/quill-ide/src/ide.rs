@@ -2949,7 +2949,11 @@ fn markdown_preview(ide: &Ide, text: &str, width: f32, height: f32) -> Element {
         .element;
     let page = Element::row(vec![
         Element::spacer().flex(1.0),
-        Element::column(vec![rendered]).padding(24.0),
+        // In a row the column would take its widest line's width, and a quote, which fills
+        // what it is given, would never wrap: it gets the reading column.
+        Element::column(vec![rendered])
+            .padding(24.0)
+            .size(Some(column + 48.0), None),
         Element::spacer().flex(1.0),
     ]);
     Element::scroll("preview:scroll", page).size(Some(width), Some(height))
