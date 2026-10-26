@@ -3,7 +3,7 @@
 //! extension installs it (its `package.json` names the theme's JSON).
 
 use limn::{Color, Icon};
-use quill_components::{icons, look};
+use crate::{icons, look};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

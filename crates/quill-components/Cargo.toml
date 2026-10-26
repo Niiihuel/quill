@@ -11,3 +11,7 @@ publish = false
 # Fonts::bundled, under the system faces fontconfig finds.
 limn = { workspace = true, features = ["bundled-fonts"] }
 quill-model = { path = "../quill-model" }
+# The tree's entries and file operations, which the host runs on the disk.
+quill-files = { path = "../quill-files" }
+# VS Code icon themes, which the file icons can be taken from, are JSON.
+serde_json.workspace = true

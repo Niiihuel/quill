@@ -3440,7 +3440,9 @@ name = "quill-components"
 version = "0.0.1"
 dependencies = [
  "limn",
+ "quill-files",
  "quill-model",
+ "serde_json",
 ]
 
 [[package]]

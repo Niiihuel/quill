@@ -9,7 +9,6 @@ mod grep;
 mod ide;
 mod lsp;
 mod marks;
-mod packs;
 mod prefs;
 mod quick;
 mod session;
@@ -527,7 +526,7 @@ impl eframe::App for App {
                 // after them.
                 let typed = match id.as_str() {
                     quick::QUICK_FIELD => self.ide.quick.as_ref().map(|(q, _)| q.clone()),
-                    ide::NAME_FIELD => self.ide.naming.as_ref().map(|n| n.value.clone()),
+                    ide::NAME_FIELD => self.ide.tree.naming.as_ref().map(|n| n.value.clone()),
                     ide::SYMBOL_FIELD => self.ide.renaming_symbol.clone(),
                     _ => None,
                 };

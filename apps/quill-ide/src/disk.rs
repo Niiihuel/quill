@@ -32,9 +32,9 @@ pub fn run(job: Job) -> Loaded {
             }
             Loaded::PrefsSaved
         }
-        Job::FindPacks(roots) => Loaded::Packs(crate::packs::find(&roots)),
+        Job::FindPacks(roots) => Loaded::Packs(quill_components::packs::find(&roots)),
         Job::LoadPack(json) => {
-            let theme = crate::packs::load(&json);
+            let theme = quill_components::packs::load(&json);
             Loaded::Pack(json, theme)
         }
         Job::Branch(root) => {
