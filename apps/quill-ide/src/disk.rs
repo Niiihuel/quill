@@ -1,8 +1,8 @@
 //! The `Job`s, on the disk: run on a thread of their own, never the window's.
 
 use crate::ide::{Job, Loaded, Stamp};
-use quill_files::{list, stamp};
 use limn_editor::BufferSnapshot;
+use quill_files::{list, stamp};
 use std::io::{self, Write};
 use std::path::Path;
 

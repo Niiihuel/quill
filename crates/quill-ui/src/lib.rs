@@ -2,10 +2,12 @@
 //! is doing ([`Ui`]), what their actions ask ([`update`]) and the window ([`view`]).
 //! Layout and colors follow Claude Desktop's Code surface (docs/ui.md, features/code-*.md).
 
+mod files;
 mod pixels;
 pub use quill_components::{icons, look};
 pub mod view;
 
+pub use files::key as files_key;
 pub use view::{menu_digit, view};
 
 use quill_model::{
@@ -452,6 +454,8 @@ impl Store {
             Event::Reading { .. }
             | Event::FileRead { .. }
             | Event::FileWriteFailed { .. }
+            | Event::Listed { .. }
+            | Event::FileOpDone { .. }
             | Event::Settings { .. }
             | Event::Storage { .. } => {}
         }
@@ -780,6 +784,11 @@ pub struct Ui {
     /// The reply being read aloud, by its session and place.
     pub reading: Option<(SessionId, usize)>,
     pub document: Option<Document>,
+    /// Each session's Files pane: its folder's tree.
+    pub files: std::collections::HashMap<SessionId, quill_components::tree::FileTree>,
+    /// What the Files pane asks of the window: a control to focus, and words to copy.
+    pub files_focus: Option<String>,
+    pub files_copy: Option<String>,
     /// How many tabs each session's browser had when last heard: a new one opens the pane.
     pub browser_tabs: std::collections::HashMap<SessionId, usize>,
     /// What each session's browser last had to say, until dismissed.
@@ -1146,10 +1155,12 @@ pub enum Pane {
     Document,
     /// The session's built-in browser.
     Browser,
+    /// The session's folder, as a tree of its files.
+    Files,
 }
 
 impl Pane {
-    pub const ALL: [Pane; 7] = [
+    pub const ALL: [Pane; 8] = [
         Pane::Diff,
         Pane::Terminal,
         Pane::Agent,
@@ -1157,6 +1168,7 @@ impl Pane {
         Pane::Side,
         Pane::Document,
         Pane::Browser,
+        Pane::Files,
     ];
 
     pub fn key(self) -> &'static str {
@@ -1168,6 +1180,7 @@ impl Pane {
             Pane::Side => "side",
             Pane::Document => "document",
             Pane::Browser => "browser",
+            Pane::Files => "files",
         }
     }
 }
@@ -1304,6 +1317,9 @@ impl Ui {
             copied: None,
             reading: None,
             document: None,
+            files: std::collections::HashMap::new(),
+            files_focus: None,
+            files_copy: None,
             browser_tabs: Default::default(),
             browser_notice: Default::default(),
             settings: Default::default(),
@@ -1516,7 +1532,8 @@ impl Ui {
             Pane::Plan => self.plan = None,
             Pane::Side => self.side_chat = None,
             Pane::Document => self.document = None,
-            Pane::Terminal | Pane::Browser => {}
+            // A session's tree stays as it was, to open again where it was.
+            Pane::Terminal | Pane::Browser | Pane::Files => {}
         }
     }
 
@@ -1524,6 +1541,7 @@ impl Ui {
     /// and send what they wrote while it was being made.
     pub fn applied(&mut self, event: &Event) -> Vec<Intent> {
         let mut intents = self.document_heard(event);
+        intents.extend(files::heard(self, event));
         intents.extend(self.applied_to_view(event));
         intents
     }
@@ -1660,7 +1678,18 @@ impl Ui {
 }
 
 /// What one action of the person asks of the engine; the rest changes `ui` only.
+/// What `action` asks of the engine, and the Files pane's tree for the session on screen when
+/// it has none yet (another session selected with the pane open).
 pub fn update(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Intent> {
+    let mut intents = match files::action(ui, action) {
+        Some(intents) => intents,
+        None => update_action(store, ui, action),
+    };
+    intents.extend(files::shown(store, ui));
+    intents
+}
+
+fn update_action(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Intent> {
     use limn::UiAction;
     match action {
         UiAction::EditorChanged { id, .. } if id == view::DOC_EDITOR => {

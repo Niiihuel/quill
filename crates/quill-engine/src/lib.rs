@@ -767,6 +767,51 @@ impl Router {
                 }
                 return;
             }
+            Intent::ListDir { session, dir } => {
+                // Only what is inside the session's folder.
+                let inside = self
+                    .folders
+                    .get(&session)
+                    .is_some_and(|cwd| dir.starts_with(cwd));
+                if inside {
+                    let sink = self.sink.clone();
+                    tokio::spawn(async move {
+                        let at = dir.clone();
+                        let listed = tokio::task::spawn_blocking(move || {
+                            (quill_files::stamp(&at), quill_files::list(&at))
+                        })
+                        .await;
+                        if let Ok((stamp, entries)) = listed {
+                            sink(Event::Listed {
+                                session,
+                                dir,
+                                entries,
+                                stamp,
+                            });
+                        }
+                    });
+                }
+                return;
+            }
+            Intent::FileOp { session, op } => {
+                if let Some(cwd) = self.folders.get(&session).cloned() {
+                    let sink = self.sink.clone();
+                    tokio::spawn(async move {
+                        let run = op.clone();
+                        let result = tokio::task::spawn_blocking(move || {
+                            quill_files::run(&cwd, &run, quill_files::system_trash)
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(e.to_string()));
+                        sink(Event::FileOpDone {
+                            session,
+                            op,
+                            result,
+                        });
+                    });
+                }
+                return;
+            }
             Intent::WriteFile {
                 session,
                 path,

@@ -154,6 +154,8 @@ fn layout(store: &Store, ui: &Ui, window: Size) -> Layout {
         Some(Pane::Side) => 0.42,
         // Inferred: a document reads best at half the room, and so does a page.
         Some(Pane::Document | Pane::Browser) => 0.5,
+        // Inferred: a tree of names reads in a quarter, as a side tree in an editor.
+        Some(Pane::Files) => 0.25,
         None => 0.0,
     };
     // Dragging the boundary sets the share, as in Desktop.
@@ -191,6 +193,8 @@ pub const STACK_HANDLE: &str = "split:stack";
 /// address bar, and the toolbar's buttons; tabs are "browser:tab:{id}" and their close
 /// "browser:close:{id}".
 pub const BROWSER_TOGGLE: &str = "browser:toggle";
+/// The Files pane: the session's folder as a tree.
+pub const FILES_TOGGLE: &str = "files:toggle";
 pub const BROWSER_VIEW: &str = "browser:view";
 pub const BROWSER_URL: &str = "browser:url";
 pub const BROWSER_NEW_TAB: &str = "browser:new";
@@ -384,6 +388,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
                 Pane::Side => side_pane(store, ui, width, height, palette),
                 Pane::Document => document_pane(ui, width, height, palette),
                 Pane::Browser => browser_pane(session, ui, width, height, palette),
+                Pane::Files => files_pane(ui, width, height, palette),
             });
         }
         let mut column = vec![];
@@ -457,6 +462,11 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     // The hidden sidebar peeking over the page [3.6556.2 `shared-16`].
     let root = ui.sidebar.peeking(root, with_line, window);
     let root = search_dialog(store, ui, root, palette);
+    // The Files pane's naming dialog and its trash's question.
+    let root = match ui.selected.and_then(|s| ui.files.get(&s)) {
+        Some(tree) if ui.pane_open(Pane::Files) => quill_components::tree::dialogs(tree, root),
+        _ => root,
+    };
     let root = settings_dialog(store, ui, root, window, palette);
     // Desktop's own wording for both closes (Ion `cccc2cf0a`,) and for a delete
     //, less its vendor's servers: quill forgets only its own record.
@@ -642,6 +652,44 @@ fn terminal_pane(
 /// The session's browser [notes, docs/browser.md]: its tabs over a toolbar of back,
 /// forward, reload and the address, then the page itself, which takes the pointer and the
 /// keys while it has the focus. Desktop's texts, less the agent's name.
+/// The session's folder as quill-ide's tree, the file the document pane shows marked; why the
+/// last operation failed over it, until dismissed.
+fn files_pane(ui: &Ui, width: f32, height: f32, palette: ComponentPalette) -> Element {
+    use quill_components::{packs::Pack, tree};
+    let Some(files) = ui.selected.and_then(|s| ui.files.get(&s)) else {
+        return Element::spacer().size(Some(width), Some(height));
+    };
+    let tools = pane_tools(Pane::Files, ui, palette);
+    let header = pane_header(text("Files").centered_y(), tools, width);
+    let mut below = height - look::PANE_HEADER - 1.0;
+    let mut body = vec![header];
+    if let Some(error) = &files.error {
+        let ok = keyed_button(tree::ERROR_DISMISS, "OK", "", false, true, palette);
+        let row = Element::row(vec![
+            muted(error.clone())
+                .foreground(look::failed())
+                .flex(1.0)
+                .centered_y(),
+            ok.centered_y(),
+        ])
+        .gap(8.0)
+        .padding(8.0);
+        body.push(row);
+        below -= 44.0;
+    }
+    let shown = (ui.document.as_ref())
+        .filter(|d| Some(d.session) == ui.selected)
+        .map(|d| files.root.join(&d.path));
+    body.push(tree::view(
+        files,
+        &Pack::Material,
+        shown.as_deref(),
+        None,
+        [width, below.max(0.0)],
+    ));
+    Element::column(body).size(Some(width), Some(height))
+}
+
 fn browser_pane(
     session: Option<&Session>,
     ui: &Ui,
@@ -1025,6 +1073,13 @@ fn top_bar(session: Option<&Session>, ui: &Ui, main: f32, beside: f32) -> Elemen
         row.push(vline(16.0).centered_y());
     }
     if session.is_some() {
+        row.push(toggle(
+            FILES_TOGGLE,
+            icons::of(icons::FOLDER),
+            "Files",
+            ui.pane_open(Pane::Files),
+            Some("Ctrl+Shift+E"),
+        ));
         row.push(toggle(
             BROWSER_TOGGLE,
             icons::of(icons::GLOBE),

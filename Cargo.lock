@@ -3453,6 +3453,7 @@ dependencies = [
  "quill-agent",
  "quill-agent-claude",
  "quill-browser",
+ "quill-files",
  "quill-git",
  "quill-model",
  "quill-store",
@@ -3467,6 +3468,7 @@ version = "0.0.1"
 dependencies = [
  "ignore",
  "libc",
+ "serde",
  "trash",
 ]
 
@@ -3501,6 +3503,7 @@ name = "quill-model"
 version = "0.0.1"
 dependencies = [
  "quill-agent",
+ "quill-files",
  "serde",
 ]
 
@@ -3529,6 +3532,7 @@ dependencies = [
  "limn",
  "limn-editor",
  "quill-components",
+ "quill-files",
  "quill-model",
  "serde_json",
 ]

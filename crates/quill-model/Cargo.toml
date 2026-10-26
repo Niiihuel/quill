@@ -9,4 +9,6 @@ publish = false
 
 [dependencies]
 quill-agent = { path = "../quill-agent" }
+# The Files pane's entries and operations, which intents and events carry.
+quill-files = { path = "../quill-files" }
 serde.workspace = true

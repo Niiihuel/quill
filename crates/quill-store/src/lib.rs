@@ -46,6 +46,8 @@ impl Store {
             | Event::Reading { .. }
             | Event::FileRead { .. }
             | Event::FileWriteFailed { .. }
+            | Event::Listed { .. }
+            | Event::FileOpDone { .. }
             | Event::Settings { .. }
             | Event::Storage { .. } => false,
             // What a session's browser shows is the moment's; its tabs' addresses are kept.

@@ -247,6 +247,18 @@ pub enum Intent {
         session: SessionId,
         path: String,
     },
+    /// The entries of a folder of the session's, for the Files pane: answered by
+    /// `Event::Listed`. Only a folder inside the session's is listed.
+    ListDir {
+        session: SessionId,
+        dir: std::path::PathBuf,
+    },
+    /// A file operation in the session's folder, from the Files pane: answered by
+    /// `Event::FileOpDone`.
+    FileOp {
+        session: SessionId,
+        op: quill_files::Op,
+    },
     /// Write what the person edited over a file of the session's folder.
     WriteFile {
         session: SessionId,
@@ -601,6 +613,19 @@ pub enum Event {
         path: String,
         text: Option<String>,
     },
+    /// A folder of the session's as it is now on disk, and when it last changed.
+    Listed {
+        session: SessionId,
+        dir: std::path::PathBuf,
+        entries: Vec<quill_files::Entry>,
+        stamp: quill_files::Stamp,
+    },
+    /// A file operation done, with what it made (paths in the session's folder), or why not.
+    FileOpDone {
+        session: SessionId,
+        op: quill_files::Op,
+        result: Result<Vec<std::path::PathBuf>, String>,
+    },
     /// Writing a file the person edited failed, and why.
     FileWriteFailed {
         session: SessionId,
@@ -682,6 +707,8 @@ impl Event {
             | Event::Forwarded { session, .. }
             | Event::FileRead { session, .. }
             | Event::FileWriteFailed { session, .. }
+            | Event::Listed { session, .. }
+            | Event::FileOpDone { session, .. }
             | Event::Linked { session, .. }
             | Event::Proposed { session, .. }
             | Event::ProposalAnswered { session, .. }

@@ -8,6 +8,8 @@ description = "A folder's files as quill's trees show and change them: listing a
 publish = false
 
 [dependencies]
+# Entries and operations cross from the window to the engine and back as quill's events.
+serde.workspace = true
 # Lists a folder as git sees it, .gitignore and all, as ripgrep does.
 ignore = "0.4"
 # The desktop's trash, where the tree moves what it deletes.

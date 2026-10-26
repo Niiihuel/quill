@@ -2,27 +2,26 @@
 //! The disk is the host's: `update` returns `Job`s, and what they find comes back to `loaded`.
 
 use crate::complete::{self, Offer};
-pub use quill_files::{Entry, Op, Stamp};
 use crate::find::{Find, FIND, FIND_OPEN, FIND_QUERY};
 use crate::grep::{Hit, GREP_CLOSE, GREP_FIELD, GREP_OPEN};
 use crate::marks::Change;
-use quill_components::packs::{self, Offered, Pack, Theme};
-use quill_components::tree::{self as file_tree, FileTree, Outcome};
-pub use quill_components::tree::{TreeKey, NAME_FIELD};
 use crate::prefs::{self, Prefs};
 use crate::quick::{self, QUICK_CLOSE, QUICK_FIELD, QUICK_LINE, QUICK_OPEN};
 use crate::session::Session;
 use crate::structure::{self as tree_sitter, Structure};
 use limn::{
-    CodeEditor, Component, ComponentPalette, EditorController, Element, Key, Point, Size,
-    UiAction,
+    CodeEditor, Component, ComponentPalette, EditorController, Element, Key, Point, Size, UiAction,
 };
 use limn_editor::{BufferSnapshot, EditKind, Selection, TextBuffer};
 use quill_components::look::{self, SMALL};
+use quill_components::packs::{self, Offered, Pack, Theme};
 use quill_components::search::{self, Found};
 use quill_components::settings::{self, SETTINGS_CLOSE, SETTINGS_OPEN, SETTINGS_SEARCH};
 use quill_components::sidebar::Sidebar;
+use quill_components::tree::{self as file_tree, FileTree, Outcome};
+pub use quill_components::tree::{TreeKey, NAME_FIELD};
 use quill_components::{icons, pieces::*};
+pub use quill_files::{Entry, Op, Stamp};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -279,7 +278,6 @@ pub struct Location {
     /// In UTF-16 units of the row, as servers count them.
     pub column: u32,
 }
-
 
 pub struct Buffer {
     pub path: PathBuf,
@@ -2797,8 +2795,8 @@ fn language_name(extension: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quill_components::tree::TRASH_CONFIRM;
     use limn::UiTree;
+    use quill_components::tree::TRASH_CONFIRM;
 
     fn click(ide: &mut Ide, id: &str) -> Vec<Job> {
         ide.update(&UiAction::Clicked { id: id.into() })

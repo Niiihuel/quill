@@ -729,6 +729,8 @@ impl eframe::App for App {
                     limn::Key::D => Some(quill_ui::view::DIFF_TOGGLE),
                     // The browser, as Desktop's Ctrl+Shift+B.
                     limn::Key::B => Some(quill_ui::view::BROWSER_TOGGLE),
+                    // The Files pane, as an editor's Ctrl+Shift+E.
+                    limn::Key::E => Some(quill_ui::view::FILES_TOGGLE),
                     _ => None,
                 };
                 if let Some(id) = menu {
@@ -741,6 +743,12 @@ impl eframe::App for App {
                     actions.push(limn::UiAction::Clicked { id });
                     continue;
                 }
+            }
+            // On a row of the Files pane, the arrows and nvim-tree's letters walk and change it.
+            let focused = self.tree.focused_id().map(str::to_owned);
+            if let Some(intents) = quill_ui::files_key(&mut self.ui, focused.as_deref(), &event) {
+                self.dispatch(intents);
+                continue;
             }
             if let limn::UiEvent::Key { key, shift, ctrl } = &event {
                 if let Some(id) = quill_ui::shortcut(&self.store, &self.ui, *key, *ctrl, *shift) {
@@ -852,6 +860,13 @@ impl eframe::App for App {
                 || self.ui.terminal.requests.iter().any(|r| {
                     !matches!(r, TerminalRequest::Close(_) | TerminalRequest::Move { .. })
                 });
+        }
+        // What the Files pane asked for: a control to focus, and words to copy.
+        if let Some(id) = self.ui.files_focus.take() {
+            self.tree.focus(&id);
+        }
+        if let Some(words) = self.ui.files_copy.take() {
+            ctx.copy_text(words);
         }
         self.sync_terminal(&ctx, window);
         let changed = match (&shown, &self.ui.terminal.screen) {

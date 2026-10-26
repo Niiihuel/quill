@@ -2,8 +2,8 @@
 //! the Material set limn embeds, or a VS Code icon theme found on this computer, as an
 //! extension installs it (its `package.json` names the theme's JSON).
 
-use limn::{Color, Icon};
 use crate::{icons, look};
+use limn::{Color, Icon};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

@@ -1,8 +1,8 @@
 //! What the person chose in Settings, kept in `$XDG_CONFIG_HOME/quill-ide/settings.json`, and
 //! Settings' pages, drawn as quill's.
 
-use quill_components::packs::{self, Offered};
 use quill_components::icons;
+use quill_components::packs::{self, Offered};
 use quill_components::settings::{
     choices, select, setting, setting_button, setting_switch, theme_control, SettingsPage,
 };

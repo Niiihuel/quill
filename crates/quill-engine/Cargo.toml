@@ -15,6 +15,8 @@ quill-store = { path = "../quill-store" }
 quill-git = { path = "../quill-git" }
 # The built-in browser, a Chromium driven over DevTools (docs/browser.md).
 quill-browser = { path = "../quill-browser" }
+# The Files pane's listing and file operations, run on the disk.
+quill-files = { path = "../quill-files" }
 serde_json.workspace = true
 # Processes, pipes, one actor per session, and the $BROWSER bridge's unix socket.
 tokio = { version = "1", features = ["rt-multi-thread", "process", "io-util", "sync", "macros", "time", "net"] }

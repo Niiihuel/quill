@@ -2060,3 +2060,75 @@ fn browser_steps_read_in_desktops_words_and_fold_into_what_they_did() {
     };
     assert_eq!(view::group_summary(&[running]), "Capturing page");
 }
+
+#[test]
+fn the_files_pane_lists_the_folder_opens_a_file_and_follows_a_rename() {
+    let (store, mut ui) = store_with_session();
+    let list = |dir: &str| Intent::ListDir {
+        session: 1,
+        dir: dir.into(),
+    };
+    assert_eq!(
+        click(&store, &mut ui, view::FILES_TOGGLE),
+        vec![list("/work")]
+    );
+    assert!(ui.pane_open(Pane::Files));
+    let entry = |path: &str, dir| quill_files::Entry {
+        path: path.into(),
+        dir,
+    };
+    ui.applied(&Event::Listed {
+        session: 1,
+        dir: "/work".into(),
+        entries: vec![entry("/work/src", true), entry("/work/a.md", false)],
+        stamp: None,
+    });
+    settle(&store, &mut ui);
+    let window = limn::Size::new(1408.0, 844.0);
+    let frame = UiTree::new(view(&store, &ui, window)).layout(window);
+    assert!(frame.regions.iter().any(|r| r.id == "file:/work/a.md"));
+    // A folder opens in place, listed the first time.
+    assert_eq!(
+        click(&store, &mut ui, "dir:/work/src"),
+        vec![list("/work/src")]
+    );
+    ui.applied(&Event::Listed {
+        session: 1,
+        dir: "/work/src".into(),
+        entries: vec![],
+        stamp: None,
+    });
+    // A file opens in the document pane.
+    assert_eq!(
+        click(&store, &mut ui, "file:/work/a.md"),
+        vec![Intent::ReadFile {
+            session: 1,
+            path: "a.md".into()
+        }]
+    );
+    assert!(ui.pane_open(Pane::Document));
+    // Renamed, the document goes with it; in the trash, it closes.
+    let rename = quill_files::Op::Rename {
+        path: "a.md".into(),
+        name: "b.md".into(),
+    };
+    ui.applied(&Event::FileOpDone {
+        session: 1,
+        op: rename,
+        result: Ok(vec!["b.md".into()]),
+    });
+    assert_eq!(ui.document.as_ref().unwrap().path, "b.md");
+    let trash = quill_files::Op::Trash {
+        path: "b.md".into(),
+    };
+    ui.applied(&Event::FileOpDone {
+        session: 1,
+        op: trash,
+        result: Ok(vec![]),
+    });
+    assert!(ui.document.is_none());
+    // Closed and opened again, it lists again what it had.
+    click(&store, &mut ui, view::FILES_TOGGLE);
+    let again = click(&store, &mut ui, view::FILES_TOGGLE);
+    assert!(again.contains(&list("/work")) && again.contains(&list("/work/src")));
+}

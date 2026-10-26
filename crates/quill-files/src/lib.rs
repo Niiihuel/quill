@@ -12,7 +12,7 @@ use std::time::SystemTime;
 pub type Stamp = Option<SystemTime>;
 
 /// A folder's entry, as the tree shows it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Entry {
     pub path: PathBuf,
     pub dir: bool,
@@ -45,7 +45,7 @@ pub fn list(dir: &Path) -> Vec<Entry> {
 }
 
 /// One operation; every path is from the folder.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Op {
     CreateFile {
         parent: PathBuf,
