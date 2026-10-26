@@ -21,6 +21,9 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 pub const TREE_TOGGLE: &str = "tree:toggle";
+const COPY_PATH: &str = "editor:copy-path";
+const COPY_RELATIVE: &str = "editor:copy-relative";
+const REVEAL: &str = "editor:reveal";
 /// A row of the file tree: denser than the sidebar's 32 px, as a reader's tree is.
 const ROW: f32 = 26.0;
 const NOTICE: f32 = 40.0;
@@ -177,6 +180,9 @@ pub struct Ide {
     /// caret into view.
     pub focus: Option<String>,
     pub reveal: bool,
+    /// Words for the clipboard, and a tree row to scroll into view, for the host.
+    pub copy: Option<String>,
+    pub reveal_row: Option<String>,
 }
 
 impl Ide {
@@ -248,6 +254,8 @@ impl Ide {
             files: vec![],
             focus: None,
             reveal: false,
+            copy: None,
+            reveal_row: None,
         };
         (ide, jobs)
     }
@@ -332,6 +340,9 @@ impl Ide {
         }
         if self.find_clicked(id) {
             return vec![];
+        }
+        if let Some(jobs) = self.context_clicked(id) {
+            return jobs;
         }
         if id == TREE_TOGGLE {
             self.sidebar.toggle();
@@ -525,6 +536,41 @@ impl Ide {
             _ => {}
         });
         true
+    }
+
+    /// The editor's own entries after limn's: copy the file's path, or show it in the tree.
+    /// `None` when `id` is none of them.
+    fn context_clicked(&mut self, id: &str) -> Option<Vec<Job>> {
+        let path = self.active_buffer()?.path.clone();
+        match id {
+            COPY_PATH => self.copy = Some(path.display().to_string()),
+            COPY_RELATIVE => {
+                let relative = path.strip_prefix(&self.root).unwrap_or(&path);
+                self.copy = Some(relative.display().to_string());
+            }
+            REVEAL => return Some(self.reveal_in_tree(&path)),
+            _ => return None,
+        }
+        Some(vec![])
+    }
+
+    /// Open the tree and its folders down to `path`, and bring its row into view.
+    fn reveal_in_tree(&mut self, path: &Path) -> Vec<Job> {
+        if !self.sidebar.open {
+            self.sidebar.toggle();
+        }
+        let mut jobs = vec![];
+        for dir in path.ancestors().skip(1) {
+            if !dir.starts_with(&self.root) || dir == self.root {
+                break;
+            }
+            self.expanded.insert(dir.to_path_buf());
+            if !self.listed.contains_key(dir) {
+                jobs.push(Job::List(dir.to_path_buf()));
+            }
+        }
+        self.reveal_row = Some(format!("file:{}", path.display()));
+        jobs
     }
 
     /// What is open now, to open again next time.
@@ -1063,6 +1109,7 @@ fn editor(ide: &Ide, width: f32, height: f32) -> Element {
                 .minimap(ide.prefs.minimap)
                 .vim_mode_label(false)
                 .syntax_colors(syntax_colors())
+                .context_actions(context_actions(ide.prefs.vim))
                 .search_matches(
                     matches.map_or(0, |r| r.revision),
                     matches.map(|r| r.matches.clone()).unwrap_or_default(),
@@ -1089,8 +1136,22 @@ fn editor(ide: &Ide, width: f32, height: f32) -> Element {
     Element::column(column)
 }
 
+/// What the editor's context menu offers after cutting, copying and pasting: finding, and the
+/// file's place, until the language server brings its own.
+fn context_actions(vim: bool) -> Vec<limn::ContextMenuEntry> {
+    use limn::{ContextMenuEntry::Item, ContextMenuItem};
+    vec![
+        Item(ContextMenuItem::new(FIND_OPEN, "Find").shortcut(if vim { "/" } else { "Ctrl+F" })),
+        limn::ContextMenuEntry::Separator,
+        Item(ContextMenuItem::new(COPY_PATH, "Copy path")),
+        Item(ContextMenuItem::new(COPY_RELATIVE, "Copy relative path")),
+        Item(ContextMenuItem::new(REVEAL, "Reveal in files")),
+    ]
+}
+
 /// Code in quill's inks, as its conversation's code blocks: keywords orange, strings the
-/// added green, functions the cursor's blue, interpolations the removed red.
+/// added green, functions the cursor's blue, interpolations the removed red;
+/// types in quill's violet and properties in its mention blue, inferred.
 fn syntax_colors() -> limn::CodeSyntaxColors {
     limn::CodeSyntaxColors {
         text: look::palette().text,
@@ -1098,6 +1159,8 @@ fn syntax_colors() -> limn::CodeSyntaxColors {
         keyword: look::keyword(),
         function: Some(look::cursor()),
         interpolation: Some(look::removed()),
+        types: Some(look::pro()),
+        properties: Some(look::mention()),
         ..limn::CodeSyntaxColors::for_palette(look::palette())
     }
 }
@@ -1505,6 +1568,25 @@ mod tests {
         assert_eq!(ide.active, Some(1));
         assert!(ide.buffers.iter().all(|b| !b.loading && b.editor.is_some()));
         assert_eq!(ide.session(), session);
+    }
+
+    #[test]
+    fn the_context_menu_copies_the_path_and_reveals_the_file_in_the_tree() {
+        let mut ide = with_files();
+        read(&mut ide, "/r/src/deep/x.rs", "x");
+        click(&mut ide, COPY_RELATIVE);
+        assert_eq!(ide.copy.take().as_deref(), Some("src/deep/x.rs"));
+        click(&mut ide, TREE_TOGGLE);
+        let jobs = click(&mut ide, REVEAL);
+        assert!(ide.sidebar.open);
+        assert!(ide.expanded.contains(Path::new("/r/src/deep")));
+        assert!(ide.expanded.contains(Path::new("/r/src")));
+        assert!(!ide.expanded.contains(Path::new("/r")));
+        assert_eq!(
+            jobs,
+            vec![Job::List("/r/src/deep".into()), Job::List("/r/src".into())]
+        );
+        assert_eq!(ide.reveal_row.as_deref(), Some("file:/r/src/deep/x.rs"));
     }
 
     #[test]

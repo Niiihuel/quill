@@ -7,7 +7,8 @@ license.workspace = true
 description = "quill-ide: a native code reader and editor in quill's look, drawn with limn."
 
 [dependencies]
-limn.workspace = true
+# Tree-sitter's highlighting, which tells types, properties and functions apart.
+limn = { workspace = true, features = ["syntax"] }
 limn-egui.workspace = true
 limn-editor.workspace = true
 eframe.workspace = true

@@ -515,6 +515,11 @@ impl eframe::App for App {
             self.dispatch(intents);
         }
         self.apply_look(&ctx);
+        // Context menus read as quill's other menus, in the theme in force.
+        self.tree
+            .set_context_menu_palette(quill_ui::look::menu_palette());
+        self.tree
+            .set_context_menu_sizing(quill_components::pieces::menu_sizing(240.0));
         let attached = std::mem::take(&mut *self.attached.lock().unwrap());
         if !attached.is_empty() {
             // Paths inside the folder are written from it, as the agent reads them.

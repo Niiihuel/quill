@@ -96,6 +96,10 @@ impl eframe::App for App {
             self.fonts_attached = false;
             ctx.request_repaint();
         }
+        // Context menus read as quill's other menus, in the theme in force.
+        self.tree.set_context_menu_palette(look::menu_palette());
+        self.tree
+            .set_context_menu_sizing(quill_components::pieces::menu_sizing(240.0));
         limn_egui::normalize_keyboard_input(&ctx);
         let area = ui.max_rect();
         let window = Size::new(area.width(), area.height());
@@ -202,6 +206,13 @@ impl eframe::App for App {
             if self.tree.focus(&id) {
                 frame = self.tree.layout(window);
             }
+        }
+        if let Some(text) = self.ide.copy.take() {
+            ctx.copy_text(text);
+        }
+        if let Some(row) = self.ide.reveal_row.take() {
+            self.tree.reveal(&row);
+            frame = self.tree.layout(window);
         }
         if std::mem::take(&mut self.ide.reveal) {
             if let Some(id) = self.ide.editor_id() {

@@ -162,17 +162,10 @@ pub fn side_row(id: String, content: Vec<Element>, selected: bool, height: f32) 
     }
 }
 
-/// A menu in Desktop's style: rounded, 28 px rows, the current one marked by a blue check.
-pub fn menu(
-    anchor: Element,
-    entries: Vec<limn::DropdownMenuEntry>,
-    open: bool,
-    id: &str,
-    width: f32,
-    placement: limn::PopoverPlacement,
-) -> Element {
-    // Desktop's rows are 28 px with 14 px labels and 13 px captions.
-    let sizing = limn::SelectorSizing {
+/// The measures of quill's menus, `width` wide: Desktop's rows are 28 px with 14 px labels
+/// and 13 px captions. Context menus take them too.
+pub fn menu_sizing(width: f32) -> limn::SelectorSizing {
+    limn::SelectorSizing {
         preferred_width: width,
         min_width: width,
         row_height: 28.0,
@@ -184,7 +177,19 @@ pub fn menu(
         padding: 8.0,
         max_visible_items: 12,
         ..limn::SelectorSizing::COMPACT
-    };
+    }
+}
+
+/// A menu in Desktop's style: rounded, 28 px rows, the current one marked by a blue check.
+pub fn menu(
+    anchor: Element,
+    entries: Vec<limn::DropdownMenuEntry>,
+    open: bool,
+    id: &str,
+    width: f32,
+    placement: limn::PopoverPlacement,
+) -> Element {
+    let sizing = menu_sizing(width);
     limn::DropdownMenu::new(
         anchor,
         entries,
