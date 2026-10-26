@@ -1596,7 +1596,12 @@ fn entries<'a>(
     };
     let main = std::ptr::eq(list, session.items.as_slice());
     let mut waiting = None;
+    let new_from = ui.new_from.get(&session.id).copied().filter(|_| main);
     for (at, item) in list.iter().enumerate() {
+        if new_from == Some(at) && at > 0 {
+            flush(&mut steps, &mut items);
+            items.push(new_divider(column));
+        }
         match item {
             Item::Tool { name, .. } if is_task_tool(name) => {}
             Item::Tool {
@@ -1620,6 +1625,25 @@ fn entries<'a>(
                 {
                     flush(&mut steps, &mut items);
                     items.push(started_card(store, session, input, column));
+                } else if let (true, Some(child)) = (
+                    name.ends_with("sessions__send_to_session")
+                        && result.as_ref().is_some_and(|r| !r.is_error),
+                    child_named(
+                        store,
+                        session,
+                        input["session"].as_str().unwrap_or_default(),
+                    ),
+                ) {
+                    // Desktop's "Sent your message over to" and the session [C:video
+                    // 2100633571543367691].
+                    flush(&mut steps, &mut items);
+                    items.push(
+                        Element::row(vec![
+                            muted("Passed your message to").font_size(CHAT).centered_y(),
+                            session_chip(store, child).centered_y(),
+                        ])
+                        .gap(8.0),
+                    );
                 } else if stands_alone(name) {
                     flush(&mut steps, &mut items);
                     if let Some(element) = lone_step(&step, column, palette) {
@@ -1645,7 +1669,12 @@ fn entries<'a>(
                 // Desktop sets each message apart: about 60 px between turns and
                 // 39 px under the person's words; the gap adds to the column's own 14.
                 let user = matches!(other, Item::User { .. });
-                if user && !items.is_empty() {
+                // A forwarded message's line goes with it, after the turn's space.
+                let after_forward = at
+                    .checked_sub(1)
+                    .is_some_and(|i| matches!(list.get(i), Some(Item::Forwarded { .. })));
+                let opens = matches!(other, Item::Forwarded { .. }) || (user && !after_forward);
+                if opens && !items.is_empty() {
                     items.push(Element::spacer().size(None, Some(32.0)));
                 }
                 let element = self::item(other, store, session, ui, column, palette);
@@ -1666,6 +1695,10 @@ fn entries<'a>(
                 };
                 items.push(element);
                 if user {
+                    let sent = sent_from(list, at);
+                    if sent > 0 {
+                        items.push(sent_line(sent));
+                    }
                     items.push(Element::spacer().size(None, Some(11.0)));
                 }
             }
@@ -1909,6 +1942,61 @@ fn waiting_cards(
         .collect()
 }
 
+/// How many sessions the turn after the person's message at `at` started or passed it to.
+pub(crate) fn sent_from(list: &[Item], at: usize) -> usize {
+    list.iter()
+        .skip(at + 1)
+        .take_while(|item| !matches!(item, Item::User { .. }))
+        .filter(|item| match item {
+            Item::Tool {
+                name,
+                input,
+                result: Some(result),
+                ..
+            } if !result.is_error => {
+                name.ends_with("sessions__send_to_session")
+                    || (name.ends_with("sessions__start_session")
+                        && input["initiation"] != "own_initiative")
+            }
+            _ => false,
+        })
+        .count()
+}
+
+/// Under the person's message, where it went: "Sent to one
+/// session", "Sent to 3 sessions".
+fn sent_line(sent: usize) -> Element {
+    let words = if sent == 1 {
+        "Sent to one session".to_owned()
+    } else {
+        format!("Sent to {sent} sessions")
+    };
+    Element::row(vec![
+        Element::spacer().flex(1.0),
+        Element::icon(icons::of(icons::RETURN))
+            .foreground(look::muted())
+            .size(Some(12.0), Some(12.0))
+            .centered_y(),
+        muted(words).font_size(SMALL).centered_y(),
+    ])
+    .gap(5.0)
+}
+
+/// Where what the person had not seen begins, as Desktop marks it "New" between two orange
+/// lines (straight here, the video's are wavy).
+fn new_divider(column: f32) -> Element {
+    let side = (column - 60.0) / 2.0;
+    Element::row(vec![
+        hline(side, look::spark()).centered_y(),
+        text("New")
+            .foreground(look::spark())
+            .font_size(SMALL)
+            .centered_y(),
+        hline(side, look::spark()).centered_y(),
+    ])
+    .gap(10.0)
+}
+
 /// How long a copy button shows its check, as Desktop's (3.6556.2 `VA`).
 pub const COPIED_FOR: std::time::Duration = std::time::Duration::from_millis(1200);
 
@@ -2120,6 +2208,31 @@ fn item(
     palette: ComponentPalette,
 ) -> Element {
     match item {
+        // Above a message another session passed on, as Desktop's "Message forwarded from
+        // project chat"; the name opens that session.
+        Item::Forwarded { from } => Element::row(vec![
+            muted("Message forwarded from")
+                .font_size(SMALL)
+                .centered_y(),
+            Element::clickable(
+                format!("session:{from}"),
+                Element::truncated_text(
+                    store
+                        .session(*from)
+                        .map_or_else(|| "another session".to_owned(), session_title),
+                )
+                .font_family(FontFamily::Sans)
+                .font_size(SMALL)
+                .foreground(look::palette().text)
+                .max_width(column * 0.6),
+            )
+            .centered_y(),
+            Element::icon(icons::of(icons::CARET_RIGHT))
+                .foreground(look::muted())
+                .size(Some(12.0), Some(12.0))
+                .centered_y(),
+        ])
+        .gap(5.0),
         Item::User { text: t, .. } => {
             // As wide as its words, up to 3/4 of the column, 16 px of side padding.
             let line = text(t.clone())
@@ -2465,6 +2578,11 @@ fn step_label(step: &Step, done: bool) -> (String, String) {
         name if name.ends_with("sessions__dismiss_task") => {
             ("Withdrew a task", "Withdrawing a task", String::new())
         }
+        name if name.ends_with("sessions__send_to_session") => (
+            "Passed the message to",
+            "Passing the message to",
+            said("session"),
+        ),
         "AskUserQuestion" => (
             "Asked",
             "Asking",

@@ -66,6 +66,10 @@ pub enum Item {
     Proposals {
         tasks: Vec<(quill_model::Proposal, Option<quill_model::ProposalOutcome>)>,
     },
+    /// The message after it was passed on by the session `from`.
+    Forwarded {
+        from: SessionId,
+    },
     /// What sessions it started said, sent to the agent as `request`.
     Reports {
         request: RequestId,
@@ -427,6 +431,11 @@ impl Store {
                     s.title = format!("{title} (fork)");
                 }
             }
+            Event::Forwarded { session, from } => {
+                if let Some(s) = self.session_mut(session) {
+                    s.items.push(Item::Forwarded { from });
+                }
+            }
             Event::Reading { .. } | Event::FileRead { .. } | Event::FileWriteFailed { .. } => {}
         }
     }
@@ -744,6 +753,11 @@ pub struct Ui {
     /// The reply being read aloud, by its session and place.
     pub reading: Option<(SessionId, usize)>,
     pub document: Option<Document>,
+    /// How many of each session's items the person has had in view.
+    pub seen: std::collections::HashMap<SessionId, usize>,
+    /// Where the items the person had not seen began when they opened each session: the
+    /// "New" line.
+    pub new_from: std::collections::HashMap<SessionId, usize>,
     /// The effort slider's thumb in pixels along its travel: where the pointer holds it,
     /// then the spring that carries it to its stop once let go.
     pub effort_thumb: Option<limn::ScalarSpring>,
@@ -881,6 +895,9 @@ fn session_clicked(store: &Store, ui: &mut Ui, id: &str) -> Option<Vec<Intent>> 
     } else if let Some(s) = session("thread:") {
         // A session another started opens beside it, as Desktop's threads do [C:video
         // 2100633571543367691]; inferred: the same pane as a side chat.
+        if ui.side_chat != Some(s) {
+            ui.mark_new(store, s);
+        }
         ui.side_chat = Some(s);
         ui.open_pane(Pane::Side);
         if store.session(s).is_some_and(|s| s.unread) {
@@ -1192,6 +1209,8 @@ impl Ui {
             copied: None,
             reading: None,
             document: None,
+            seen: Default::default(),
+            new_from: Default::default(),
             effort_thumb: None,
             effort_dragging: false,
             effort_samples: vec![],
@@ -1278,6 +1297,11 @@ impl Ui {
     /// Before each frame: the sidebar and the panel head for where they were toggled to, and
     /// the Ultracode field starts over each time the slider reaches it.
     pub fn tick(&mut self, store: &Store) {
+        for id in [self.selected, self.side_chat].into_iter().flatten() {
+            if let Some(session) = store.session(id) {
+                self.seen.insert(id, session.items.len());
+            }
+        }
         let now = std::time::Instant::now();
         // The pace of limn's own opening and closing slots, one and a half `move_ms`;
         // Desktop's own timing is not measured.
@@ -1294,6 +1318,19 @@ impl Ui {
             (true, None) => self.ultra_since = Some(std::time::Instant::now()),
             (false, Some(_)) => self.ultra_since = None,
             _ => {}
+        }
+    }
+
+    /// Opening `session`: what came since the person last had it in view is new.
+    fn mark_new(&mut self, store: &Store, session: SessionId) {
+        let len = store.session(session).map_or(0, |s| s.items.len());
+        match self.seen.get(&session) {
+            Some(&seen) if seen < len => {
+                self.new_from.insert(session, seen);
+            }
+            _ => {
+                self.new_from.remove(&session);
+            }
         }
     }
 
@@ -1925,6 +1962,7 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         ui.search = None;
         if ui.selected != Some(session) {
             ui.title_edit = None;
+            ui.mark_new(store, session);
         }
         ui.selected = Some(session);
         // A session beside another goes with it: shown on its own, or from elsewhere, it closes.

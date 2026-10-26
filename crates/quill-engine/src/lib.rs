@@ -760,6 +760,47 @@ impl Router {
                 });
                 ("Withdrawn.".into(), false)
             }
+            "send_to_session" => {
+                let (Some(title), Some(message)) = (field("session"), field("message")) else {
+                    return (
+                        "send_to_session needs a session and a message.".into(),
+                        true,
+                    );
+                };
+                let mine: Vec<(SessionId, String)> = self
+                    .parents
+                    .iter()
+                    .filter(|(_, parent)| **parent == session)
+                    .filter_map(|(child, _)| Some((*child, self.titles.get(child)?.clone())))
+                    .collect();
+                let Some((child, name)) = mine
+                    .iter()
+                    .find(|(_, name)| name.eq_ignore_ascii_case(&title))
+                    .cloned()
+                else {
+                    let names: Vec<String> = mine
+                        .iter()
+                        .map(|(_, n)| format!("\u{201c}{n}\u{201d}"))
+                        .collect();
+                    return (
+                        if names.is_empty() {
+                            "You have started no session to pass it to.".into()
+                        } else {
+                            format!(
+                                "No session of yours is called that. Yours: {}.",
+                                names.join(", ")
+                            )
+                        },
+                        true,
+                    );
+                };
+                (self.sink)(Event::Forwarded {
+                    session: child,
+                    from: session,
+                });
+                self.tell(child, Input::Send(message));
+                (format!("Passed on to \u{201c}{name}\u{201d}."), false)
+            }
             other => (format!("quill has no tool named {other}."), true),
         }
     }

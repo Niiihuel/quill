@@ -276,7 +276,7 @@ pub enum AgentCommand {
 
 /// quill's own tools, which an adapter offers its agent where the agent can take tools from
 /// its host: a tool's name, what it is for, and the JSON schema of its input.
-pub const HOST_TOOLS: [(&str, &str, &str); 2] = [
+pub const HOST_TOOLS: [(&str, &str, &str); 3] = [
     (
         "start_session",
         "Start a separate session for a task of its own while you stay with the user, or propose one. `initiation` says who wants it: \"user_asked\" (the user asked in words for separate, parallel or background work) starts it now; \"own_initiative\" (follow-up work you noticed or that your own work turned up, which the user has not asked for) shows the user a card, and nothing runs until they start it there. Both need `prompt`: the brief, standing alone (the task, the files or area, what done looks like). context \"fresh\" (default) gives the new session your `prompt` and `background` only, so `background` is required: the goal, decisions and constraints so far, for someone who has not seen this conversation; \"fork\" gives it this whole conversation and your `prompt`. A session you start reports back to you when its turn ends. A session is for a task of its own that ends in something of its own; searching, independent parts of one change, and checking what you built stay here or go to a subagent. Start nothing the user did not ask for.",
@@ -286,6 +286,11 @@ pub const HOST_TOOLS: [(&str, &str, &str); 2] = [
         "dismiss_task",
         "Withdraw a proposal you made with start_session (initiation \"own_initiative\") that the user has not started, when it went stale: the work was done here after all, it turned out unnecessary, or you proposed a better one.",
         r#"{"type":"object","properties":{"task_id":{"type":"string"}},"required":["task_id"]}"#,
+    ),
+    (
+        "send_to_session",
+        "Pass a message from the user to a session you started, when it is about that session's task: a change of plan, a detail, an answer it waits for. The session gets `message` as from the user and carries on there; tell the user in a line that you passed it on. `session` is its title as you started it.",
+        r#"{"type":"object","properties":{"session":{"type":"string","description":"The session's title, as you started it."},"message":{"type":"string","description":"What it should know or do, standing alone."}},"required":["session","message"]}"#,
     ),
 ];
 

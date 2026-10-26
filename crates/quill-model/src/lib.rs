@@ -305,6 +305,11 @@ pub enum Event {
         path: String,
         error: String,
     },
+    /// What the session hears next was passed on by the session `from`, which started it.
+    Forwarded {
+        session: SessionId,
+        from: SessionId,
+    },
     /// The system's voice started or stopped reading one of the session's replies.
     Reading {
         session: SessionId,
@@ -356,6 +361,7 @@ impl Event {
             | Event::Unread { session, .. }
             | Event::Forked { session, .. }
             | Event::Reading { session, .. }
+            | Event::Forwarded { session, .. }
             | Event::FileRead { session, .. }
             | Event::FileWriteFailed { session, .. }
             | Event::Linked { session, .. }

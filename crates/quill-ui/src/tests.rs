@@ -1618,3 +1618,74 @@ fn outputs_open_in_a_document_pane_that_saves_and_follows_the_agent() {
     ui.applied(&read("# Notes\n"));
     assert!(!ui.document.as_ref().unwrap().dirty);
 }
+
+#[test]
+fn a_passed_on_message_says_so_on_both_sides_and_new_work_is_marked() {
+    let (mut store, mut ui) = store_with_session();
+    store.apply(Event::SessionCreated {
+        session: 2,
+        agent: "claude".into(),
+        cwd: "/work".into(),
+    });
+    store.apply(Event::Linked {
+        session: 2,
+        parent: 1,
+        side: false,
+    });
+    // The parent passes a message on: its tool step counts under the person's words.
+    agent(
+        &mut store,
+        AgentEvent::ToolUse {
+            call: "t1".into(),
+            name: "mcp__sessions__send_to_session".into(),
+            input: serde_json::json!({"session": "Notes", "message": "Monday"}),
+            parent: None,
+        },
+    );
+    agent(
+        &mut store,
+        AgentEvent::ToolResult {
+            call: "t1".into(),
+            output: "Passed on.".into(),
+            is_error: false,
+            files: vec![],
+            command: None,
+        },
+    );
+    let session = store.session(1).unwrap();
+    assert_eq!(view::sent_from(&session.items, 0), 1);
+    // The child hears it with where it came from.
+    store.apply(Event::Forwarded {
+        session: 2,
+        from: 1,
+    });
+    store.apply(Event::Queued {
+        session: 2,
+        request: "q".into(),
+        text: "Monday".into(),
+    });
+    assert!(matches!(
+        store.session(2).unwrap().items.as_slice(),
+        [Item::Forwarded { from: 1 }, Item::User { .. }]
+    ));
+    // Seen with two items, opened again with more: the new ones are marked.
+    click(&store, &mut ui, "thread:2");
+    ui.tick(&store);
+    click(&store, &mut ui, "pane:side:close");
+    agent_in(&mut store, 2, "Done.");
+    click(&store, &mut ui, "thread:2");
+    assert_eq!(ui.new_from.get(&2), Some(&2));
+}
+
+fn agent_in(store: &mut Store, session: SessionId, text: &str) {
+    store.apply(Event::Agent {
+        session,
+        request: None,
+        event: AgentEvent::Text {
+            text: text.into(),
+            parent: None,
+            id: None,
+            at: None,
+        },
+    });
+}
