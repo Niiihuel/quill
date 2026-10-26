@@ -1526,3 +1526,95 @@ fn btw_asks_beside_the_session_and_closing_puts_it_away() {
     );
     assert!(!ui.pane_open(Pane::Side));
 }
+
+#[test]
+fn outputs_open_in_a_document_pane_that_saves_and_follows_the_agent() {
+    use quill_model::{ChangeKind, FileEffect};
+    let (mut store, mut ui) = store_with_session();
+    let effect = |path: &str, kind: ChangeKind| FileEffect {
+        path: path.into(),
+        kind,
+        added: 1,
+        removed: 0,
+        patch: String::new(),
+    };
+    store.apply(Event::Changes {
+        session: 1,
+        request: "r1".into(),
+        files: vec![
+            effect("docs/notes.md", ChangeKind::Added),
+            effect("old.txt", ChangeKind::Deleted),
+        ],
+        snapshot: "s".into(),
+    });
+    let window = limn::Size::new(1408.0, 844.0);
+    let frame = UiTree::new(view(&store, &ui, window)).layout(window);
+    assert!(frame
+        .regions
+        .iter()
+        .any(|r| r.id == "doc:open:docs/notes.md"));
+    assert!(!frame.regions.iter().any(|r| r.id == "doc:open:old.txt"));
+    assert_eq!(
+        click(&store, &mut ui, "doc:open:docs/notes.md"),
+        vec![Intent::ReadFile {
+            session: 1,
+            path: "docs/notes.md".into()
+        }]
+    );
+    assert!(ui.pane_open(Pane::Document));
+    let read = |text: &str| Event::FileRead {
+        session: 1,
+        path: "docs/notes.md".into(),
+        text: Some(text.into()),
+    };
+    ui.applied(&read("# Notes\n"));
+    let document = ui.document.as_ref().unwrap();
+    assert!(document.preview && !document.dirty);
+    assert_eq!(document.text().as_deref(), Some("# Notes\n"));
+    // What the agent writes shows at once while the person has not edited it.
+    let wrote = Event::Agent {
+        session: 1,
+        request: Some("r1".into()),
+        event: AgentEvent::ToolResult {
+            call: "t".into(),
+            output: String::new(),
+            is_error: false,
+            files: vec![],
+            command: None,
+        },
+    };
+    assert!(ui.applied(&wrote).contains(&Intent::ReadFile {
+        session: 1,
+        path: "docs/notes.md".into()
+    }));
+    // Edited, it saves what the editor holds, and the disk no longer overwrites it.
+    update(
+        &store,
+        &mut ui,
+        &UiAction::EditorChanged {
+            id: view::DOC_EDITOR.into(),
+            document_id: 0,
+            revision: 1,
+        },
+    );
+    assert!(ui.document.as_ref().unwrap().dirty);
+    assert!(!ui
+        .applied(&wrote)
+        .iter()
+        .any(|i| matches!(i, Intent::ReadFile { .. })));
+    ui.applied(&read("# Other\n"));
+    assert_eq!(
+        ui.document.as_ref().unwrap().text().as_deref(),
+        Some("# Notes\n")
+    );
+    assert_eq!(
+        click(&store, &mut ui, view::DOC_SAVE),
+        vec![Intent::WriteFile {
+            session: 1,
+            path: "docs/notes.md".into(),
+            text: "# Notes\n".into()
+        }]
+    );
+    ui.applied(&read("# Notes\n"));
+    assert!(!ui.document.as_ref().unwrap().dirty);
+}

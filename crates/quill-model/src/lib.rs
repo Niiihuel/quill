@@ -124,6 +124,18 @@ pub enum Intent {
         #[serde(default)]
         at: Option<String>,
     },
+    /// A file of the session's folder, by its path in it, for the document pane: answered by
+    /// `Event::FileRead`.
+    ReadFile {
+        session: SessionId,
+        path: String,
+    },
+    /// Write what the person edited over a file of the session's folder.
+    WriteFile {
+        session: SessionId,
+        path: String,
+        text: String,
+    },
     /// Read a reply aloud with the system's voice, stopping any other; `None` stops.
     ReadAloud {
         session: SessionId,
@@ -280,6 +292,19 @@ pub enum Event {
         #[serde(default)]
         at: Option<String>,
     },
+    /// A file of the session's folder as it is now on disk; `None` when it cannot be read as
+    /// text, or is outside the folder.
+    FileRead {
+        session: SessionId,
+        path: String,
+        text: Option<String>,
+    },
+    /// Writing a file the person edited failed, and why.
+    FileWriteFailed {
+        session: SessionId,
+        path: String,
+        error: String,
+    },
     /// The system's voice started or stopped reading one of the session's replies.
     Reading {
         session: SessionId,
@@ -331,6 +356,8 @@ impl Event {
             | Event::Unread { session, .. }
             | Event::Forked { session, .. }
             | Event::Reading { session, .. }
+            | Event::FileRead { session, .. }
+            | Event::FileWriteFailed { session, .. }
             | Event::Linked { session, .. }
             | Event::Proposed { session, .. }
             | Event::ProposalAnswered { session, .. }

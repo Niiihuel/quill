@@ -9,5 +9,6 @@ publish = false
 
 [dependencies]
 limn.workspace = true
+limn-editor.workspace = true
 quill-model = { path = "../quill-model" }
 serde_json.workspace = true

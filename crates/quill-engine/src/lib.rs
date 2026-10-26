@@ -446,6 +446,53 @@ impl Router {
                 }
                 return;
             }
+            Intent::ReadFile { session, path } => {
+                if let Some(cwd) = self.folders.get(&session).cloned() {
+                    let sink = self.sink.clone();
+                    tokio::spawn(async move {
+                        let at = path.clone();
+                        let text = tokio::task::spawn_blocking(move || read_text(&cwd, &at))
+                            .await
+                            .ok()
+                            .flatten();
+                        sink(Event::FileRead {
+                            session,
+                            path,
+                            text,
+                        });
+                    });
+                }
+                return;
+            }
+            Intent::WriteFile {
+                session,
+                path,
+                text,
+            } => {
+                if let Some(cwd) = self.folders.get(&session).cloned() {
+                    let sink = self.sink.clone();
+                    tokio::spawn(async move {
+                        let (at, written) = (path.clone(), text.clone());
+                        let wrote =
+                            tokio::task::spawn_blocking(move || write_text(&cwd, &at, &written))
+                                .await
+                                .unwrap_or_else(|e| Err(e.to_string()));
+                        sink(match wrote {
+                            Ok(()) => Event::FileRead {
+                                session,
+                                path,
+                                text: Some(text),
+                            },
+                            Err(error) => Event::FileWriteFailed {
+                                session,
+                                path,
+                                error,
+                            },
+                        });
+                    });
+                }
+                return;
+            }
             Intent::ReadAloud { session, text } => {
                 // One voice at a time: a new reading, or none, ends the one under way first.
                 if let Some((stop, done)) = self.reading.take() {
@@ -1196,6 +1243,46 @@ impl Actor {
 
 /// The message that tells a session what the sessions it started said, in quill's words for
 /// what Desktop sends (3.6556.2 `<side-sessions-event>`).
+/// The largest file the document pane opens.
+const DOCUMENT_LIMIT: u64 = 2 << 20;
+
+/// Where `path` is inside `cwd`, or `None` when it would lead out of it: a document of a
+/// session is a file of its own folder.
+fn inside(cwd: &std::path::Path, path: &str) -> Option<std::path::PathBuf> {
+    let relative = std::path::Path::new(path);
+    let plain = relative
+        .components()
+        .all(|c| matches!(c, std::path::Component::Normal(_)));
+    if !plain {
+        return None;
+    }
+    let root = cwd.canonicalize().ok()?;
+    let full = root.join(relative);
+    // A link inside the folder may point out of it.
+    match full.canonicalize() {
+        Ok(real) => real.starts_with(&root).then_some(real),
+        Err(_) => full
+            .parent()?
+            .canonicalize()
+            .ok()?
+            .starts_with(&root)
+            .then_some(full),
+    }
+}
+
+fn read_text(cwd: &std::path::Path, path: &str) -> Option<String> {
+    let file = inside(cwd, path)?;
+    if std::fs::metadata(&file).ok()?.len() > DOCUMENT_LIMIT {
+        return None;
+    }
+    String::from_utf8(std::fs::read(file).ok()?).ok()
+}
+
+fn write_text(cwd: &std::path::Path, path: &str, text: &str) -> Result<(), String> {
+    let file = inside(cwd, path).ok_or("The file is not in the session's folder.")?;
+    std::fs::write(file, text).map_err(|e| e.to_string())
+}
+
 /// Read `text` with speech-dispatcher's voice until it is done or `stop` fires, saying when it
 /// starts and ends. Markdown's marks are left out, so the voice does not read them.
 async fn read_aloud(
@@ -1243,4 +1330,25 @@ fn report_text(reports: &[quill_model::Report]) -> String {
     }
     text.push_str("\nIf what the user asked you here has steps these results unblock, carry on with them; otherwise tell the user the outcome in a line or two.\n</sessions-report>");
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_document_stays_inside_its_sessions_folder() {
+        let root = std::env::temp_dir().join(format!("quill-doc-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        write_text(&root, "docs/notes.md", "# Notes\n").unwrap();
+        assert_eq!(
+            read_text(&root, "docs/notes.md").as_deref(),
+            Some("# Notes\n")
+        );
+        for outside in ["../escape.md", "/etc/passwd", "docs/../../escape.md"] {
+            assert_eq!(read_text(&root, outside), None, "{outside}");
+            assert!(write_text(&root, outside, "x").is_err(), "{outside}");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

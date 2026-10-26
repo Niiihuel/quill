@@ -2988,6 +2988,7 @@ name = "quill-ui"
 version = "0.0.1"
 dependencies = [
  "limn",
+ "limn-editor",
  "quill-model",
  "serde_json",
 ]

@@ -33,6 +33,8 @@ pub const SEARCH: &str = icon!("<circle cx='8.75' cy='8.75' r='5'/><path d='M12.
 pub const FILTER: &str = icon!("<path d='M3.5 6h13M6 10h8M8.5 14h3'/>");
 pub const SHARE: &str = icon!("<path d='M10 3.5v9M6.5 7L10 3.5 13.5 7M5 10.5v4.75A1.25 1.25 0 0 0 6.25 16.5h7.5A1.25 1.25 0 0 0 15 15.25V10.5'/>");
 pub const PIN: &str = icon!("<path d='M8 3.5h4M9 3.5v4L6.5 10.5h7L11 7.5v-4M10 10.5v6'/>");
+/// Angle brackets: a file of code.
+pub const CODE: &str = icon!("<path d='M7.5 6L3.5 10l4 4M12.5 6l4 4-4 4'/>");
 /// A path that parts in two going right: a new session from a point of this one.
 pub const FORK: &str = icon!(
     "<path d='M3.5 10h3c2.5 0 3.5-4.5 6.5-4.5h3M6.5 10c2.5 0 3.5 4.5 6.5 4.5h3M14.25 3.25l2.25 2.25-2.25 2.25M14.25 12.25l2.25 2.25-2.25 2.25'/>"
@@ -157,6 +159,7 @@ pub const ALL: &[(&str, &str)] = &[
     ("filter", FILTER),
     ("share", SHARE),
     ("pin", PIN),
+    ("code", CODE),
     ("fork", FORK),
     ("speaker", SPEAKER),
     ("monitor", MONITOR),

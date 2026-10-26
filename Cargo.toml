@@ -14,6 +14,8 @@ license = "MIT OR Apache-2.0"
 # (docs/LIMN_INTEGRATION.md); back to ../lienzo once they are.
 limn = { path = "../limn-quill-integration/crates/limn", default-features = false }
 limn-egui = { path = "../limn-quill-integration/crates/limn-egui", default-features = false }
+# The text buffer limn's code editor edits, for the document pane.
+limn-editor = { path = "../limn-quill-integration/crates/limn-editor" }
 eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "default_fonts", "x11", "wayland"] }
 serde_json = "1"
 # Events are kept as JSON in quill-store and replayed at start.

@@ -427,7 +427,7 @@ impl Store {
                     s.title = format!("{title} (fork)");
                 }
             }
-            Event::Reading { .. } => {}
+            Event::Reading { .. } | Event::FileRead { .. } | Event::FileWriteFailed { .. } => {}
         }
     }
 }
@@ -743,6 +743,7 @@ pub struct Ui {
     pub copied: Option<(String, std::time::Instant)>,
     /// The reply being read aloud, by its session and place.
     pub reading: Option<(SessionId, usize)>,
+    pub document: Option<Document>,
     /// The effort slider's thumb in pixels along its travel: where the pointer holds it,
     /// then the spring that carries it to its stop once let go.
     pub effort_thumb: Option<limn::ScalarSpring>,
@@ -1036,15 +1037,18 @@ pub enum Pane {
     Plan,
     /// The side chat `Ui::side_chat` names: a `/btw` question beside the session.
     Side,
+    /// The file `Ui::document` names, to read and edit.
+    Document,
 }
 
 impl Pane {
-    pub const ALL: [Pane; 5] = [
+    pub const ALL: [Pane; 6] = [
         Pane::Diff,
         Pane::Terminal,
         Pane::Agent,
         Pane::Plan,
         Pane::Side,
+        Pane::Document,
     ];
 
     pub fn key(self) -> &'static str {
@@ -1054,7 +1058,39 @@ impl Pane {
             Pane::Agent => "agent",
             Pane::Plan => "plan",
             Pane::Side => "side",
+            Pane::Document => "document",
         }
+    }
+}
+
+/// A file of a session's folder open in the document pane: its text in an editor the person
+/// may change, and whether it shows rendered (Markdown) or as text.
+pub struct Document {
+    pub session: SessionId,
+    /// Relative to the session's folder.
+    pub path: String,
+    /// `None` until the engine read it.
+    pub editor: Option<limn::EditorController>,
+    /// It could not be read as text.
+    pub unreadable: bool,
+    /// Changed since it was read or saved.
+    pub dirty: bool,
+    /// Markdown shows rendered until the person edits it.
+    pub preview: bool,
+    pub error: Option<String>,
+}
+
+impl Document {
+    pub fn markdown(&self) -> bool {
+        self.path.ends_with(".md") || self.path.ends_with(".markdown")
+    }
+
+    /// What the editor holds now.
+    pub fn text(&self) -> Option<String> {
+        let snapshot = self.editor.as_ref()?.snapshot().ok()?;
+        let mut out = Vec::new();
+        snapshot.write_to(&mut out).ok()?;
+        String::from_utf8(out).ok()
     }
 }
 
@@ -1155,6 +1191,7 @@ impl Ui {
             side_reply: String::new(),
             copied: None,
             reading: None,
+            document: None,
             effort_thumb: None,
             effort_dragging: false,
             effort_samples: vec![],
@@ -1185,6 +1222,56 @@ impl Ui {
             Some(std::time::Duration::ZERO)
         } else {
             [check, ultra].into_iter().flatten().min()
+        }
+    }
+
+    /// What the document pane takes from `event`: its file's text, a failed save, or a change
+    /// the agent made, after which the file is read again unless the person edited it.
+    fn document_heard(&mut self, event: &Event) -> Vec<Intent> {
+        let Some(document) = self.document.as_mut() else {
+            return vec![];
+        };
+        match event {
+            Event::FileRead {
+                session,
+                path,
+                text,
+            } if *session == document.session && *path == document.path => {
+                // shortcut: what the person edits wins over the disk; a conflict is not shown.
+                if document.dirty && document.text() != *text {
+                    return vec![];
+                }
+                // Saved as it stands: the editor keeps its caret and scroll.
+                if document.editor.is_some() && document.text() == *text {
+                    document.dirty = false;
+                    return vec![];
+                }
+                document.unreadable = text.is_none();
+                document.editor = text
+                    .as_deref()
+                    .and_then(|t| limn_editor::TextBuffer::new(t).ok())
+                    .map(limn::EditorController::new);
+                document.dirty = false;
+                vec![]
+            }
+            Event::FileWriteFailed {
+                session,
+                path,
+                error,
+            } if *session == document.session && *path == document.path => {
+                document.error = Some(error.clone());
+                vec![]
+            }
+            Event::Changes { session, .. }
+            | Event::Agent {
+                session,
+                event: AgentEvent::ToolResult { .. },
+                ..
+            } if *session == document.session && !document.dirty => vec![Intent::ReadFile {
+                session: *session,
+                path: document.path.clone(),
+            }],
+            _ => vec![],
         }
     }
 
@@ -1230,6 +1317,7 @@ impl Ui {
             Pane::Agent => self.helper = None,
             Pane::Plan => self.plan = None,
             Pane::Side => self.side_chat = None,
+            Pane::Document => self.document = None,
             Pane::Terminal => {}
         }
     }
@@ -1237,6 +1325,12 @@ impl Ui {
     /// After the engine reported `event`: select a session the person just created
     /// and send what they wrote while it was being made.
     pub fn applied(&mut self, event: &Event) -> Vec<Intent> {
+        let mut intents = self.document_heard(event);
+        intents.extend(self.applied_to_view(event));
+        intents
+    }
+
+    fn applied_to_view(&mut self, event: &Event) -> Vec<Intent> {
         if let Event::Reading {
             session,
             reading: false,
@@ -1322,6 +1416,14 @@ impl Ui {
 pub fn update(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Intent> {
     use limn::UiAction;
     match action {
+        UiAction::EditorChanged { id, .. } if id == view::DOC_EDITOR => {
+            if let Some(document) = &mut ui.document {
+                document.dirty = true;
+                document.error = None;
+            }
+            vec![]
+        }
+        UiAction::EditorSaveRequested { id, .. } if id == view::DOC_EDITOR => save_document(ui),
         UiAction::InputChanged { id, value } if id == view::TERMINAL_RENAME => {
             if let Some((_, name)) = &mut ui.terminal.renaming {
                 *name = value.clone();
@@ -1623,6 +1725,9 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         return intents;
     }
     if let Some(intents) = message_clicked(store, ui, id) {
+        return intents;
+    }
+    if let Some(intents) = document_clicked(ui, id) {
         return intents;
     }
     if let Some(rest) = id.strip_prefix("ask:") {
@@ -2108,6 +2213,60 @@ fn answer(store: &Store, ui: &mut Ui, rest: &str) -> Vec<Intent> {
         }
     }
     vec![]
+}
+
+/// Write what the document pane holds over its file.
+fn save_document(ui: &mut Ui) -> Vec<Intent> {
+    match &ui.document {
+        Some(document) if document.dirty => document
+            .text()
+            .map(|text| {
+                vec![Intent::WriteFile {
+                    session: document.session,
+                    path: document.path.clone(),
+                    text,
+                }]
+            })
+            .unwrap_or_default(),
+        _ => vec![],
+    }
+}
+
+/// A file opened from the panel's Outputs, and the document pane's own buttons. `None` when
+/// `id` is none of them.
+fn document_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
+    if let Some(path) = id.strip_prefix("doc:open:") {
+        let session = ui.selected?;
+        let same = ui
+            .document
+            .as_ref()
+            .is_some_and(|d| d.session == session && d.path == path);
+        ui.open_pane(Pane::Document);
+        if same {
+            return Some(vec![]);
+        }
+        ui.document = Some(Document {
+            session,
+            path: path.to_owned(),
+            editor: None,
+            unreadable: false,
+            dirty: false,
+            preview: path.ends_with(".md") || path.ends_with(".markdown"),
+            error: None,
+        });
+        return Some(vec![Intent::ReadFile {
+            session,
+            path: path.to_owned(),
+        }]);
+    }
+    let document = ui.document.as_mut()?;
+    match id {
+        view::DOC_EDIT => document.preview = false,
+        view::DOC_PREVIEW => document.preview = true,
+        view::DOC_SAVE => return Some(save_document(ui)),
+        _ => return None,
+    }
+    Some(vec![])
 }
 
 /// The actions under a reply [3.6556.2/c96d752d0 `KA`]: copy, fork from it, and read it

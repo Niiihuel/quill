@@ -66,6 +66,11 @@ pub const FILTER_RESET: &str = "filter:reset";
 pub const SIDE_FIELD: &str = "side:field";
 /// The side pane's tool that shows its session on its own.
 pub const SIDE_OPEN: &str = "side:open";
+/// The document pane's editor and its buttons.
+pub const DOC_EDITOR: &str = "doc:editor";
+pub const DOC_EDIT: &str = "doc:edit";
+pub const DOC_PREVIEW: &str = "doc:preview";
+pub const DOC_SAVE: &str = "doc:save";
 /// "Show more" under Completed.
 pub const SHOW_MORE: &str = "sidebar:show-more";
 /// The effort slider, its width, and the way its thumb travels.
@@ -136,6 +141,8 @@ fn layout(store: &Store, ui: &Ui, window: Size) -> Layout {
         Some(Pane::Terminal | Pane::Agent | Pane::Plan) => 1.0 / 3.0,
         // A session beside reads at about Desktop's thread pane.
         Some(Pane::Side) => 0.42,
+        // Inferred: a document reads best at half the room.
+        Some(Pane::Document) => 0.5,
         None => 0.0,
     };
     // Dragging the boundary sets the share, as in Desktop.
@@ -333,6 +340,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
                 Pane::Agent => agent_pane(store, session, ui, width, height, palette),
                 Pane::Plan => plan_pane(session, ui, width, height),
                 Pane::Side => side_pane(store, ui, width, height, palette),
+                Pane::Document => document_pane(ui, width, height, palette),
             });
         }
         if layout.main > 0.0 {
@@ -4791,7 +4799,7 @@ fn right_panel(
             .size(None, Some(24.0)),
         )
     };
-    Element::column(vec![
+    let mut cards = vec![
         panel_card(
             "Environment",
             "panel:environment",
@@ -4816,10 +4824,163 @@ fn right_panel(
             vec![changes],
             inner,
         ),
-    ])
-    .gap(8.0)
-    .padding(8.0)
-    .size(Some(width), Some(height))
+    ];
+    let outputs = outputs(session);
+    if !outputs.is_empty() {
+        cards.push(panel_card(
+            "Outputs",
+            "panel:outputs",
+            open("panel:outputs", true),
+            vec![],
+            outputs
+                .into_iter()
+                .map(|path| {
+                    let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
+                    Element::clickable(
+                        format!("doc:open:{path}"),
+                        panel_row(
+                            icons::of(icons::CODE),
+                            Element::truncated_text(name)
+                                .font_family(FontFamily::Sans)
+                                .font_size(BODY)
+                                .foreground(look::palette().text)
+                                .max_width(inner - 72.0),
+                        ),
+                    )
+                    .accessibility_label(format!("Open {path}"))
+                })
+                .collect(),
+            inner,
+        ));
+    }
+    Element::column(cards)
+        .gap(8.0)
+        .padding(8.0)
+        .size(Some(width), Some(height))
+}
+
+/// The files the session made or changed and still has, newest first: the panel's Outputs, as
+/// Desktop lists them (3.6556.2 `c21f11e6d` "Outputs").
+fn outputs(session: &Session) -> Vec<String> {
+    let mut paths: Vec<String> = vec![];
+    for item in session.items.iter().rev() {
+        if let Item::Changes {
+            files,
+            rewound: false,
+            ..
+        } = item
+        {
+            for file in files {
+                if !paths.contains(&file.path) {
+                    paths.push(file.path.clone());
+                }
+            }
+        }
+    }
+    // A file it deleted last is not an output; one deleted then made again is.
+    let gone = |path: &String| {
+        session.items.iter().rev().find_map(|item| match item {
+            Item::Changes {
+                files,
+                rewound: false,
+                ..
+            } => files
+                .iter()
+                .find(|f| f.path == *path)
+                .map(|f| f.kind == ChangeKind::Deleted),
+            _ => None,
+        }) == Some(true)
+    };
+    paths.retain(|p| !gone(p));
+    paths
+}
+
+/// A file of the session's folder to read and edit:
+/// Markdown rendered until "Edit", any other text in limn's editor; "Save" (or Ctrl+S) writes
+/// it while it has changes. What the agent writes to it shows at once, unless the person
+/// changed it first.
+fn document_pane(ui: &Ui, width: f32, height: f32, palette: ComponentPalette) -> Element {
+    let Some(document) = &ui.document else {
+        return Element::spacer().size(Some(width), Some(height));
+    };
+    let (dir, name) = match document.path.rsplit_once('/') {
+        Some((dir, name)) => (dir.to_owned(), name.to_owned()),
+        None => (String::new(), document.path.clone()),
+    };
+    let mut lead = vec![text(name).centered_y()];
+    if !dir.is_empty() {
+        lead.push(muted(dir).font_size(SMALL).centered_y());
+    }
+    let mut tools = vec![];
+    if document.markdown() && document.editor.is_some() {
+        tools.push(if document.preview {
+            keyed_button(DOC_EDIT, "Edit", "", false, true, palette)
+        } else {
+            keyed_button(DOC_PREVIEW, "Preview", "", false, true, palette)
+        });
+    }
+    if document.dirty {
+        tools.push(keyed_button(
+            DOC_SAVE, "Save", "Ctrl+S", true, true, palette,
+        ));
+    }
+    tools.extend(pane_tools(Pane::Document, ui, palette));
+    let header = pane_header(Element::row(lead).gap(8.0), tools, width);
+    let below = height - look::PANE_HEADER - 1.0;
+    let mut body = vec![];
+    if let Some(error) = &document.error {
+        body.push(
+            Element::row(vec![
+                muted(format!("Not saved: {error}")).foreground(look::failed())
+            ])
+            .padding(12.0),
+        );
+    }
+    body.push(match &document.editor {
+        None if document.unreadable => {
+            Element::column(vec![muted("This file can't be shown as text.")]).padding(16.0)
+        }
+        None => Element::spacer().size(None, Some(0.0)),
+        Some(_) if document.markdown() && document.preview => Element::scroll(
+            "doc:scroll",
+            Element::column(vec![
+                Markdown::new(&document.text().unwrap_or_default(), look::palette())
+                    .width(width - 48.0)
+                    .font_size(CHAT)
+                    .render()
+                    .element,
+            ])
+            .padding(24.0),
+        )
+        .flex(1.0),
+        Some(editor) => Element::column(vec![limn::CodeEditor::new(DOC_EDITOR, editor.clone())
+            .palette(look::palette())
+            .language(language_of(&document.path))
+            .soft_wrap(document.markdown())
+            .line_numbers(!document.markdown())
+            .height(below - 16.0 - if document.error.is_some() { 40.0 } else { 0.0 })
+            .render()])
+        .padding(8.0),
+    });
+    Element::column(vec![header, Element::column(body).flex(1.0)]).size(Some(width), Some(height))
+}
+
+/// The syntax a file's extension says it is in, for the editor's colors.
+fn language_of(path: &str) -> limn::CodeLanguage {
+    use limn::CodeLanguage::*;
+    match path.rsplit('.').next().unwrap_or_default() {
+        "rs" => Rust,
+        "json" => Json,
+        "js" | "mjs" | "cjs" => JavaScript,
+        "ts" => TypeScript,
+        "tsx" | "jsx" => Tsx,
+        "py" => Python,
+        "toml" => Toml,
+        "css" => Css,
+        "html" => Html,
+        "md" | "markdown" => Markdown,
+        _ => Plain,
+    }
 }
 
 /// Desktop's small context bar: a 24 × 6 pill filled blue to the share used.
