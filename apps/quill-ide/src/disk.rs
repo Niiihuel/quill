@@ -49,6 +49,10 @@ pub fn run(job: Job) -> Loaded {
         }
         Job::FindFonts => Loaded::Fonts(monospaced()),
         Job::FindFiles(root) => Loaded::Files(files(&root)),
+        Job::Analyze(path, save) => {
+            let structure = crate::structure::analyze(&save.0, &path);
+            Loaded::Analyzed(path, structure)
+        }
         Job::Committed(path) => {
             let text = crate::marks::committed(&path);
             Loaded::Committed(path, text)

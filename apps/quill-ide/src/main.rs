@@ -11,6 +11,7 @@ mod packs;
 mod prefs;
 mod quick;
 mod session;
+mod structure;
 
 use eframe::egui;
 use limn::{Element, Size, UiTree};

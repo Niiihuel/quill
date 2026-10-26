@@ -11,6 +11,8 @@ description = "quill-ide: a native code reader and editor in quill's look, drawn
 limn = { workspace = true, features = ["syntax"] }
 limn-egui.workspace = true
 limn-editor.workspace = true
+# Tree-sitter's folds and declarations, for folding, sticky scopes and the symbols' path.
+limn-language = { path = "../../../limn-quill-integration/crates/limn-language" }
 eframe.workspace = true
 quill-components = { path = "../../crates/quill-components" }
 # Lists a folder as git sees it, .gitignore and all, as ripgrep does.

@@ -8,6 +8,7 @@ use crate::packs::{self, Offered, Pack, Theme};
 use crate::prefs::{self, Prefs};
 use crate::quick::{self, QUICK_CLOSE, QUICK_FIELD, QUICK_LINE, QUICK_OPEN};
 use crate::session::Session;
+use crate::structure::{self as tree_sitter, Structure};
 use limn::{
     CodeEditor, Component, ComponentPalette, EditorController, Element, Key, Point, Size, TreeRow,
     UiAction,
@@ -74,6 +75,8 @@ pub enum Job {
     Committed(PathBuf),
     /// What changed in the buffer's text since that commit.
     Changes(PathBuf, std::sync::Arc<str>, Save),
+    /// The buffer's folds, scopes and declarations, by tree-sitter.
+    Analyze(PathBuf, Save),
 }
 
 /// A family's regular and bold faces, for the editor.
@@ -119,6 +122,7 @@ pub enum Loaded {
     Committed(PathBuf, Option<String>),
     /// A file's changes since its commit, at the buffer's revision.
     Changes(PathBuf, u64, Vec<(std::ops::Range<usize>, Change)>),
+    Analyzed(PathBuf, Structure),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -148,6 +152,10 @@ pub struct Buffer {
     pub changes: Vec<(std::ops::Range<usize>, Change)>,
     pub changes_revision: Option<u64>,
     pub marking: bool,
+    /// What tree-sitter found in it, whether it is looking again, and the blocks folded.
+    pub structure: Option<Structure>,
+    pub analyzing: bool,
+    pub folded: Vec<std::ops::Range<usize>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -172,6 +180,9 @@ impl Buffer {
             changes: vec![],
             changes_revision: None,
             marking: false,
+            structure: None,
+            analyzing: false,
+            folded: vec![],
         }
     }
 
@@ -423,6 +434,9 @@ impl Ide {
             return vec![];
         }
         if let Some(jobs) = self.context_clicked(id) {
+            return jobs;
+        }
+        if let Some(jobs) = self.structure_clicked(id) {
             return jobs;
         }
         if id == TREE_TOGGLE {
@@ -702,6 +716,26 @@ impl Ide {
         true
     }
 
+    /// A fold control, which folds its block or unfolds it, or a sticky line, which takes the
+    /// caret to its scope's first row. `None` when `id` is none of them.
+    fn structure_clicked(&mut self, id: &str) -> Option<Vec<Job>> {
+        if let Some(rows) = id.strip_prefix("fold:") {
+            let (start, end) = rows.split_once(':')?;
+            let rows = start.parse().ok()?..end.parse().ok()?;
+            let folded = &mut self.buffers.get_mut(self.active?)?.folded;
+            match folded.iter().position(|f| *f == rows) {
+                Some(at) => {
+                    folded.remove(at);
+                }
+                None => folded.push(rows),
+            }
+            return Some(vec![]);
+        }
+        let row = id.strip_prefix("scope:")?.parse().ok()?;
+        let path = self.active_buffer()?.path.clone();
+        Some(self.goto(path, row))
+    }
+
     /// The editor's own entries after limn's: copy the file's path, or show it in the tree.
     /// `None` when `id` is none of them.
     fn context_clicked(&mut self, id: &str) -> Option<Vec<Job>> {
@@ -828,6 +862,14 @@ impl Ide {
             let Some(editor) = &buffer.editor else {
                 continue;
             };
+            let revision = editor.snapshot().map(|s| s.revision()).ok();
+            let analyzed = buffer.structure.as_ref().map(|s| s.revision);
+            if !buffer.analyzing && revision.is_some() && analyzed != revision {
+                if let Ok(snapshot) = editor.snapshot() {
+                    buffer.analyzing = true;
+                    jobs.push(Job::Analyze(buffer.path.clone(), Save(snapshot)));
+                }
+            }
             match &buffer.committed {
                 Committed::Unknown => {
                     buffer.committed = Committed::Asked;
@@ -911,6 +953,12 @@ impl Ide {
                     buffer.committed = Committed::Known(text.map(Into::into));
                     buffer.changes_revision = None;
                     buffer.changes.clear();
+                }
+            }
+            Loaded::Analyzed(path, structure) => {
+                if let Some(buffer) = self.buffers.iter_mut().find(|b| b.path == path) {
+                    buffer.structure = Some(structure);
+                    buffer.analyzing = false;
                 }
             }
             Loaded::Changes(path, revision, changes) => {
@@ -1442,6 +1490,13 @@ fn editor(ide: &Ide, width: f32, height: f32) -> Element {
             },
         ) => {
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let snapshot = editor.snapshot().ok();
+            let (document, revision) = snapshot
+                .as_ref()
+                .map_or((0, 0), |s| (s.document_id(), s.revision()));
+            // Drawn on the revision they were found in only; an empty lane keeps the text
+            // where it is meanwhile, as openADE does.
+            let (folds, scopes) = structure_controls(buffer, revision);
             // An editor per file keeps each one's caret and scroll while another is on screen.
             // With Vim keys, a file opens in Normal mode: reading, until `i`.
             CodeEditor::new(buffer.editor_id(), editor.clone())
@@ -1458,6 +1513,10 @@ fn editor(ide: &Ide, width: f32, height: f32) -> Element {
                     editor.snapshot().map_or(0, |s| s.document_id()),
                     change_marks(&buffer.changes),
                 )
+                .structure(document, revision, folds, scopes)
+                .folds(buffer.folded.clone())
+                // A match found is not left under the find bar.
+                .reveal_top_inset(if ide.find.is_some() { 48.0 } else { 0.0 })
                 .search_matches(
                     matches.map_or(0, |r| r.revision),
                     matches.map(|r| r.matches.clone()).unwrap_or_default(),
@@ -1482,6 +1541,35 @@ fn editor(ide: &Ide, width: f32, height: f32) -> Element {
     }
     column.push(footer(ide, width));
     Element::column(column)
+}
+
+/// The fold controls and sticky lines of `buffer`'s structure, if it was found in `revision`.
+fn structure_controls(
+    buffer: &Buffer,
+    revision: u64,
+) -> (Vec<limn::CodeFoldCandidate>, Vec<limn::CodeStickyScope>) {
+    let Some(structure) = buffer.structure.as_ref().filter(|s| s.revision == revision) else {
+        return (vec![], vec![]);
+    };
+    let folds = structure
+        .folds
+        .iter()
+        .map(|rows| limn::CodeFoldCandidate {
+            start_row: rows.start,
+            end_row: rows.end,
+            action_id: format!("fold:{}:{}", rows.start, rows.end),
+        })
+        .collect();
+    let scopes = structure
+        .scopes
+        .iter()
+        .map(|rows| limn::CodeStickyScope {
+            start_row: rows.start,
+            end_row: rows.end,
+            action_id: format!("scope:{}", rows.start),
+        })
+        .collect();
+    (folds, scopes)
 }
 
 /// The gutter's marks, as editors draw them: added rows in quill's added green, changed rows
@@ -1554,6 +1642,21 @@ fn footer(ide: &Ide, width: f32) -> Element {
         Some(buffer) => {
             let path = buffer.path.strip_prefix(&ide.root).unwrap_or(&buffer.path);
             lead.push(small(path.display().to_string()));
+            // Where the caret is among the file's declarations, as breadcrumbs.
+            let caret = buffer
+                .editor
+                .as_ref()
+                .and_then(|e| e.snapshot().ok())
+                .map(|s| s.selection().head);
+            let symbols = buffer
+                .structure
+                .as_ref()
+                .zip(caret)
+                .map(|(s, at)| tree_sitter::symbols_at(s, at).join(" \u{203a} "))
+                .filter(|path| !path.is_empty());
+            if let Some(symbols) = symbols {
+                lead.push(small(format!("\u{203a} {symbols}")));
+            }
             if buffer.dirty() {
                 lead.push(small("Unsaved".into()));
             }
@@ -1998,15 +2101,22 @@ mod tests {
     #[test]
     fn the_gutter_compares_each_file_with_its_commit_once_a_revision() {
         let mut ide = with_files();
+        // Tree-sitter's work, asked for beside, is left out here.
+        let marks = |ide: &mut Ide| -> Vec<Job> {
+            let jobs = ide.marks_due();
+            jobs.into_iter()
+                .filter(|j| !matches!(j, Job::Analyze(..)))
+                .collect()
+        };
         read(&mut ide, "/r/a.rs", "a\nb\n");
-        assert_eq!(ide.marks_due(), vec![Job::Committed("/r/a.rs".into())]);
-        assert!(ide.marks_due().is_empty(), "asked once");
+        assert_eq!(marks(&mut ide), vec![Job::Committed("/r/a.rs".into())]);
+        assert!(marks(&mut ide).is_empty(), "asked once");
         ide.loaded(Loaded::Committed("/r/a.rs".into(), Some("a\n".into())));
-        let jobs = ide.marks_due();
+        let jobs = marks(&mut ide);
         assert!(
             matches!(&jobs[..], [Job::Changes(p, c, _)] if p == Path::new("/r/a.rs") && &**c == "a\n")
         );
-        assert!(ide.marks_due().is_empty(), "one at a time");
+        assert!(marks(&mut ide).is_empty(), "one at a time");
         let revision = ide.buffers[0]
             .editor
             .as_ref()
@@ -2017,13 +2127,13 @@ mod tests {
         let added = vec![(1..2, Change::Added)];
         ide.loaded(Loaded::Changes("/r/a.rs".into(), revision, added.clone()));
         assert_eq!(ide.buffers[0].changes, added);
-        assert!(ide.marks_due().is_empty(), "nothing new to compare");
+        assert!(marks(&mut ide).is_empty(), "nothing new to compare");
         type_in(&ide.buffers[0], 0, "x");
-        assert_eq!(ide.marks_due().len(), 1, "an edit is compared again");
+        assert_eq!(marks(&mut ide).len(), 1, "an edit is compared again");
         // A new commit: the file is read from it again.
         ide.head = Some(("/r/.git/HEAD".into(), None));
         ide.loaded(Loaded::Changed(vec![("/r/.git/HEAD".into(), stamp(9))]));
-        assert!(ide.marks_due().contains(&Job::Committed("/r/a.rs".into())));
+        assert!(marks(&mut ide).contains(&Job::Committed("/r/a.rs".into())));
     }
 
     #[test]
@@ -2078,6 +2188,47 @@ mod tests {
         assert!(jobs.is_empty() && ide.quick.is_none());
         let editor = ide.buffers[0].editor.as_ref().unwrap();
         assert_eq!(editor.snapshot().unwrap().selection().head, 4);
+    }
+
+    #[test]
+    fn tree_sitter_is_asked_once_a_revision_and_its_blocks_fold() {
+        let mut ide = with_files();
+        read(&mut ide, "/r/a.rs", "fn a() {\n    1;\n}\n");
+        let analyze = |ide: &mut Ide| {
+            let jobs = ide.marks_due();
+            jobs.into_iter()
+                .filter(|j| matches!(j, Job::Analyze(..)))
+                .count()
+        };
+        assert_eq!(analyze(&mut ide), 1);
+        assert_eq!(analyze(&mut ide), 0, "one at a time");
+        let revision = ide.buffers[0]
+            .editor
+            .as_ref()
+            .unwrap()
+            .snapshot()
+            .unwrap()
+            .revision();
+        let structure = Structure {
+            revision,
+            folds: std::iter::once(0..3).collect(),
+            scopes: std::iter::once(0..3).collect(),
+            symbols: vec![("a".into(), 0..16)],
+        };
+        ide.loaded(Loaded::Analyzed("/r/a.rs".into(), structure));
+        assert_eq!(analyze(&mut ide), 0, "nothing new to look at");
+        click(&mut ide, "fold:0:3");
+        assert_eq!(
+            ide.buffers[0].folded,
+            std::iter::once(0..3).collect::<Vec<_>>()
+        );
+        click(&mut ide, "fold:0:3");
+        assert!(ide.buffers[0].folded.is_empty());
+        click(&mut ide, "scope:2");
+        let editor = ide.buffers[0].editor.as_ref().unwrap();
+        assert_eq!(editor.snapshot().unwrap().selection().head, 16);
+        type_in(&ide.buffers[0], 0, "x");
+        assert_eq!(analyze(&mut ide), 1, "an edit is looked at again");
     }
 
     #[test]

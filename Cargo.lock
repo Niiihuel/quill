@@ -3082,6 +3082,7 @@ dependencies = [
  "limn",
  "limn-editor",
  "limn-egui",
+ "limn-language",
  "quill-components",
  "rfd",
  "serde",
