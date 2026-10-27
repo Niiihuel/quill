@@ -9,6 +9,12 @@ answer before the first turn.
   `reload_plugins` and `reload_skills`. One `{t_ms, dir, msg}` per line, as `quill-capture`
   writes. Trimmed: two tools per server, two skills per source, a few commands; the home
   folder reads `/home/user`, the account `user@example.com`, connector ids are placeholders.
+- `websearch.jsonl`: `claude -p` stream-json with a WebSearch turn (haiku, 2026-10-27), not the
+  `{t_ms, dir, msg}` of `quill-capture`: each line is wrapped as `{"dir":"in","msg":<line>,"t_ms":0}`
+  for the replay. Two searches, their results and the final answer. Trimmed: `system/init`
+  empties `mcp_servers` and `plugins`, keeps two `skills` and `slash_commands` and three
+  `agents`; `commands_changed` keeps two commands; the home folder reads `/home/user`, the
+  socket path is a placeholder.
 - `plugin-list.json`: `claude plugin list --json`, the installed plugins.
 
 Request shapes, from the CLI's own schemas (`strings` of the 2.1.311 binary):

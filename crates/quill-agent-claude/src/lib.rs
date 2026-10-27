@@ -7,7 +7,8 @@ use quill_agent::{
     CommandRun, ContextCategory, ContextKind, ContextUsage, Decision, Decoded, ExtensionOp,
     FileChange, LaunchPlan, Marketplace, McpServer, McpSource, McpStatus, McpTool, ModelInfo,
     PlanLimits, Plugin, PluginOffer, ProgramRun, SessionSpec, Skill, Suggestion, TaskUsage,
-    ToolContent, Usage, UsageWindow, BROWSER_GUIDE, BROWSER_TOOLS, HOST_TOOLS,
+    ToolContent, Usage, UsageWindow, WebSearchRun, WebSource, BROWSER_GUIDE, BROWSER_TOOLS,
+    HOST_TOOLS,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -239,12 +240,14 @@ impl Claude {
             stderr: text(&structured["stderr"]),
             interrupted: structured["interrupted"] == true,
         });
+        let web = (name == "WebSearch").then(|| web_run(&input, structured, &output));
         AgentEvent::ToolResult {
             call,
             output,
             is_error: block["is_error"] == true,
             files,
             command,
+            web,
         }
     }
 }
@@ -1408,6 +1411,40 @@ fn suggestion_value(suggestion: Suggestion) -> Value {
             json!({ "type": "setMode", "mode": mode, "destination": "session" })
         }
     }
+}
+
+/// A WebSearch: its sources from the structured `results` (link lists), or else from the
+/// `Links: [...]` JSON that starts the text; deduped by URL, in order.
+fn web_run(input: &Value, structured: &Value, output: &str) -> WebSearchRun {
+    let mut items: Vec<Value> = structured["results"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| r["content"].as_array())
+        .flatten()
+        .cloned()
+        .collect();
+    if items.is_empty() {
+        let links = output
+            .split_once("Links: ")
+            .and_then(|(_, rest)| rest.lines().next());
+        items = links
+            .and_then(|json| serde_json::from_str::<Vec<Value>>(json).ok())
+            .unwrap_or_default();
+    }
+    let mut sources: Vec<WebSource> = vec![];
+    for item in &items {
+        let url = text(&item["url"]);
+        if !url.is_empty() && !sources.iter().any(|s| s.url == url) {
+            sources.push(WebSource {
+                title: text(&item["title"]),
+                url,
+            });
+        }
+    }
+    let query = Some(text(&structured["query"])).filter(|q| !q.is_empty());
+    let query = query.unwrap_or_else(|| text(&input["query"]));
+    WebSearchRun { query, sources }
 }
 
 /// Write and Edit report the file before and after ([F:edit-bash]); other tools report none.

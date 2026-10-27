@@ -101,6 +101,8 @@ pub struct ToolResult {
     pub files: Vec<quill_model::FileChange>,
     /// It never finished, or the person denied it: Desktop reads "Stopped".
     pub stopped: bool,
+    /// The query and sources of a web search (`None` for other tools).
+    pub web: Option<quill_model::WebSearchRun>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -739,6 +741,7 @@ fn agent_event(s: &mut Session, event: AgentEvent) {
             output,
             is_error,
             files,
+            web,
             ..
         } => {
             let (added, removed) = files
@@ -762,6 +765,7 @@ fn agent_event(s: &mut Session, event: AgentEvent) {
                             removed,
                             files,
                             stopped: denied,
+                            web,
                         });
                         break;
                     }
@@ -3176,7 +3180,7 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         }
         return intents;
     }
-    if id.starts_with(view::DIFF_FOLD) {
+    if id.starts_with(view::DIFF_FOLD) || id.starts_with("web:") {
         match ui.expanded.iter().position(|k| k == id) {
             Some(at) => drop(ui.expanded.remove(at)),
             None => ui.expanded.push(id.to_owned()),
@@ -3454,6 +3458,7 @@ fn close_open_permissions(items: &mut [Item]) {
                     removed: 0,
                     files: vec![],
                     stopped: true,
+                    web: None,
                 })
             }
             _ => {}

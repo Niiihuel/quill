@@ -8,6 +8,7 @@ pub use quill_agent::{
     ContextCategory, ContextKind, ContextUsage, Decision, ExtensionOp, Extensions, FileChange,
     Marketplace, McpServer, McpSource, McpStatus, McpTool, ModelInfo, NewServer, PlanLimits,
     Plugin, PluginOffer, Skill, Suggestion, TaskUsage, ToolContent, Usage, UsageWindow,
+    WebSearchRun, WebSource,
 };
 
 /// quill's own id of a session.

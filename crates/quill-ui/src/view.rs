@@ -7,9 +7,9 @@ use crate::{
     Item, Pane, Session, Store, ToolResult, Ui, NOTICE_DONE, NOTICE_PERMISSION, NOTICE_QUESTION,
 };
 use limn::{
-    Attachment, Button, ButtonGroup, ButtonSize, ButtonVariant, Component, ComponentPalette,
-    Composer, ControlSize, Element, FontFamily, Markdown, OutputBlock, Size, Sketch, Spinner,
-    TextShimmer,
+    Attachment, Avatar, AvatarGroup, Button, ButtonGroup, ButtonSize, ButtonVariant, Color,
+    Component, ComponentPalette, Composer, ControlSize, Element, FontFamily, Markdown, OutputBlock,
+    Size, Skeleton, Sketch, Spinner, TextShimmer,
 };
 use quill_components::pieces::{
     confirm, confirm_keeping, hgap, hline, icon_tool, keyed_button, menu, muted, pane_header,
@@ -18,13 +18,15 @@ use quill_components::pieces::{
 use quill_components::settings::{
     self, choices, setting, setting_button, setting_switch, Setting, SettingsPage,
 };
-use quill_model::{ChangeKind, FileEffect, NotifyLevel, SessionStatus, TranscriptView};
+use quill_model::{ChangeKind, FileEffect, NotifyLevel, SessionStatus, TranscriptView, WebSource};
 use serde_json::Value;
 use std::path::Path;
 use std::time::Instant;
 
 /// A square image tile, 85 px: in the composer and in a message (docs/ui.md §2.6).
 const IMAGE_TILE: f32 = 85.0;
+/// A web search source card, tall (websearch-spec (a)).
+const CARD_HEIGHT: f32 = 84.0;
 
 pub const COMPOSER: &str = "composer";
 pub const NEW_SESSION: &str = "new-session";
@@ -2686,6 +2688,12 @@ fn entries<'a>(
                         ])
                         .gap(8.0),
                     );
+                } else if name == "WebSearch"
+                    && result.as_ref().is_none_or(|r| !r.is_error && !r.stopped)
+                {
+                    // Its sources as a block of their own; an error or a stop stays a step.
+                    flush(&mut steps, &mut items);
+                    items.push(web_search_block(&step, ui, transcript, column, palette));
                 } else if let Some(opened) = opened_tab(name, result.as_ref()) {
                     // A tab the agent opened shows as a card under its step, as Desktop's
                     //.
@@ -3952,6 +3960,356 @@ pub fn is_task_tool(name: &str) -> bool {
 ///.
 fn stands_alone(name: &str) -> bool {
     matches!(name, "AskUserQuestion" | "ExitPlanMode")
+}
+
+/// quill's web search block: a pill that says what was searched, with the sources as cards
+/// under it. The design follows rareui's WebSearch (rareui, `web-search.tsx`; its license is
+/// not checked yet), with quill's own colors. Desktop draws a WebSearch as a plain step
+/// instead. Motion, citation chips and favicons are not here yet.
+fn web_search_block(
+    step: &Step,
+    ui: &Ui,
+    transcript: TranscriptView,
+    column: f32,
+    palette: ComponentPalette,
+) -> Element {
+    let key = format!("web:{}", step.call);
+    let more = format!("{key}:more");
+    let sources: &[WebSource] = step
+        .result
+        .and_then(|r| r.web.as_ref())
+        .map_or(&[][..], |w| w.sources.as_slice());
+    let searching = step.running || step.result.is_none();
+    // The panel starts open, so the key's presence means closed; Verbose holds it open.
+    let open = transcript == TranscriptView::Verbose || !ui.expanded.contains(&key);
+    let query = step.input["query"].as_str().unwrap_or_default();
+    let count = sources.len();
+    let sites = if count == 1 { "site" } else { "sites" };
+    let label = if searching && query.is_empty() {
+        "Searching the web".to_owned()
+    } else if searching {
+        format!("Searching \u{201c}{query}\u{201d}")
+    } else {
+        format!("Searched {count} {sites}")
+    };
+    let label = if searching {
+        TextShimmer::new(format!("{key}:label"), label, look::palette())
+            .render()
+            .centered_y()
+    } else {
+        Element::text(label)
+            .font_family(FontFamily::SansMedium)
+            .font_size(chat())
+            .foreground(look::palette().text)
+            .centered_y()
+    };
+    let mut globe = vec![Element::icon(icons::of(icons::GLOBE))
+        .foreground(look::muted())
+        .size(Some(15.0), Some(15.0))
+        .centered()];
+    if searching {
+        globe.push(
+            Element::progress_ring(Some(0.08), palette.selected, palette.text)
+                .size(Some(28.0), Some(28.0)),
+        );
+    }
+    let globe = Element::stack(globe)
+        .background(look::composer_hover())
+        .radius(14.0)
+        .size(Some(28.0), Some(28.0));
+    let mut parts = vec![globe, label];
+    if !sources.is_empty() {
+        let tiles = sources.iter().map(|s| letter_tile(&s.url, 20.0)).collect();
+        parts.push(
+            AvatarGroup::new(tiles, look::palette())
+                .limit(4)
+                .size(20.0)
+                .ring(look::command_box())
+                .render()
+                .centered_y(),
+        );
+    }
+    let caret = if open {
+        icons::CARET_UP
+    } else {
+        icons::CARET_DOWN
+    };
+    parts.push(
+        Element::icon(icons::of(caret))
+            .foreground(look::muted())
+            .size(Some(14.0), Some(14.0))
+            .centered_y(),
+    );
+    // The pill is 40 tall with 6 padding and 14 on the right: 8 more past the chevron.
+    let content =
+        Element::row(vec![Element::row(parts).gap(10.0).centered_y(), hgap(8.0)]).padding(6.0);
+    let hover = ComponentPalette {
+        hover: look::tool_hover(),
+        selected: look::tool_hover(),
+        ..look::palette()
+    };
+    let pill = hover
+        .interactive_surface(
+            fold(transcript, key.clone(), content)
+                .background(look::command_box())
+                .size(None, Some(40.0)),
+        )
+        .radius(20.0);
+    // The pill hugs what it says, as the reference's does.
+    let mut block = vec![Element::row(vec![pill, Element::spacer().flex(1.0)])];
+    if open && (searching || count > 0) {
+        // Four columns, two in a narrow transcript; the block is at most 560 wide.
+        let width = column.min(560.0);
+        let columns = if width < 400.0 { 2 } else { 4 };
+        let cells = if searching {
+            (0..4)
+                .map(|at| skeleton_cell(step.call, at, palette))
+                .collect()
+        } else {
+            let expanded = ui.expanded.contains(&more);
+            let shown = if count <= 4 || expanded { count } else { 3 };
+            let mut cells: Vec<Element> = sources
+                .iter()
+                .enumerate()
+                .take(shown)
+                .map(|(at, source)| source_card(step.call, at, source, palette))
+                .collect();
+            if count > 4 {
+                cells.push(if expanded {
+                    show_less(&more)
+                } else {
+                    more_card(&more, &sources[3..], palette)
+                });
+            }
+            cells
+        };
+        block.push(
+            Element::column(vec![
+                Element::spacer().size(None, Some(10.0)),
+                grid(cells, columns),
+            ])
+            .size(Some(width), None),
+        );
+    }
+    Element::column(block)
+}
+
+/// Cards in rows of `columns`, equal in width; a short last row keeps the same widths.
+fn grid(cells: Vec<Element>, columns: usize) -> Element {
+    let mut rows = vec![];
+    let mut row = vec![];
+    for cell in cells {
+        row.push(cell);
+        if row.len() == columns {
+            rows.push(Element::row(std::mem::take(&mut row)).gap(8.0));
+        }
+    }
+    if !row.is_empty() {
+        while row.len() < columns {
+            row.push(Element::spacer().flex(1.0));
+        }
+        rows.push(Element::row(row).gap(8.0));
+    }
+    Element::column(rows).gap(8.0)
+}
+
+/// A source's card: its title in two lines, then its site's letter, its name and its number.
+/// A click opens the page as a link of the conversation does (`LINK`), so the right-click
+/// menu of a link works on it too.
+fn source_card(call: &str, at: usize, source: &WebSource, palette: ComponentPalette) -> Element {
+    let ink = look::palette().text;
+    let faint = look::muted();
+    let title = if source.title.trim().is_empty() {
+        host(&source.url).unwrap_or_default()
+    } else {
+        source.title.clone()
+    };
+    // Two lines at most, cut short: a long title never runs into the row under it.
+    let content = Element::column(vec![
+        Element::formatted_text(vec![limn::TextSpan::new(
+            title.clone(),
+            Color::rgba(ink.r, ink.g, ink.b, 217),
+            12.5,
+            FontFamily::SansMedium,
+        )])
+        .line_height(17.0)
+        .max_lines(2)
+        .size(None, Some(34.0))
+        .clip_children(),
+        Element::spacer().flex(1.0),
+        Element::row(vec![
+            letter_tile(&source.url, 16.0).render(),
+            Element::truncated_text(site_name(&source.url))
+                .font_family(FontFamily::Sans)
+                .font_size(11.5)
+                .foreground(faint)
+                .flex(1.0)
+                .centered_y(),
+            Element::text((at + 1).to_string())
+                .font_family(FontFamily::SansMedium)
+                .font_size(11.0)
+                .foreground(Color::rgba(faint.r, faint.g, faint.b, 178))
+                .centered_y(),
+        ])
+        .gap(6.0),
+    ])
+    .size(None, Some(CARD_HEIGHT - 20.0));
+    let card = Element::clickable(format!("{LINK}{call}:{at}:{}", source.url), content)
+        .accessibility_label(title)
+        .padding(10.0)
+        .background(look::command_box())
+        .radius(14.0)
+        .size(None, Some(CARD_HEIGHT))
+        .flex(1.0);
+    ComponentPalette {
+        hover: look::tool_hover(),
+        selected: look::tool_hover(),
+        ..palette
+    }
+    .interactive_surface(card)
+    .radius(14.0)
+}
+
+/// "N more sources": the sites of the cards it hides, and a click shows them all.
+fn more_card(key: &str, hidden: &[WebSource], palette: ComponentPalette) -> Element {
+    let tiles = hidden.iter().map(|s| letter_tile(&s.url, 20.0)).collect();
+    let count = hidden.len();
+    let content = Element::column(vec![
+        AvatarGroup::new(tiles, palette)
+            .limit(4)
+            .size(20.0)
+            .ring(look::command_box())
+            .render(),
+        Element::spacer().flex(1.0),
+        Element::text(format!(
+            "{count} more {}",
+            if count == 1 { "source" } else { "sources" }
+        ))
+        .font_family(FontFamily::SansMedium)
+        .font_size(SMALL)
+        .foreground(look::palette().text),
+    ])
+    .padding(10.0)
+    .size(None, Some(CARD_HEIGHT));
+    let card = Element::clickable(key, content)
+        .accessibility_label(format!("{count} more sources"))
+        .background(look::command_box())
+        .radius(14.0)
+        .size(None, Some(CARD_HEIGHT))
+        .flex(1.0);
+    ComponentPalette {
+        hover: look::tool_hover(),
+        selected: look::tool_hover(),
+        ..palette
+    }
+    .interactive_surface(card)
+    .radius(14.0)
+}
+
+/// The last cell of the expanded grid: an outlined "Show less" that folds the cards back.
+fn show_less(key: &str) -> Element {
+    let content = Element::row(vec![
+        Element::icon(icons::of(icons::CARET_UP))
+            .foreground(look::muted())
+            .size(Some(12.0), Some(12.0))
+            .centered_y(),
+        muted("Show less")
+            .font_family(FontFamily::SansMedium)
+            .font_size(SMALL)
+            .centered_y(),
+    ])
+    .gap(6.0)
+    .centered();
+    Element::clickable(key, content)
+        .accessibility_label("Show less")
+        .border(look::divider(), 1.0)
+        .radius(14.0)
+        .size(None, Some(CARD_HEIGHT))
+        .flex(1.0)
+}
+
+/// A card while its search runs: two bars, and a dot with a short bar at the foot.
+fn skeleton_cell(call: &str, at: usize, palette: ComponentPalette) -> Element {
+    let id = |part: &str| format!("{call}:web-skeleton:{at}:{part}");
+    let bar = |part: &str, share: f32| {
+        Element::row(vec![
+            Skeleton::new(id(part), palette)
+                .height(10.0)
+                .render()
+                .flex(share),
+            Element::spacer().flex(1.0 - share),
+        ])
+    };
+    let foot = Element::row(vec![
+        Skeleton::circle(id("dot"), palette, 14.0).render(),
+        Skeleton::new(id("tag"), palette)
+            .width(48.0)
+            .height(8.0)
+            .render(),
+    ])
+    .gap(6.0);
+    Element::column(vec![
+        bar("top", 0.88),
+        bar("low", 0.6),
+        Element::spacer().flex(1.0),
+        foot,
+    ])
+    .gap(6.0)
+    .padding(10.0)
+    .background(look::command_box())
+    .radius(14.0)
+    .size(None, Some(CARD_HEIGHT))
+    .flex(1.0)
+}
+
+/// A letter tile for a source's site: its initial on the site's own hue, white (limn's Avatar).
+fn letter_tile(url: &str, size: f32) -> Avatar {
+    let name = site_name(url);
+    let palette = ComponentPalette {
+        selected: hsl(site_hue(&name), 50.0, 48.0),
+        text: Color::rgb(255, 255, 255),
+        ..look::palette()
+    };
+    Avatar::new(name, palette).size(size)
+}
+
+/// The name of a source's site: the second-to-last label of its host, without `www.`
+/// (`developer.mozilla.org` is `mozilla`), or the whole host when it has one label.
+pub fn site_name(url: &str) -> String {
+    let Some(host) = host(url) else {
+        return String::new();
+    };
+    let labels: Vec<&str> = host.split('.').collect();
+    match labels.len() {
+        1 => host.clone(),
+        count => labels[count - 2].to_owned(),
+    }
+}
+
+/// The hue of a site's letter tile: FNV-1a of its name, in degrees. Stable across runs.
+pub fn site_hue(name: &str) -> u32 {
+    let hash = name.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+    });
+    hash % 360
+}
+
+/// `hsl(hue, saturation, lightness)` as a color: the hue in degrees, the others in percent.
+fn hsl(hue: u32, saturation: f32, lightness: f32) -> Color {
+    let (s, l) = (saturation / 100.0, lightness / 100.0);
+    let chroma = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = chroma * (1.0 - ((hue as f32 / 60.0) % 2.0 - 1.0).abs());
+    let m = l - chroma / 2.0;
+    let (r, g, b) = match hue / 60 {
+        0 => (chroma, x, 0.0),
+        1 => (x, chroma, 0.0),
+        2 => (0.0, chroma, x),
+        3 => (0.0, x, chroma),
+        4 => (x, 0.0, chroma),
+        _ => (chroma, 0.0, x),
+    };
+    let byte = |value: f32| ((value + m) * 255.0).round() as u8;
+    Color::rgb(byte(r), byte(g), byte(b))
 }
 
 /// One entry of the task list.

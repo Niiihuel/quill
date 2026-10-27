@@ -313,6 +313,20 @@ pub struct CommandRun {
     pub interrupted: bool,
 }
 
+/// One source a web search returned.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WebSource {
+    pub title: String,
+    pub url: String,
+}
+
+/// A web search a tool ran: the query and the sources it returned, in the agent's order.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WebSearchRun {
+    pub query: String,
+    pub sources: Vec<WebSource>,
+}
+
 /// One permission the agent offers to remember, kept as the agent wrote it.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Suggestion {
@@ -471,6 +485,9 @@ pub enum AgentEvent {
         is_error: bool,
         files: Vec<FileChange>,
         command: Option<CommandRun>,
+        /// The sources of a web search (`None` for other tools).
+        #[serde(default)]
+        web: Option<WebSearchRun>,
     },
     /// A tool ended. `prompt` is the agent's own id of the request that caused it, the
     /// same for every tool of that request; the engine ties it to quill's request id.

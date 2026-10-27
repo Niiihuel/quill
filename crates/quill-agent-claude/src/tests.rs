@@ -2,7 +2,7 @@
 //! plugins and skills; docs/engine.md §11.4).
 
 use super::*;
-use quill_agent::PromptImage;
+use quill_agent::{PromptImage, WebSearchRun};
 use std::path::Path;
 
 /// Feed a fixture through a fresh adapter: lines quill sent become the same commands
@@ -1029,5 +1029,38 @@ fn a_prompt_without_images_keeps_one_text_block() {
     assert_eq!(
         msg["message"]["content"],
         json!([{ "type": "text", "text": "look" }])
+    );
+}
+
+#[test]
+fn web_search_results_keep_their_query_and_sources() {
+    let (_, events, _) = replay_at("2.1.311", "websearch");
+    assert!(unknown(&events).is_empty());
+    let runs: Vec<&WebSearchRun> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolResult { web: Some(run), .. } => Some(run),
+            _ => None,
+        })
+        .collect();
+    // Two searches in one turn, each with its own query and the ten links the Links list gave.
+    let [first, second] = runs.as_slice() else {
+        panic!("{events:?}")
+    };
+    assert_eq!(
+        first.query,
+        "latest stable Rust version release announcement"
+    );
+    assert_eq!(first.sources.len(), 10);
+    assert_eq!(first.sources[0].url, "https://www.linux.org/threads/phoronix-rust-1-94-released-with-stable-support-for-avx-512-fp16-intrinsics-array-windows.63426/latest");
+    assert_eq!(
+        second.query,
+        "Rust stable release 2026 latest version announced blog.rust-lang.org"
+    );
+    assert_eq!(second.sources.len(), 10);
+    assert_eq!(second.sources[0].title, "Announcing Rust 1.97.0");
+    assert_eq!(
+        second.sources[0].url,
+        "https://blog.rust-lang.org/2026/07/09/Rust-1.97.0/"
     );
 }

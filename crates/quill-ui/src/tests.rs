@@ -706,6 +706,7 @@ fn steps_are_named_in_desktops_words() {
         removed: 1,
         files: vec![],
         stopped: false,
+        web: None,
     };
     let read = serde_json::json!({ "file_path": "/work/saludo.py" });
     let bash =
@@ -801,6 +802,7 @@ fn result(store: &mut Store, call: &str, output: &str) {
             is_error: false,
             files: vec![],
             command: None,
+            web: None,
         },
     );
 }
@@ -929,6 +931,7 @@ fn a_finished_group_counts_agents_and_other_tools() {
         removed: 0,
         files: vec![],
         stopped: false,
+        web: None,
     };
     let read = serde_json::json!({ "file_path": "/work/saludo.py" });
     let agent_input = serde_json::json!({ "description": "List files" });
@@ -2537,6 +2540,7 @@ fn outputs_open_in_a_document_pane_that_saves_and_follows_the_agent() {
             is_error: false,
             files: vec![],
             command: None,
+            web: None,
         },
     };
     assert!(ui.applied(&wrote).contains(&Intent::ReadFile {
@@ -2603,6 +2607,7 @@ fn a_passed_on_message_says_so_on_both_sides_and_new_work_is_marked() {
             is_error: false,
             files: vec![],
             command: None,
+            web: None,
         },
     );
     let session = store.session(1).unwrap();
@@ -3030,6 +3035,7 @@ fn browser_steps_read_in_desktops_words_and_fold_into_what_they_did() {
         removed: 0,
         files: vec![],
         stopped: false,
+        web: None,
     };
     let inputs = [
         serde_json::json!({ "url": "https://www.example.com/a" }),
@@ -4487,4 +4493,143 @@ fn a_composer_menu_closes_on_its_dismiss() {
         click(&store, &mut ui, &format!("{menu}:dismiss"));
         assert_eq!(ui.open_menu, None, "{menu}");
     }
+}
+
+fn source(site: &str, title: &str) -> quill_model::WebSource {
+    quill_model::WebSource {
+        title: title.into(),
+        url: format!("https://{site}/{title}"),
+    }
+}
+
+#[test]
+fn a_web_search_shows_its_pill_then_its_cards_and_the_more_card_expands_them() {
+    let (mut store, mut ui) = store_with_session();
+    agent(
+        &mut store,
+        AgentEvent::ToolUse {
+            call: "w1".into(),
+            name: "WebSearch".into(),
+            input: serde_json::json!({ "query": "rust release" }),
+            parent: None,
+        },
+    );
+    let sites = [
+        "blog.rust-lang.org",
+        "releases.rs",
+        "en.wikipedia.org",
+        "a.org",
+        "b.org",
+        "c.org",
+    ];
+    let sources = sites.iter().map(|site| source(site, "Page")).collect();
+    agent(
+        &mut store,
+        AgentEvent::ToolResult {
+            call: "w1".into(),
+            output: String::new(),
+            is_error: false,
+            files: vec![],
+            command: None,
+            web: Some(quill_model::WebSearchRun {
+                query: "rust release".into(),
+                sources,
+            }),
+        },
+    );
+    let window = limn::Size::new(1408.0, 844.0);
+    let layout = |ui: &Ui| UiTree::new(view(&store, ui, window)).layout(window);
+    let drawn = |frame: &limn::Frame, words: &str| {
+        frame.commands.iter().any(|command| {
+            matches!(command, limn::DrawCommand::Text { text, .. } if text.contains(words))
+        })
+    };
+    let cards = |frame: &limn::Frame| {
+        frame
+            .regions
+            .iter()
+            .filter(|r| r.id.starts_with("link:w1:"))
+            .count()
+    };
+    let frame = layout(&ui);
+    assert!(drawn(&frame, "Searched 6 sites"));
+    assert_eq!(cards(&frame), 3);
+    assert!(drawn(&frame, "3 more sources"));
+    // The more card shows every source and a "Show less" that folds them again.
+    click(&store, &mut ui, "web:w1:more");
+    let frame = layout(&ui);
+    assert_eq!(cards(&frame), 6);
+    assert!(drawn(&frame, "Show less"));
+    // A card is a link: its click opens its page in the session's browser.
+    let id = format!("link:w1:0:https://{}/Page", sites[0]);
+    assert_eq!(
+        view::link_url(&id),
+        Some(format!("https://{}/Page", sites[0]).as_str())
+    );
+    assert!(frame.regions.iter().any(|r| r.id == id));
+    let opened = click(&store, &mut ui, &id);
+    assert!(matches!(
+        &opened[..],
+        [Intent::Browser { op: quill_model::BrowserOp::Open { url: Some(url) }, .. }]
+            if url == &format!("https://{}/Page", sites[0])
+    ));
+    // The pill folds the panel, and a second click opens it again.
+    click(&store, &mut ui, "web:w1");
+    assert_eq!(cards(&layout(&ui)), 0);
+    click(&store, &mut ui, "web:w1");
+    assert_eq!(cards(&layout(&ui)), 6);
+}
+
+#[test]
+fn a_running_web_search_says_it_is_searching_and_an_errored_one_stays_a_step() {
+    let (mut store, ui) = store_with_session();
+    agent(
+        &mut store,
+        AgentEvent::ToolUse {
+            call: "w1".into(),
+            name: "WebSearch".into(),
+            input: serde_json::json!({ "query": "rust release" }),
+            parent: None,
+        },
+    );
+    let window = limn::Size::new(1408.0, 844.0);
+    let frame = UiTree::new(view(&store, &ui, window)).layout(window);
+    let drawn = |frame: &limn::Frame, words: &str| {
+        frame.commands.iter().any(|command| {
+            matches!(command, limn::DrawCommand::Text { text, .. } if text.contains(words))
+        })
+    };
+    assert!(drawn(&frame, "Searching \u{201c}rust release\u{201d}"));
+    assert!(!drawn(&frame, "Searched"));
+    agent(
+        &mut store,
+        AgentEvent::ToolResult {
+            call: "w1".into(),
+            output: "boom".into(),
+            is_error: true,
+            files: vec![],
+            command: None,
+            web: None,
+        },
+    );
+    let frame = UiTree::new(view(&store, &ui, window)).layout(window);
+    // No pill: the failed search is a step in its group, as any failed tool is.
+    assert!(!frame.regions.iter().any(|r| r.id.starts_with("web:w1")));
+}
+
+#[test]
+fn a_source_names_its_site_and_its_letter_hue_is_stable() {
+    assert_eq!(
+        view::site_name("https://developer.mozilla.org/en-US/"),
+        "mozilla"
+    );
+    assert_eq!(
+        view::site_name("https://blog.rust-lang.org/releases"),
+        "rust-lang"
+    );
+    assert_eq!(view::site_name("https://www.x.com/a"), "x");
+    // FNV-1a of the name, in 32 bits, modulo 360.
+    assert_eq!(view::site_hue("mozilla"), 199);
+    assert_eq!(view::site_hue("rust-lang"), 178);
+    assert_eq!(view::site_hue("x"), 135);
 }
