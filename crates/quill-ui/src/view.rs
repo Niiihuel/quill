@@ -18,7 +18,9 @@ use quill_components::pieces::{
 use quill_components::settings::{
     self, choices, setting, setting_button, setting_switch, Setting, SettingsPage,
 };
-use quill_model::{ChangeKind, FileEffect, NotifyLevel, SessionStatus, TranscriptView, WebSource};
+use quill_model::{
+    ChangeKind, FileEffect, NotifyLevel, QueuedMessage, SessionStatus, TranscriptView, WebSource,
+};
 use serde_json::Value;
 use std::path::Path;
 use std::time::Instant;
@@ -119,6 +121,10 @@ pub const PR_CREATE: &str = "pr:create";
 pub const VIEW_CHANGES: &str = "branch-bar:changes";
 pub const PR_MENU: &str = "pr-menu";
 pub const BAR_CLOSE: &str = "branch-bar:close";
+/// The queue bar's expand and collapse, its "Clear all", and the prefix of each row's "⋮" menu.
+pub const QUEUE_TOGGLE: &str = "queue:toggle";
+pub const QUEUE_CLEAR: &str = "queue:clear";
+pub const QUEUE_MENU: &str = "queue:menu:";
 pub const FILTER_RESET: &str = "filter:reset";
 /// The reply field of a side chat's pane.
 pub const SIDE_FIELD: &str = "side:field";
@@ -5701,7 +5707,9 @@ fn composer(
     if plan_waiting {
         return composer_footer(store, session, ui, palette).size(Some(column), None);
     }
-    let placeholder = if session.is_some() {
+    let placeholder = if running {
+        "Enter to send, Ctrl+Enter to queue for later"
+    } else if session.is_some() {
         "Type / for commands"
     } else {
         "Describe a task or ask a question"
@@ -5727,10 +5735,16 @@ fn composer(
     let box_ = crate::slash::list(store, ui, box_, column);
     let box_ = crate::mention::list(store, ui, box_, column);
     if let Some(session) = session {
-        return match branch_bar(session, ui, column, palette) {
-            Some(bar) => Element::column(vec![bar, box_]).gap(8.0),
-            None => box_,
-        };
+        // The queue sits above the branch bar, so the composer's stack reads top to bottom.
+        let mut stack: Vec<Element> = queue_bar(session, ui, column, palette)
+            .into_iter()
+            .chain(branch_bar(session, ui, column, palette))
+            .collect();
+        if stack.is_empty() {
+            return box_;
+        }
+        stack.push(box_);
+        return Element::column(stack).gap(8.0);
     }
     // quill runs sessions on this computer only, so "Local" is a label, not a menu.
     let local = Element::row(vec![
@@ -5815,6 +5829,192 @@ pub fn pr_blocked(session: &Session) -> Option<&'static str> {
         Some("Claude is working \u{2014} wait for the turn to finish")
     } else {
         None
+    }
+}
+
+/// The queue bar above the composer: the messages sent while the turn runs, waiting for it to
+/// end. One shows its row; two or more fold into a stack that expands to a list, as Desktop's
+/// queued-message bar does [queue-spec §4].
+fn queue_bar(
+    session: &Session,
+    ui: &Ui,
+    column: f32,
+    palette: ComponentPalette,
+) -> Option<Element> {
+    let first = session.queue.first()?;
+    let fill = look::palette().hover;
+    let strip = |row: Vec<Element>| {
+        Element::row(row)
+            .gap(6.0)
+            .padding(8.0)
+            .size(Some(column), None)
+    };
+    let bar = if session.queue.len() == 1 {
+        strip(vec![
+            hgap(4.0),
+            text("1 message queued").centered_y(),
+            queue_text(&queue_preview(first)),
+            queue_tool(&first.id, "send", icons::RETURN, "Send now", palette),
+            queue_tool(
+                &first.id,
+                "take",
+                icons::PENCIL,
+                "Edit in composer",
+                palette,
+            ),
+            queue_tool(
+                &first.id,
+                "remove",
+                icons::CLOSE,
+                "Remove from queue",
+                palette,
+            ),
+            hgap(4.0),
+        ])
+        .background(fill)
+        .radius(10.0)
+    } else if ui.queue_expanded.contains(&session.id) {
+        let mut list = vec![];
+        for entry in &session.queue {
+            if !list.is_empty() {
+                list.push(hline(column, look::divider()));
+            }
+            list.push(queue_row(entry, ui, column, palette));
+        }
+        // The list scrolls past 352 px, Desktop's cap, so a long queue keeps the composer on screen.
+        let header = strip(vec![
+            hgap(4.0),
+            text(format!("{} messages queued", session.queue.len()))
+                .flex(1.0)
+                .centered_y(),
+            icon_tool(
+                QUEUE_TOGGLE,
+                icons::of(icons::CARET_UP),
+                "Collapse queued messages",
+                28.0,
+                palette,
+            ),
+            hgap(4.0),
+        ]);
+        let clear = Element::row(vec![
+            Element::spacer().flex(1.0),
+            Element::clickable(
+                QUEUE_CLEAR,
+                text("Clear all")
+                    .font_size(SMALL)
+                    .foreground(look::danger_ink()),
+            ),
+        ])
+        .padding(8.0)
+        .size(Some(column), None);
+        Element::column(vec![
+            header,
+            hline(column, look::divider()),
+            Element::scroll("queue:list", Element::column(list)).max_height(352.0),
+            hline(column, look::divider()),
+            clear,
+        ])
+        .size(Some(column), None)
+        .background(fill)
+        .radius(10.0)
+        .clip_children()
+    } else {
+        let head = strip(vec![
+            hgap(4.0),
+            text(format!("{} messages queued", session.queue.len())).centered_y(),
+            queue_text(&format!("Next: {}", queue_preview(first))),
+            Element::icon(icons::of(icons::CARET_DOWN))
+                .foreground(look::palette().text)
+                .size(Some(16.0), Some(16.0))
+                .centered_y(),
+            hgap(4.0),
+        ])
+        .background(fill)
+        .radius(10.0)
+        .hover_background(look::palette().selected);
+        Element::clickable(QUEUE_TOGGLE, head).accessibility_label("Show the queued messages")
+    };
+    Some(bar)
+}
+
+/// One message of an expanded queue: its text in two lines at most, and its "⋮" menu.
+fn queue_row(entry: &QueuedMessage, ui: &Ui, column: f32, palette: ComponentPalette) -> Element {
+    let id = format!("{QUEUE_MENU}{}", entry.id);
+    let open = ui.queue_menu.as_deref() == Some(entry.id.as_str());
+    let anchor = icon_tool(
+        &id,
+        icons::of(icons::DOTS_VERTICAL),
+        "Queued message actions",
+        28.0,
+        palette,
+    );
+    let items = vec![
+        limn::DropdownMenuItem::new(format!("queue:take:{}", entry.id), "Edit in composer").into(),
+        limn::DropdownMenuItem::new(format!("queue:send:{}", entry.id), "Send now").into(),
+        limn::DropdownMenuEntry::Separator,
+        limn::DropdownMenuItem::new(format!("queue:remove:{}", entry.id), "Remove from queue")
+            .destructive(look::danger_ink())
+            .into(),
+    ];
+    let actions = menu(
+        anchor,
+        items,
+        open,
+        &id,
+        200.0,
+        limn::PopoverPlacement::TopEnd,
+    );
+    Element::row(vec![
+        hgap(8.0),
+        text(queue_preview(entry))
+            .max_lines(2)
+            .flex(1.0)
+            .centered_y(),
+        actions,
+        hgap(4.0),
+    ])
+    .gap(6.0)
+    .padding(4.0)
+    .size(Some(column), None)
+}
+
+/// A queue bar's icon button for one message: its `queue:<action>:<id>` id, as `queue_row_intent`
+/// reads it.
+fn queue_tool(
+    id: &str,
+    action: &str,
+    icon: &'static str,
+    label: &str,
+    palette: ComponentPalette,
+) -> Element {
+    icon_tool(
+        &format!("queue:{action}:{id}"),
+        icons::of(icon),
+        label,
+        28.0,
+        palette,
+    )
+}
+
+/// The muted, one-line text of a queue bar, cut short with an ellipsis.
+fn queue_text(value: &str) -> Element {
+    Element::truncated_text(value.to_owned())
+        .font_family(FontFamily::Sans)
+        .font_size(BODY)
+        .foreground(look::muted())
+        .flex(1.0)
+        .centered_y()
+}
+
+/// What a queued message shows of itself: its words in one run, then "[Image]" for each
+/// image, or "…" when there is nothing to show.
+pub fn queue_preview(entry: &QueuedMessage) -> String {
+    let mut words: Vec<&str> = entry.text.split_whitespace().collect();
+    words.extend(entry.images.iter().map(|_| "[Image]"));
+    if words.is_empty() {
+        "…".to_owned()
+    } else {
+        words.join(" ")
     }
 }
 

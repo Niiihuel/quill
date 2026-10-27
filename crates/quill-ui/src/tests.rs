@@ -4287,6 +4287,128 @@ fn queued_messages_are_kept_per_session_and_a_taken_one_goes_back_to_the_compose
     assert_eq!(ui.images, [PathBuf::from("/work/a.png")]);
 }
 
+fn queued(store: &mut Store, texts: &[&str]) {
+    let entries = texts
+        .iter()
+        .enumerate()
+        .map(|(i, text)| QueuedMessage {
+            id: format!("q{}", i + 1),
+            text: (*text).into(),
+            images: vec![],
+            mentions: vec![],
+            held: false,
+        })
+        .collect();
+    store.apply(Event::QueueChanged {
+        session: 1,
+        entries,
+    });
+}
+
+#[test]
+fn the_queue_bar_buttons_and_row_menus_send_their_intents() {
+    let (mut store, mut ui) = store_with_session();
+    queued(&mut store, &["first", "second"]);
+    assert_eq!(
+        click(&store, &mut ui, "queue:send:q1"),
+        [Intent::QueueSendNow {
+            session: 1,
+            id: "q1".into()
+        }]
+    );
+    assert_eq!(
+        click(&store, &mut ui, "queue:take:q2"),
+        [Intent::QueueTake {
+            session: 1,
+            id: "q2".into()
+        }]
+    );
+    assert_eq!(
+        click(&store, &mut ui, "queue:remove:q1"),
+        [Intent::QueueRemove {
+            session: 1,
+            id: "q1".into()
+        }]
+    );
+    assert_eq!(
+        click(&store, &mut ui, "queue:clear"),
+        [Intent::QueueClear { session: 1 }]
+    );
+    // A row's menu opens on its "⋮", its item sends and closes the menu, and the menu's
+    // dismiss closes it without an intent.
+    click(&store, &mut ui, "queue:menu:q2");
+    assert_eq!(ui.queue_menu.as_deref(), Some("q2"));
+    assert_eq!(
+        click(&store, &mut ui, "queue:send:q2"),
+        [Intent::QueueSendNow {
+            session: 1,
+            id: "q2".into()
+        }]
+    );
+    assert_eq!(ui.queue_menu, None);
+    click(&store, &mut ui, "queue:menu:q2");
+    assert_eq!(click(&store, &mut ui, "queue:menu:q2:dismiss"), []);
+    assert_eq!(ui.queue_menu, None);
+}
+
+#[test]
+fn an_empty_composer_takes_the_last_queued_message_back_with_arrow_up() {
+    let (mut store, mut ui) = store_with_session();
+    queued(&mut store, &["first", "second"]);
+    let up = key(limn::Key::ArrowUp);
+    assert_eq!(
+        queue_key(&store, &ui, Some(view::COMPOSER), &up),
+        Some(vec![Intent::QueueTake {
+            session: 1,
+            id: "q2".into()
+        }])
+    );
+    // Text in the composer, another control focused, or no queue: the arrow keeps its job.
+    ui.prompt = "draft".into();
+    assert_eq!(queue_key(&store, &ui, Some(view::COMPOSER), &up), None);
+    ui.prompt.clear();
+    assert_eq!(queue_key(&store, &ui, Some("terminal"), &up), None);
+    queued(&mut store, &[]);
+    assert_eq!(queue_key(&store, &ui, Some(view::COMPOSER), &up), None);
+}
+
+#[test]
+fn a_queue_of_two_or_more_folds_until_it_is_expanded() {
+    let (mut store, mut ui) = store_with_session();
+    queued(&mut store, &["first  line\n  and more", "second"]);
+    let window = limn::Size::new(1408.0, 844.0);
+    let drawn = |ui: &Ui, words: &str| {
+        let frame = UiTree::new(view(&store, ui, window)).layout(window);
+        frame.commands.iter().any(|command| {
+            matches!(command, limn::DrawCommand::Text { text, .. } if text.contains(words))
+        })
+    };
+    // Folded: the count and the next message's preview; the rows are not drawn.
+    assert!(drawn(&ui, "2 messages queued"));
+    assert!(drawn(&ui, "Next: first line and more"));
+    assert!(!drawn(&ui, "Clear all"));
+    click(&store, &mut ui, view::QUEUE_TOGGLE);
+    assert!(drawn(&ui, "Clear all"));
+    assert!(drawn(&ui, "second"));
+    click(&store, &mut ui, view::QUEUE_TOGGLE);
+    assert!(!drawn(&ui, "Clear all"));
+}
+
+#[test]
+fn a_queued_message_previews_its_words_then_each_image() {
+    let mut entry = QueuedMessage {
+        id: "q1".into(),
+        text: " fix\n\tthe   bug ".into(),
+        images: vec!["/work/a.png".into(), "/work/b.png".into()],
+        mentions: vec![],
+        held: false,
+    };
+    assert_eq!(view::queue_preview(&entry), "fix the bug [Image] [Image]");
+    entry.text.clear();
+    entry.images.clear();
+    assert_eq!(view::queue_preview(&entry), "…");
+}
+
 #[test]
 fn a_message_written_before_its_session_keeps_its_images() {
     let store = Store::default();

@@ -1117,6 +1117,10 @@ pub struct Ui {
     pub mcp: Option<McpDialog>,
     /// Sessions whose branch bar the person closed.
     pub bar_closed: Vec<SessionId>,
+    /// Sessions whose queue bar is expanded to its list; a queue starts folded.
+    pub queue_expanded: Vec<SessionId>,
+    /// The queued message whose "⋮" menu is open.
+    pub queue_menu: Option<String>,
     /// How the sidebar groups and orders the sessions.
     pub group_by: GroupBy,
     pub sort_by: SortBy,
@@ -1334,6 +1338,28 @@ fn session_clicked(store: &Store, ui: &mut Ui, id: &str) -> Option<Vec<Intent>> 
         });
     } else if id == view::BAR_CLOSE {
         ui.bar_closed.extend(ui.selected);
+    } else if id == view::QUEUE_TOGGLE {
+        if let Some(session) = ui.selected {
+            if ui.queue_expanded.contains(&session) {
+                ui.queue_expanded.retain(|s| *s != session);
+            } else {
+                ui.queue_expanded.push(session);
+            }
+        }
+    } else if id == view::QUEUE_CLEAR {
+        return Some(
+            ui.selected
+                .map(|session| vec![Intent::QueueClear { session }])
+                .unwrap_or_default(),
+        );
+    } else if let Some(rest) = id.strip_prefix(view::QUEUE_MENU) {
+        // A row's "⋮" opens its menu, and the menu's own dismiss closes it.
+        ui.queue_menu = match rest.strip_suffix(":dismiss") {
+            Some(_) => None,
+            None => (ui.queue_menu.as_deref() != Some(rest)).then(|| rest.to_owned()),
+        };
+    } else if let Some(intent) = queue_row_intent(ui, id) {
+        return Some(vec![intent]);
     } else if id == view::DELETE_CANCEL {
         ui.deleting = None;
     } else if id == view::DELETE_CONFIRM {
@@ -1801,6 +1827,8 @@ impl Ui {
             search: None,
             mcp: None,
             bar_closed: vec![],
+            queue_expanded: vec![],
+            queue_menu: None,
             group_by: GroupBy::default(),
             sort_by: SortBy::default(),
             ascending: false,
@@ -2361,6 +2389,48 @@ pub fn image_paths(store: &Store, ui: &Ui) -> Vec<PathBuf> {
         _ => vec![],
     });
     ui.images.iter().cloned().chain(shown).collect()
+}
+
+/// A queue row's button or menu item, by its id (`queue:send:<id>` and so on), for the
+/// selected session. It closes the row's menu.
+fn queue_row_intent(ui: &mut Ui, id: &str) -> Option<Intent> {
+    let (action, entry) = id.strip_prefix("queue:")?.split_once(':')?;
+    let session = ui.selected?;
+    let id = entry.to_owned();
+    let intent = match action {
+        "send" => Intent::QueueSendNow { session, id },
+        "take" => Intent::QueueTake { session, id },
+        "remove" => Intent::QueueRemove { session, id },
+        _ => return None,
+    };
+    ui.queue_menu = None;
+    Some(intent)
+}
+
+/// ArrowUp in an empty composer takes the session's last queued message back for editing, as
+/// Desktop's `handleDequeueLastQueued` does (3.6556.2, chunk `c227f4d5e`).
+pub fn queue_key(
+    store: &Store,
+    ui: &Ui,
+    focused: Option<&str>,
+    event: &limn::UiEvent,
+) -> Option<Vec<Intent>> {
+    let limn::UiEvent::Key {
+        key: limn::Key::ArrowUp,
+        ..
+    } = event
+    else {
+        return None;
+    };
+    if focused != Some(view::COMPOSER) || !ui.prompt.is_empty() || !ui.images.is_empty() {
+        return None;
+    }
+    let session = store.session(ui.selected?)?;
+    let last = session.queue.last()?;
+    Some(vec![Intent::QueueTake {
+        session: session.id,
+        id: last.id.clone(),
+    }])
 }
 
 /// Ctrl+Enter in the composer queues its message, a plain Enter steers it into the running

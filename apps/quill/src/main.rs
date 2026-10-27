@@ -1038,6 +1038,13 @@ impl eframe::App for App {
             if quill_ui::mention_key(&self.store, &mut self.ui, focused.as_deref(), &event) {
                 continue;
             }
+            // An empty composer's ArrowUp takes the last queued message back for editing.
+            if let Some(intents) =
+                quill_ui::queue_key(&self.store, &self.ui, focused.as_deref(), &event)
+            {
+                self.dispatch(intents);
+                continue;
+            }
             // On a row of the Files pane, the arrows and nvim-tree's letters walk and change it.
             if let Some(intents) = quill_ui::files_key(&mut self.ui, focused.as_deref(), &event) {
                 self.dispatch(intents);
