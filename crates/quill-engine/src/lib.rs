@@ -16,6 +16,7 @@ mod images;
 mod logos;
 mod registry;
 mod servers;
+mod update;
 
 pub use quill_browser::{native, Frame, Frames, Native, Pixels, Present};
 use std::sync::{Arc, Mutex};
@@ -84,6 +85,8 @@ pub struct Config {
     pub logos: Option<PathBuf>,
     /// The built-in browser's Chromium profile; `None` puts one in the temporary folder.
     pub browser: Option<PathBuf>,
+    /// Whether quill looks for its own updates (update.rs): the app does, the tests do not.
+    pub updates: bool,
     /// Where the browser leaves its pages' frames for the window to present.
     pub frames: quill_browser::Frames,
     /// Chromium inside the window, when the host started it (`Native::start`).
@@ -109,6 +112,7 @@ impl Config {
             settings: Some(config.join("quill/settings.json")),
             logos: Some(data.join("quill/logos")),
             browser: Some(data.join("quill/browser")),
+            updates: true,
             ..Self::default()
         }
     }
@@ -242,6 +246,7 @@ async fn route(mut rx: UnboundedReceiver<Intent>, ui: Sink, config: Config) {
     router.settings = tokio::task::spawn_blocking(move || read_settings(path.as_deref()))
         .await
         .unwrap_or_default();
+    router.updates.auto(router.settings.auto_update);
     router.restore();
     (router.ui)(Event::Restored);
     router.announce_settings();
@@ -307,6 +312,8 @@ struct Router {
     settings: quill_model::Settings,
     /// What keeps the computer from idle sleep while an agent works.
     awake: Option<Child>,
+    /// quill's own updates: checked, downloaded and installed off this thread (update.rs).
+    updates: update::Updates,
 }
 
 impl Router {
@@ -399,6 +406,8 @@ impl Router {
                 }),
             )
         };
+        // Settings are read after this, and say whether a found version downloads at once.
+        let updates = update::Updates::start(ui.clone(), config.updates, true);
         Self {
             store,
             ui,
@@ -425,6 +434,7 @@ impl Router {
             reading: None,
             settings: Default::default(),
             awake: None,
+            updates,
         }
     }
 
@@ -848,6 +858,7 @@ impl Router {
             return;
         }
         self.settings = settings;
+        self.updates.auto(self.settings.auto_update);
         self.hold_awake();
         self.announce_settings();
     }
@@ -1242,6 +1253,19 @@ impl Router {
                         });
                     }
                 }
+                return;
+            }
+            // quill's own updates: the checks and the install run off this thread (update.rs).
+            Intent::CheckUpdates => {
+                self.updates.check();
+                return;
+            }
+            Intent::DownloadUpdate => {
+                self.updates.download();
+                return;
+            }
+            Intent::InstallUpdate => {
+                self.updates.install();
                 return;
             }
             Intent::MeasureStorage => {

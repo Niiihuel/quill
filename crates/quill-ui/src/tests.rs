@@ -4935,6 +4935,30 @@ fn the_logos_of_connectors_and_plugins_are_asked_once_and_only_while_shown() {
 }
 
 #[test]
+fn a_ready_update_is_offered_in_the_menu_and_restarts_on_click() {
+    let (store, mut ui) = store_with_session();
+    ui.applied(&Event::Update(quill_model::UpdateState::Ready {
+        version: "0.3.0".into(),
+        mandatory: false,
+    }));
+    click(&store, &mut ui, view::ACCOUNT_MENU);
+    let window = limn::Size::new(1408.0, 844.0);
+    let frame = UiTree::new(view(&store, &ui, window)).layout(window);
+    let drawn = |words: &str| {
+        frame.commands.iter().any(|command| {
+            matches!(command, limn::DrawCommand::Text { text, .. } if text.contains(words))
+        })
+    };
+    assert!(drawn("Restart to update"));
+    assert!(drawn("quill 0.3.0 is ready"));
+    assert_eq!(
+        click(&store, &mut ui, updates::UPDATE_RESTART),
+        vec![Intent::InstallUpdate]
+    );
+    assert!(!ui.account_menu && ui.update_toast.is_none());
+}
+
+#[test]
 fn the_welcome_shows_once_the_settings_are_known_until_get_started() {
     let (store, mut ui) = store_with_session();
     ui.skip_welcome = false;
@@ -4962,4 +4986,31 @@ fn the_welcome_shows_once_the_settings_are_known_until_get_started() {
     test.skip_welcome = true;
     test.agents = ui.agents.clone();
     assert!(!crate::welcoming(&test));
+}
+
+#[test]
+fn a_ready_update_puts_restart_in_the_settings_row() {
+    let (store, mut ui) = store_with_session();
+    ui.applied(&Event::Update(quill_model::UpdateState::Ready {
+        version: "9.9.9".into(),
+        mandatory: false,
+    }));
+    ui.settings_page = Some("system".into());
+    let window = limn::Size::new(1408.0, 844.0);
+    let frame = UiTree::new(view(&store, &ui, window)).layout(window);
+    // The row's two buttons share a line, Restart beside Check, both drawn.
+    let at = |words: &str| {
+        frame.commands.iter().find_map(|command| match command {
+            limn::DrawCommand::Text { position, text, .. } if text == words => Some(*position),
+            _ => None,
+        })
+    };
+    let restart = at("Restart to update").expect("the row draws Restart to update");
+    let check = at("Check for updates").expect("the row draws Check for updates");
+    assert!((restart.y - check.y).abs() < 0.5 && restart.x < check.x);
+    // And the row's own button answers, not only the menu's entry.
+    assert_eq!(
+        click(&store, &mut ui, updates::UPDATE_RESTART_ROW),
+        vec![Intent::InstallUpdate]
+    );
 }

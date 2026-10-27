@@ -53,6 +53,7 @@ impl Store {
             | Event::Storage { .. }
             | Event::Restored
             | Event::SettingsNotSaved { .. }
+            | Event::Update(_)
             | Event::Extensions { .. }
             | Event::FilesFound { .. }
             | Event::Servers { .. }

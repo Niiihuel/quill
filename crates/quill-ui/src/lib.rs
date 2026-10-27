@@ -7,6 +7,7 @@ mod files;
 mod mention;
 mod pixels;
 mod slash;
+mod updates;
 pub use quill_components::{icons, look};
 pub mod view;
 pub mod welcome;
@@ -579,6 +580,7 @@ impl Store {
             | Event::Storage { .. }
             | Event::Restored
             | Event::SettingsNotSaved { .. }
+            | Event::Update(_)
             | Event::Extensions { .. }
             | Event::Servers { .. }
             | Event::ServersFound { .. } => {}
@@ -1145,6 +1147,9 @@ pub struct Ui {
     pub diff_menu: Option<String>,
     /// Whether the menu of the sidebar's foot, the person's, is open.
     pub account_menu: bool,
+    /// quill's own update, as the engine last reported it, and the version whose toast is up.
+    pub update: quill_model::UpdateState,
+    pub update_toast: Option<String>,
     /// A fork was asked for: the session the engine makes next is it, and opens.
     pub waiting_fork: bool,
     /// Words the host puts back in the message box: a message rewound or forked from, or a
@@ -1875,6 +1880,8 @@ impl Ui {
             agents: vec![],
             settings_page: None,
             account_menu: false,
+            update: quill_model::UpdateState::Idle,
+            update_toast: None,
             settings_query: String::new(),
             settings_menu: None,
             storage: None,
@@ -2221,6 +2228,7 @@ impl Ui {
     /// and send what they wrote while it was being made.
     pub fn applied(&mut self, event: &Event) -> Vec<Intent> {
         mention::heard(self, event);
+        updates::heard(self, event);
         let mut intents = files::heard(self, event);
         intents.extend(self.mcp_heard(event));
         intents.extend(self.applied_to_view(event));
@@ -3140,6 +3148,9 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         ui.title_edit = None;
         ui.take_defaults();
         return vec![];
+    }
+    if let Some(intents) = updates::clicked(ui, id) {
+        return intents;
     }
     if let Some(intents) = settings_clicked(ui, id) {
         return intents;
@@ -4551,6 +4562,7 @@ fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
         "prs_in_browser" => settings.prs_in_browser = !settings.prs_in_browser,
         "archive_on_merge" => settings.archive_on_merge = !settings.archive_on_merge,
         "logos" => settings.logos = !settings.logos,
+        "auto_update" => settings.auto_update = !settings.auto_update,
         other => match other
             .strip_prefix("agent:")
             .and_then(|r| r.strip_suffix(":unsafe"))

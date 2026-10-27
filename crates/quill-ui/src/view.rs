@@ -572,6 +572,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     let root = directory_dialog(ui, root, window, palette);
     let root = marketplace_dialog(ui, root, palette);
     let root = server_dialog(ui, root, palette);
+    let root = crate::updates::dialogs(ui, root, palette);
     let root = removing_dialog(ui, root);
     let root = image_viewer(ui, root, window, palette);
     let root = annotator(ui, root, window, palette);
@@ -2030,12 +2031,16 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
         Element::row(account).gap(6.0).size(None, Some(32.0)),
     ))
     .radius(8.0);
-    let account = menu(
-        account,
-        vec![limn::DropdownMenuItem::new(SETTINGS_OPEN, "Settings")
+    let mut entries = crate::updates::account_entries(ui);
+    entries.push(
+        limn::DropdownMenuItem::new(SETTINGS_OPEN, "Settings")
             .icon(icons::of(icons::SETTINGS))
             .shortcut("Ctrl+,")
-            .into()],
+            .into(),
+    );
+    let account = menu(
+        account,
+        entries,
         ui.account_menu,
         ACCOUNT_MENU,
         260.0,
@@ -9149,6 +9154,10 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
                         setting_switch("login", s.open_at_login, palette),
                     ),
                 ],
+            ),
+            (
+                "Updates".into(),
+                crate::updates::settings(ui, s.auto_update, palette),
             ),
             (
                 "Storage".into(),

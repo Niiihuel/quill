@@ -23,6 +23,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "process", "io-util", "s
 # Sizing the images a message attaches: decode, resize, and JPEG (PNG, JPEG, GIF, WebP only);
 # ICO too, for a site's favicon.ico (a logo, quill-engine's logos.rs).
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif", "ico"] }
+# quill's own updates: the signed manifest, the download and the installation (update.rs).
+quill-update = { path = "../quill-update" }
 # Fetching a connector's or plugin's logo over https, with a ten-second limit (logos.rs).
 ureq = "3"
 # Rasterizing an SVG logo to 64 px; no text or fonts, which a logo does not need.

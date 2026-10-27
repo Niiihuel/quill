@@ -621,6 +621,13 @@ impl eframe::App for App {
             if matches!(event, Event::Restored) {
                 self.restored = true;
             }
+            // The new version is in place: it starts, and this window closes (update.rs).
+            if let Event::Update(quill_model::UpdateState::Installed { program, .. }) = &event {
+                match restart(program) {
+                    Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                    Err(error) => eprintln!("quill: could not start the new version: {error}"),
+                }
+            }
             if let Some((level, title, body)) = self
                 .restored
                 .then(|| quill_ui::notice(&self.store, &self.ui, &event, focused))
@@ -1426,6 +1433,47 @@ fn open_external(target: impl AsRef<std::ffi::OsStr>) {
 
 /// `quill --open-url URL`: the agents' `$BROWSER` (the engine's bridge). A local page opens in
 /// the session's browser; anything else, or no quill to answer, in the desktop's own.
+/// `quill --install`: this copy becomes the installed version, which `current` names from then
+/// on (quill-update's install.rs). Returns where it is.
+fn install_self() -> Result<String, String> {
+    let install = quill_update::install::Install::locate()
+        .ok_or("no folder to install quill in (set HOME or QUILL_UPDATE_ROOT)")?;
+    let program = std::env::current_exe().map_err(|error| error.to_string())?;
+    let version = quill_update::Version::parse(quill_update::VERSION).map_err(|e| e.to_string())?;
+    let placed = install
+        .adopt(&program, &version)
+        .map_err(|error| error.to_string())?;
+    Ok(placed.display().to_string())
+}
+
+/// Starts the installed program with this one's arguments. It waits for this process to go
+/// (`wait_for_restarter`): the link socket is this window's until then.
+fn restart(program: &std::path::Path) -> std::io::Result<()> {
+    std::process::Command::new(program)
+        .args(std::env::args_os().skip(1))
+        .env("QUILL_RESTART_AFTER", std::process::id().to_string())
+        .spawn()
+        .map(drop)
+}
+
+/// When a restarted copy starts, waits (up to ten seconds) for the process that restarted it
+/// to exit, so the window and the link socket are free.
+fn wait_for_restarter() {
+    let Some(pid) = std::env::var("QUILL_RESTART_AFTER")
+        .ok()
+        .and_then(|pid| pid.parse::<u32>().ok())
+    else {
+        return;
+    };
+    std::env::remove_var("QUILL_RESTART_AFTER");
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::path::Path::new(&format!("/proc/{pid}")).exists()
+        && std::time::Instant::now() < until
+    {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 fn open_url(url: &str) -> bool {
     use std::io::{BufRead, Write};
     let handed = (|| -> Option<bool> {
@@ -1553,10 +1601,25 @@ fn main() -> eframe::Result {
     if let Some(code) = quill_engine::native::subprocess() {
         std::process::exit(code);
     }
+    wait_for_restarter();
     let args: Vec<String> = std::env::args().collect();
     if let [_, flag, url, ..] = args.as_slice() {
         if flag == "--open-url" {
             std::process::exit(if open_url(url) { 0 } else { 1 });
+        }
+    }
+    if let [_, flag] = args.as_slice() {
+        if flag == "--install" {
+            std::process::exit(match install_self() {
+                Ok(placed) => {
+                    println!("quill {} is installed at {placed}", quill_update::VERSION);
+                    0
+                }
+                Err(error) => {
+                    eprintln!("quill: --install: {error}");
+                    1
+                }
+            });
         }
     }
     let cwd = std::env::args()

@@ -14,6 +14,8 @@ quill-ui = { path = "../../crates/quill-ui" }
 quill-components = { path = "../../crates/quill-components" }
 quill-model = { path = "../../crates/quill-model" }
 quill-engine = { path = "../../crates/quill-engine" }
+# quill's own updates: `--install` and the restart into the installed version (main.rs).
+quill-update = { path = "../../crates/quill-update" }
 # The platform's own folder dialog, through the desktop portal (no GTK linked in).
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 quill-pty = { path = "../../crates/quill-pty" }

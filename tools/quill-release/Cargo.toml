@@ -1,0 +1,30 @@
+[package]
+name = "quill-release"
+description = "The owner's tools for quill's updates: the release signer and a local test feed; never part of the app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+default-run = "quill-release"
+
+[[bin]]
+name = "quill-release"
+path = "src/release.rs"
+
+[[bin]]
+name = "quill-test-feed"
+path = "src/test_feed.rs"
+
+[dependencies]
+# The manifest, its signature and versions as the app reads them; `serve` is the loopback file
+# server the test feed answers from.
+quill-update = { path = "../../crates/quill-update", features = ["serve"] }
+# The same versions quill-update builds: nothing new is compiled.
+serde_json.workspace = true
+ed25519-dalek = { version = "2.2", default-features = false }
+sha2 = "0.10"
+base64 = "0.22"
+flate2 = "1.1"
+# The new signing key, and the test feed's throwaway one.
+getrandom = "0.3"

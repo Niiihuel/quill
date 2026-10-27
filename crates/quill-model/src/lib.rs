@@ -167,6 +167,9 @@ pub struct Settings {
     /// Look up logos of connectors and plugins (svgl.app, then the server's own site); off,
     /// quill asks for none and shows its icons.
     pub logos: bool,
+    /// Download a new version of quill in the background once one is out; installing always
+    /// waits for the person. A mandatory version downloads whatever this says.
+    pub auto_update: bool,
 }
 
 impl Default for Settings {
@@ -203,6 +206,7 @@ impl Default for Settings {
             editor: "quill-ide".into(),
             agents: Default::default(),
             logos: true,
+            auto_update: true,
         }
     }
 }
@@ -562,6 +566,13 @@ pub enum Intent {
         agent: String,
         folder: PathBuf,
     },
+    /// Look for a newer quill now; answered by `Event::Update`.
+    CheckUpdates,
+    /// Download the newer quill found, if it is not here yet; answered by `Event::Update`.
+    DownloadUpdate,
+    /// Install the downloaded quill and start it in place of this one; answered by
+    /// `Event::Update` with `Installed`, then the host restarts.
+    InstallUpdate,
     /// The MCP servers an agent is set up with for a folder, outside any session; answered by
     /// `Event::Servers`. Listing them can start them, to see how they stand.
     Servers {
@@ -831,6 +842,52 @@ pub enum SessionStatus {
     Failed(String),
 }
 
+/// Where quill's own update stands, as Settings and the account menu show it. Never kept in
+/// the session log: it is the moment's.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum UpdateState {
+    /// Nothing checked yet.
+    Idle,
+    Checking,
+    /// The last check found nothing newer; `checked_at` in seconds since 1970.
+    UpToDate {
+        checked_at: u64,
+    },
+    /// A newer version is published; `notes` is the annotated tag's message (Markdown).
+    Available {
+        version: String,
+        notes: String,
+        mandatory: bool,
+        size: u64,
+    },
+    Downloading {
+        version: String,
+        done: u64,
+        total: u64,
+        mandatory: bool,
+    },
+    /// Downloaded and verified: installing it only waits for the person.
+    Ready {
+        version: String,
+        mandatory: bool,
+    },
+    /// Installed; the host starts `program` and closes this window.
+    Installed {
+        version: String,
+        program: PathBuf,
+    },
+    /// A check, a download or an installation did not go through; `reason` is for the person.
+    Failed {
+        reason: String,
+    },
+    /// Built from source (under `target/`, or `QUILL_NO_UPDATE` set): updated with `git pull`.
+    FromSource,
+    /// A binary that `quill --install` never placed: nothing to update in place.
+    NotInstalled,
+    /// The repository is private and no token was found (`QUILL_UPDATE_TOKEN`, or `gh`).
+    NeedsAccess,
+}
+
 /// What the engine tells the UI.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Event {
@@ -1034,6 +1091,8 @@ pub enum Event {
     SettingsNotSaved {
         error: String,
     },
+    /// Where quill's own update stands; not stored.
+    Update(UpdateState),
     /// An agent's plugins, marketplaces and skills for `folder`, as its program lists them;
     /// `error` says why a change or a list failed.
     Extensions {
@@ -1145,6 +1204,7 @@ impl Event {
             | Event::Logo { .. }
             | Event::Storage { .. }
             | Event::SettingsNotSaved { .. }
+            | Event::Update(_)
             | Event::Extensions { .. }
             | Event::Servers { .. }
             | Event::ServersFound { .. } => 0,
