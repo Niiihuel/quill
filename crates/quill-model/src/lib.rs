@@ -312,6 +312,11 @@ pub enum Intent {
         session: SessionId,
         pinned: bool,
     },
+    /// Remove these finished tasks from the session's list.
+    ClearTasks {
+        session: SessionId,
+        tasks: Vec<String>,
+    },
     /// Stop the session's agent and remove everything quill kept of it.
     Delete {
         session: SessionId,
@@ -729,6 +734,11 @@ pub enum Event {
         session: SessionId,
         pinned: bool,
     },
+    /// The person cleared these finished tasks from the session's list.
+    TasksCleared {
+        session: SessionId,
+        tasks: Vec<String>,
+    },
     /// Nothing of the session is kept any more.
     Deleted {
         session: SessionId,
@@ -881,6 +891,7 @@ impl Event {
             | Event::Environment { session, .. }
             | Event::Renamed { session, .. }
             | Event::Pinned { session, .. }
+            | Event::TasksCleared { session, .. }
             | Event::Deleted { session }
             | Event::Archived { session, .. }
             | Event::Unread { session, .. }

@@ -946,11 +946,7 @@ fn tasks_pane(
     height: f32,
     palette: ComponentPalette,
 ) -> Element {
-    let tasks: Vec<&crate::Task> = session.map_or(vec![], |s| {
-        (s.tasks.iter())
-            .filter(|t| !ui.cleared_tasks.contains(&t.id))
-            .collect()
-    });
+    let tasks: Vec<&crate::Task> = session.map_or(vec![], |s| s.tasks.iter().collect());
     let finished = tasks.iter().filter(|t| !t.running).count();
     let mut tools = vec![];
     if finished > 0 {

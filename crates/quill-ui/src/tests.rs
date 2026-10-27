@@ -1408,8 +1408,8 @@ fn background_tasks_list_running_and_finished_stop_and_clear() {
     click(&store, &mut ui, view::TASKS_OPEN);
     settle(&store, &mut ui);
     let window = limn::Size::new(1408.0, 844.0);
-    let shows = |ui: &Ui, words: &str| {
-        let frame = UiTree::new(view(&store, ui, window)).layout(window);
+    let shows = |store: &Store, ui: &Ui, words: &str| {
+        let frame = UiTree::new(view(store, ui, window)).layout(window);
         frame.commands.iter().any(|command| {
             matches!(command, limn::DrawCommand::Text { text, .. } if text.contains(words))
         })
@@ -1423,7 +1423,7 @@ fn background_tasks_list_running_and_finished_stop_and_clear() {
         "31 tool uses",
         "View transcript",
     ] {
-        assert!(shows(&ui, words), "{words}");
+        assert!(shows(&store, &ui, words), "{words}");
     }
     assert_eq!(
         click(&store, &mut ui, "task:stop:t2"),
@@ -1432,8 +1432,18 @@ fn background_tasks_list_running_and_finished_stop_and_clear() {
             task: "t2".into()
         }]
     );
-    click(&store, &mut ui, view::TASKS_CLEAR);
-    assert!(!shows(&ui, "Finished 1") && shows(&ui, "Running 1"));
+    assert_eq!(
+        click(&store, &mut ui, view::TASKS_CLEAR),
+        vec![Intent::ClearTasks {
+            session: 1,
+            tasks: vec!["t1".into()]
+        }]
+    );
+    store.apply(Event::TasksCleared {
+        session: 1,
+        tasks: vec!["t1".into()],
+    });
+    assert!(!shows(&store, &ui, "Finished 1") && shows(&store, &ui, "Running 1"));
 }
 
 #[test]

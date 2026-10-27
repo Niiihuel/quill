@@ -892,6 +892,10 @@ impl Router {
                 (self.sink)(Event::Pinned { session, pinned });
                 return;
             }
+            Intent::ClearTasks { session, tasks } => {
+                (self.sink)(Event::TasksCleared { session, tasks });
+                return;
+            }
             Intent::Archive { session, archived } => {
                 (self.sink)(Event::Archived { session, archived });
                 if archived {

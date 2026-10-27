@@ -377,6 +377,11 @@ impl Store {
                     s.pinned = pinned;
                 }
             }
+            Event::TasksCleared { session, tasks } => {
+                if let Some(s) = self.session_mut(session) {
+                    s.tasks.retain(|t| !tasks.contains(&t.id));
+                }
+            }
             Event::Deleted { session } => self.sessions.retain(|s| s.id != session),
             Event::Archived { session, archived } => {
                 if let Some(s) = self.session_mut(session) {
@@ -932,9 +937,6 @@ pub struct Ui {
     pub waiting_fork: bool,
     /// Words the host puts back in the message box: a message rewound or forked from.
     pub restore_prompt: Option<String>,
-    /// Finished background tasks cleared from their pane.
-    /// shortcut: kept for this run only; they come back after a restart.
-    pub cleared_tasks: std::collections::HashSet<String>,
     /// The Completed group shows every session, not its first few.
     pub show_more: bool,
     /// The side chat its pane shows, one asked for that the engine is making, and what its
@@ -1533,7 +1535,6 @@ impl Ui {
             diff_menu: None,
             waiting_fork: false,
             restore_prompt: None,
-            cleared_tasks: Default::default(),
             show_more: false,
             side_chat: None,
             side_waiting: false,
@@ -2852,8 +2853,15 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        ui.cleared_tasks.extend(finished);
-        return vec![];
+        return match ui.selected {
+            Some(session) if !finished.is_empty() => {
+                vec![Intent::ClearTasks {
+                    session,
+                    tasks: finished,
+                }]
+            }
+            _ => vec![],
+        };
     }
     if let Some(key) = ["tasks:running", "tasks:finished"]
         .into_iter()
