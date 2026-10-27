@@ -5,8 +5,8 @@
 use quill_agent::{
     AgentAdapter, AgentCapabilities, AgentCommand, AgentEvent, AgentId, CommandRun,
     ContextCategory, ContextKind, ContextUsage, Decision, Decoded, FileChange, LaunchPlan,
-    McpServer, McpSource, McpStatus, ModelInfo, PlanLimits, Plugin, SessionSpec, Skill, Suggestion,
-    ToolContent, Usage, UsageWindow, BROWSER_GUIDE, BROWSER_TOOLS, HOST_TOOLS,
+    McpServer, McpSource, McpStatus, McpTool, ModelInfo, PlanLimits, Plugin, SessionSpec, Skill,
+    Suggestion, ToolContent, Usage, UsageWindow, BROWSER_GUIDE, BROWSER_TOOLS, HOST_TOOLS,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -30,6 +30,8 @@ pub struct Claude {
     mcp_requests: Vec<String>,
     /// The `get_skills_dialog` request waiting for its answer.
     skills_request: Option<String>,
+    /// `mcp_authenticate` requests waiting for their answers, with their server.
+    sign_ins: HashMap<String, String>,
     interrupted: bool,
     /// `can_use_tool` waiting for a decision: its tool call and input, echoed back on allow.
     pending: HashMap<String, (Value, Value)>,
@@ -447,6 +449,18 @@ impl AgentAdapter for Claude {
             AgentCommand::McpToggle { name, enabled } => vec![self.request(json!({
                 "subtype": "mcp_toggle", "serverName": name, "enabled": enabled,
             }))],
+            // Without a redirect address the CLI listens on localhost for the page's answer
+            // and connects the server itself; it never opens the browser (2.1.311).
+            AgentCommand::McpAuthenticate(name) => {
+                let line = self.request(json!({
+                    "subtype": "mcp_authenticate", "serverName": name,
+                }));
+                self.sign_ins.insert(self.last_request_id(), name);
+                vec![line]
+            }
+            AgentCommand::McpClearAuth(name) => vec![self.request(json!({
+                "subtype": "mcp_clear_auth", "serverName": name,
+            }))],
             // The rows of the CLI's /skills menu, which it offers to hosts that draw it.
             AgentCommand::Skills => {
                 let line = self.request(json!({ "subtype": "get_skills_dialog" }));
@@ -502,6 +516,19 @@ impl AgentAdapter for Claude {
                 if ok && self.initialize.as_deref() == Some(id.as_str()) {
                     self.ultracode = offers_ultracode(&body);
                     decoded.events.push(ready(&body, self.ultracode));
+                }
+                if let Some(server) = self.sign_ins.remove(&id) {
+                    let url = (body["authUrl"].as_str())
+                        .filter(|_| body["requiresUserAction"] != false)
+                        .map(str::to_owned);
+                    let error = (!ok).then(|| {
+                        let said = response["error"].as_str().unwrap_or("could not sign in");
+                        said.to_owned()
+                    });
+                    decoded
+                        .events
+                        .push(AgentEvent::McpSignIn { server, url, error });
+                    return decoded;
                 }
                 if self.skills_request.as_deref() == Some(id.as_str()) {
                     self.skills_request = None;
@@ -897,14 +924,23 @@ fn mcp_servers(body: &Value) -> Vec<McpServer> {
             };
             let parts = (name.strip_prefix("plugin:")).and_then(|rest| rest.split_once(':'));
             let plugin = parts.map(|(plugin, _)| plugin.to_owned());
+            // OAuth is for http and sse servers whose sign-in is not held by the account.
+            let web = matches!(server["transport"].as_str(), Some("http" | "sse"));
+            let held = server["sessionProxied"] == true || server["scope"] == "claudeai";
             McpServer {
+                sign_in: web && !held,
                 label: parts.map_or(name.as_str(), |(_, server)| server).to_owned(),
                 status,
                 source,
                 plugin,
                 error: server["error"].as_str().map(str::to_owned),
                 tools: (server["tools"].as_array().into_iter().flatten())
-                    .map(|tool| text(&tool["name"]))
+                    .map(|tool| McpTool {
+                        name: text(&tool["name"]),
+                        description: tool["description"].as_str().map(str::to_owned),
+                        read_only: tool["annotations"]["readOnly"] == true,
+                        destructive: tool["annotations"]["destructive"] == true,
+                    })
                     .collect(),
                 name,
             }

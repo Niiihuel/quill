@@ -840,8 +840,8 @@ pub struct Ui {
     pub deleting: Option<SessionId>,
     /// What the search dialog looks for, while it is open.
     pub search: Option<String>,
-    /// The session whose MCP servers' dialog is open (`/mcp`), and when they were last asked.
-    pub mcp: Option<(SessionId, std::time::Instant)>,
+    /// The session's MCP servers' dialog (`/mcp`), while open.
+    pub mcp: Option<McpDialog>,
     /// Sessions whose branch bar the person closed.
     pub bar_closed: Vec<SessionId>,
     /// How the sidebar groups and orders the sessions.
@@ -1481,7 +1481,7 @@ impl Ui {
         let ultra = self
             .ultra_since
             .map(|_| std::time::Duration::from_millis(33));
-        let mcp = (self.mcp).map(|(_, asked)| MCP_POLL.saturating_sub(asked.elapsed()));
+        let mcp = (self.mcp.as_ref()).map(|m| MCP_POLL.saturating_sub(m.asked.elapsed()));
         if self.animating() {
             Some(std::time::Duration::ZERO)
         } else {
@@ -1493,9 +1493,11 @@ impl Ui {
     /// [`MCP_POLL`], so one that connects or fails shows it.
     pub fn due(&mut self) -> Vec<Intent> {
         match &mut self.mcp {
-            Some((session, asked)) if asked.elapsed() >= MCP_POLL => {
-                *asked = std::time::Instant::now();
-                vec![Intent::McpStatus { session: *session }]
+            Some(mcp) if mcp.asked.elapsed() >= MCP_POLL => {
+                mcp.asked = std::time::Instant::now();
+                vec![Intent::McpStatus {
+                    session: mcp.session,
+                }]
             }
             _ => vec![],
         }
@@ -1676,6 +1678,7 @@ impl Ui {
     /// and send what they wrote while it was being made.
     pub fn applied(&mut self, event: &Event) -> Vec<Intent> {
         let mut intents = files::heard(self, event);
+        intents.extend(self.mcp_heard(event));
         intents.extend(self.applied_to_view(event));
         intents
     }
@@ -1981,7 +1984,7 @@ fn update_action(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Int
             // "/mcp" shows the session's MCP servers, as Desktop's does (3.6556.2 `cff0db614`).
             if text == "/mcp" {
                 if let Some(session) = ui.selected {
-                    ui.mcp = Some((session, std::time::Instant::now()));
+                    ui.mcp = Some(McpDialog::new(session));
                     return vec![Intent::McpStatus { session }];
                 }
             }
@@ -2785,16 +2788,48 @@ pub struct Extensions {
 /// 3.6556.2 `cff0db614`, at a pace not found).
 pub const MCP_POLL: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// The MCP dialog's clicks: done, and a server's reconnect or turning it on, each followed
-/// by asking for the servers again. `None` when `id` is none of them.
+/// The MCP dialog's clicks: done; a server's details and back; reconnecting it, turning it
+/// on, signing in to it and forgetting its credentials (after asking), each followed by
+/// asking for the servers again. `None` when `id` is none of them.
 fn mcp_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
-    let (session, _) = ui.mcp?;
+    let mcp = ui.mcp.as_mut()?;
+    let session = mcp.session;
     if id == view::MCP_DONE {
         ui.mcp = None;
         return Some(vec![]);
     }
+    if id == view::MCP_BACK {
+        mcp.detail = None;
+        return Some(vec![]);
+    }
+    if let Some(name) = id.strip_prefix(view::MCP_ROW) {
+        mcp.detail = Some(name.to_owned());
+        return Some(vec![]);
+    }
+    if id == view::MCP_CLEAR_NO {
+        mcp.clearing = None;
+        return Some(vec![]);
+    }
     let asked = |intent| Some(vec![intent, Intent::McpStatus { session }]);
+    if id == view::MCP_CLEAR_YES {
+        let name = mcp.clearing.take()?;
+        mcp.notice = Some(format!("Authentication cleared for {name}."));
+        return asked(Intent::McpClearAuth { session, name });
+    }
+    if let Some(name) = id.strip_prefix(view::MCP_CLEAR) {
+        mcp.clearing = Some(name.to_owned());
+        return Some(vec![]);
+    }
+    if let Some(name) = id.strip_prefix(view::MCP_CONNECT) {
+        mcp.notice = None;
+        mcp.phases.insert(name.to_owned(), McpPhase::Opening);
+        return Some(vec![Intent::McpAuthenticate {
+            session,
+            name: name.to_owned(),
+        }]);
+    }
     if let Some(name) = id.strip_prefix(view::MCP_RECONNECT) {
+        mcp.phases.remove(name);
         return asked(Intent::McpReconnect {
             session,
             name: name.to_owned(),
@@ -2808,6 +2843,95 @@ fn mcp_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
         });
     }
     None
+}
+
+impl Ui {
+    /// What the open MCP dialog hears: a sign-in's page opened in the browser, a sign-in that
+    /// needed no one (the server is reconnected), a sign-in that could not start; and the
+    /// servers, whose sign-in is over once their status changes, as Desktop's
+    /// (2.9939.4 `c7077447f`).
+    fn mcp_heard(&mut self, event: &Event) -> Vec<Intent> {
+        let Some(mcp) = self.mcp.as_mut() else {
+            return vec![];
+        };
+        let Event::Agent { session, event, .. } = event else {
+            return vec![];
+        };
+        if *session != mcp.session {
+            return vec![];
+        }
+        match event {
+            AgentEvent::McpSignIn { server, url, error } => match (url, error) {
+                (_, Some(error)) => {
+                    mcp.phases.remove(server);
+                    mcp.notice = Some(error.clone());
+                }
+                (Some(_), None) => {
+                    mcp.phases.insert(server.clone(), McpPhase::InBrowser);
+                }
+                (None, None) => {
+                    mcp.phases.remove(server);
+                    return vec![
+                        Intent::McpReconnect {
+                            session: *session,
+                            name: server.clone(),
+                        },
+                        Intent::McpStatus { session: *session },
+                    ];
+                }
+            },
+            AgentEvent::McpServers(servers) => {
+                for server in servers {
+                    let was = mcp.status.insert(server.name.clone(), server.status);
+                    if was.is_some_and(|was| was != server.status) {
+                        mcp.phases.remove(&server.name);
+                    }
+                }
+            }
+            _ => {}
+        }
+        vec![]
+    }
+}
+
+/// The session's MCP servers' dialog, while open.
+#[derive(Clone, Debug)]
+pub struct McpDialog {
+    pub session: SessionId,
+    /// When its servers were last asked for.
+    pub asked: std::time::Instant,
+    /// The server whose details show, by name; the list without one.
+    pub detail: Option<String>,
+    /// Where each sign-in under way is.
+    pub phases: std::collections::HashMap<String, McpPhase>,
+    /// Each server's status as last heard, to tell when a sign-in is over.
+    pub status: std::collections::HashMap<String, quill_model::McpStatus>,
+    /// The server whose credentials the person is asked about forgetting.
+    pub clearing: Option<String>,
+    /// What the last action said: a sign-in that could not start, credentials cleared.
+    pub notice: Option<String>,
+}
+
+impl McpDialog {
+    pub fn new(session: SessionId) -> Self {
+        Self {
+            session,
+            asked: std::time::Instant::now(),
+            detail: None,
+            phases: std::collections::HashMap::new(),
+            status: std::collections::HashMap::new(),
+            clearing: None,
+            notice: None,
+        }
+    }
+}
+
+/// A sign-in to a server, as Desktop's phases name it: its page being asked for ("Opening
+/// sign-in…"), then open in the browser ("Complete sign-in in your browser…").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum McpPhase {
+    Opening,
+    InBrowser,
 }
 
 /// Settings' own clicks: open and close, pick a page, and change a

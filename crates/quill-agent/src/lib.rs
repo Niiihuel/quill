@@ -85,8 +85,22 @@ pub struct McpServer {
     pub plugin: Option<String>,
     /// Why it failed, when it did.
     pub error: Option<String>,
-    /// Its tools' names, once connected.
-    pub tools: Vec<String>,
+    /// Its tools, once connected.
+    pub tools: Vec<McpTool>,
+    /// The person can sign in to it from here ([`AgentCommand::McpAuthenticate`]): it
+    /// signs in with OAuth and its sign-in is not held elsewhere.
+    pub sign_in: bool,
+}
+
+/// One tool of an MCP server, with what its server says it does.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct McpTool {
+    pub name: String,
+    pub description: Option<String>,
+    /// It only reads.
+    pub read_only: bool,
+    /// It may change or delete things.
+    pub destructive: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -329,6 +343,14 @@ pub enum AgentEvent {
     McpServers(Vec<McpServer>),
     /// The answer to [`AgentCommand::Skills`].
     Skills(Vec<Skill>),
+    /// The answer to [`AgentCommand::McpAuthenticate`]: the page where the person signs in,
+    /// or none when the server needed no one (it has valid credentials); or why it could
+    /// not start.
+    McpSignIn {
+        server: String,
+        url: Option<String>,
+        error: Option<String>,
+    },
     /// The agent calls one of quill's own tools, the ones that start and propose other
     /// sessions ([`HOST_TOOLS`]). The engine answers with [`AgentCommand::HostToolResult`].
     HostTool {
@@ -387,6 +409,11 @@ pub enum AgentCommand {
         name: String,
         enabled: bool,
     },
+    /// Start signing in to a server with OAuth, answered by [`AgentEvent::McpSignIn`]; the
+    /// agent takes the page's answer itself and connects the server.
+    McpAuthenticate(String),
+    /// Forget a server's credentials.
+    McpClearAuth(String),
     /// Ask for the skills the agent offers, answered by [`AgentEvent::Skills`].
     Skills,
     /// Load the plugins again, after one was switched on or off.

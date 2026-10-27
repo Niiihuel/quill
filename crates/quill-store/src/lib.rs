@@ -65,6 +65,7 @@ impl Store {
                     | AgentEvent::Reply { .. }
                     | AgentEvent::ContextUsage(_)
                     | AgentEvent::McpServers(_)
+                    | AgentEvent::McpSignIn { .. }
             ),
             _ => true,
         }

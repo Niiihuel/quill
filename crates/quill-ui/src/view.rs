@@ -92,6 +92,12 @@ pub const SETTINGS_PLUGINS: &str = "plugins";
 pub const MCP_DONE: &str = "mcp:done";
 pub const MCP_RECONNECT: &str = "mcp:reconnect:";
 pub const MCP_TURN_ON: &str = "mcp:on:";
+pub const MCP_CONNECT: &str = "mcp:connect:";
+pub const MCP_CLEAR: &str = "mcp:clear:";
+pub const MCP_CLEAR_YES: &str = "mcp:clear-yes";
+pub const MCP_CLEAR_NO: &str = "mcp:clear-no";
+pub const MCP_ROW: &str = "mcp:row:";
+pub const MCP_BACK: &str = "mcp:back";
 /// The Files pane's buttons over the file on screen.
 pub const DOC_PREVIEW: &str = "doc:preview";
 pub const DOC_SAVE: &str = "doc:save";
@@ -7260,9 +7266,11 @@ fn human_bytes(bytes: u64) -> String {
 }
 
 /// The session's MCP servers (`/mcp`), as Desktop's dialog lists them (3.6556.2
-/// `cff0db614`): each server with what ships it, where it was configured and how it is, and
-/// what can be done about it: reconnect one that failed or wants signing in, turn on one
-/// that is off. Its words are Desktop's; while a turn runs the actions wait for it to end.
+/// `cff0db614`): each server with what ships it, where it was configured and how it is,
+/// and what can be done about it: connect (sign in), reconnect, turn on. A row opens the
+/// server's details: its sign-in (re-authenticate, clear its credentials after asking) and,
+/// quill's own, its tools by what they do. Its words are Desktop's; while a turn runs the
+/// actions wait for it to end.
 fn mcp_dialog(
     store: &Store,
     ui: &Ui,
@@ -7270,11 +7278,12 @@ fn mcp_dialog(
     window: Size,
     palette: ComponentPalette,
 ) -> Element {
+    use crate::McpPhase;
     use quill_model::{McpSource, McpStatus};
-    let Some((id, _)) = ui.mcp else {
+    let Some(mcp) = &ui.mcp else {
         return base;
     };
-    let session = store.session(id);
+    let session = store.session(mcp.session);
     let width = limn::Modal::fit_width(window.width, 720.0);
     let inner = limn::Modal::body_width(width);
     let waits = session.is_some_and(|s| s.running_since.is_some());
@@ -7292,17 +7301,167 @@ fn mcp_dialog(
             button
         }
     };
+    let words = |s: String| muted(s).font_size(BODY);
+    let kind = |source: McpSource| match source {
+        McpSource::User => "User",
+        McpSource::Project => "Project",
+        McpSource::Local => "Local",
+        McpSource::Managed => "Managed",
+        McpSource::Plugin => "Plugin",
+        // Desktop lists the account's connectors apart; quill names them (inferred).
+        McpSource::Account => "Account",
+        McpSource::App => "App",
+        McpSource::Other => "Other",
+    };
+    let tools = |n: usize| match n {
+        1 => "Connected \u{b7} 1 tool".to_owned(),
+        n => format!("Connected \u{b7} {n} tools"),
+    };
+    let needs_auth = |server: &quill_model::McpServer| {
+        if server.source == McpSource::Account {
+            "Sign in to it where your account's connectors are managed, then reconnect here."
+        } else {
+            "Sign in with /mcp in a terminal where this session runs, then reconnect here."
+        }
+    };
     let servers = session.and_then(|s| s.mcp.as_ref());
-    let body = match servers {
-        None => muted(
-            "Loading this session\u{2019}s MCP servers\u{2026} If they don\u{2019}t appear, send a message in the session to start it.",
-        )
-        .font_size(BODY)
-        .padding(12.0),
-        Some(servers) if servers.is_empty() => muted("This session has no MCP servers.")
-            .font_size(BODY)
-            .padding(12.0),
-        Some(servers) => {
+    let shown = (mcp.detail.as_ref())
+        .and_then(|name| servers.and_then(|all| all.iter().find(|s| &s.name == name)));
+    let mut body = vec![];
+    if let Some(notice) = &mcp.notice {
+        body.push(words(notice.clone()).padding(8.0));
+    }
+    match (servers, shown) {
+        (_, Some(server)) => {
+            let phase = mcp.phases.get(&server.name).copied();
+            let back = tool_surface(
+                MCP_BACK,
+                icons::of(icons::ARROW_LEFT),
+                "All servers",
+                28.0,
+                None,
+                look::tool_hover(),
+                None,
+            );
+            body.push(
+                Element::row(vec![back, text("All servers").font_size(BODY).centered_y()])
+                    .gap(6.0),
+            );
+            let mut who = vec![text(server.label.clone()).font_size(16.0)];
+            if let Some(plugin) = &server.plugin {
+                who.push(muted(format!("Provided by the {plugin} plugin")).font_size(SMALL));
+            }
+            let status = match (phase, server.status) {
+                (Some(McpPhase::Opening), _) => "Opening sign-in\u{2026}".to_owned(),
+                (Some(McpPhase::InBrowser), _) => {
+                    "Complete sign-in in your browser\u{2026}".to_owned()
+                }
+                (None, McpStatus::Connected) => tools(server.tools.len()),
+                (None, McpStatus::Pending) => "Connecting\u{2026}".to_owned(),
+                (None, McpStatus::NeedsAuth) => "Needs authentication".to_owned(),
+                (None, McpStatus::Failed) => match &server.error {
+                    Some(error) => format!("Failed to connect: {error}"),
+                    None => "Failed to connect".to_owned(),
+                },
+                (None, McpStatus::Disabled) => "Turned off".to_owned(),
+            };
+            who.push(words(format!("{} \u{b7} {status}", kind(server.source))));
+            let mut buttons = vec![];
+            let name = &server.name;
+            match (phase, server.status) {
+                (Some(McpPhase::InBrowser), _) => {
+                    buttons.push(action(format!("{MCP_RECONNECT}{name}"), "Reconnect"));
+                }
+                (Some(McpPhase::Opening), _) => {}
+                (None, McpStatus::Connected) if server.sign_in => {
+                    buttons.push(action(format!("{MCP_CONNECT}{name}"), "Re-authenticate"));
+                    buttons.push(action(format!("{MCP_CLEAR}{name}"), "Clear authentication"));
+                }
+                (None, McpStatus::NeedsAuth | McpStatus::Failed) => {
+                    if server.sign_in {
+                        buttons.push(action(format!("{MCP_CONNECT}{name}"), "Connect"));
+                    }
+                    buttons.push(action(format!("{MCP_RECONNECT}{name}"), "Reconnect"));
+                }
+                (None, McpStatus::Disabled) => {
+                    buttons.push(action(format!("{MCP_TURN_ON}{name}"), "Turn on"))
+                }
+                _ => {}
+            }
+            body.push(
+                Element::row(vec![
+                    Element::column(who).gap(4.0).flex(1.0),
+                    Element::row(buttons).gap(8.0).centered_y(),
+                ])
+                .padding(8.0),
+            );
+            let note = match (phase, server.status) {
+                (Some(McpPhase::InBrowser), _) => Some(
+                    "Finished signing in from your browser? Reconnect to pick up the new credentials.",
+                ),
+                (None, McpStatus::Connected) if server.sign_in => Some(
+                    "Re-authenticate and Clear authentication apply to servers you signed in to with OAuth.",
+                ),
+                (None, McpStatus::NeedsAuth) if !server.sign_in => Some(needs_auth(server)),
+                _ => None,
+            };
+            if let Some(note) = note {
+                body.push(words(note.to_owned()).padding(8.0));
+            }
+            // quill's own: the tools, by what their server says they do (Desktop's groups
+            // for its connectors' tools, 2.9939.4 `c4ac4d9d6`).
+            let groups = [
+                ("Read-only tools", 0),
+                ("Write/delete tools", 1),
+                ("Other tools", 2),
+            ];
+            let group_of = |tool: &quill_model::McpTool| {
+                if tool.read_only {
+                    0
+                } else if tool.destructive {
+                    1
+                } else {
+                    2
+                }
+            };
+            let mut list = vec![];
+            for (title, at) in groups {
+                let rows: Vec<Element> = (server.tools.iter())
+                    .filter(|t| group_of(t) == at)
+                    .map(|tool| {
+                        let mut row = vec![text(tool.name.clone()).font_size(BODY)];
+                        if let Some(about) = &tool.description {
+                            let about: String = about.chars().take(140).collect();
+                            row.push(muted(about).font_size(SMALL));
+                        }
+                        Element::column(row).gap(2.0).padding(6.0)
+                    })
+                    .collect();
+                if rows.is_empty() {
+                    continue;
+                }
+                list.push(
+                    muted(format!("{title} ({})", rows.len()))
+                        .font_size(SMALL)
+                        .padding(6.0),
+                );
+                list.extend(rows);
+            }
+            if !list.is_empty() {
+                body.push(
+                    Element::scroll("mcp:tools", Element::column(list).size(Some(inner), None))
+                        .max_height(window.height * 0.45),
+                );
+            }
+        }
+        (None, _) => body.push(
+            words("Loading this session\u{2019}s MCP servers\u{2026} If they don\u{2019}t appear, send a message in the session to start it.".into())
+                .padding(12.0),
+        ),
+        (Some(servers), _) if servers.is_empty() => {
+            body.push(words("This session has no MCP servers.".into()).padding(12.0))
+        }
+        (Some(servers), _) => {
             let columns = vec![
                 limn::TableColumn::flexible("server", "Server", 200.0),
                 limn::TableColumn::fixed("type", "Type", 72.0),
@@ -7311,7 +7470,7 @@ fn mcp_dialog(
             let rows = servers
                 .iter()
                 .map(|server| {
-                    let mut who = vec![limn::Element::truncated_text(server.label.clone())
+                    let mut who = vec![Element::truncated_text(server.label.clone())
                         .font_family(FontFamily::Sans)
                         .font_size(BODY)
                         .foreground(look::palette().text)];
@@ -7320,69 +7479,54 @@ fn mcp_dialog(
                             muted(format!("Provided by the {plugin} plugin")).font_size(SMALL),
                         );
                     }
-                    let kind = match server.source {
-                        McpSource::User => "User",
-                        McpSource::Project => "Project",
-                        McpSource::Local => "Local",
-                        McpSource::Managed => "Managed",
-                        McpSource::Plugin => "Plugin",
-                        // Desktop lists the account's connectors apart; quill names them (inferred).
-                        McpSource::Account => "Account",
-                        McpSource::App => "App",
-                        McpSource::Other => "Other",
-                    };
-                    let note = |words: String, why: Option<&str>| {
-                        let words = muted(words).font_size(BODY);
+                    let note = |said: String, why: Option<&str>| {
+                        let said = words(said);
                         match why {
                             Some(why) => limn::Tooltip::new(
-                                words,
+                                said,
                                 format!("mcp:why:{}", server.name),
                                 why,
                                 look::palette(),
                             )
                             .render(),
-                            None => words,
+                            None => said,
                         }
                     };
-                    let status = match server.status {
-                        McpStatus::Connected => note(
-                            match server.tools.len() {
-                                1 => "Connected \u{b7} 1 tool".to_owned(),
-                                n => format!("Connected \u{b7} {n} tools"),
-                            },
-                            None,
-                        ),
-                        McpStatus::Pending => note("Connecting\u{2026}".into(), None),
-                        McpStatus::NeedsAuth => Element::row(vec![
-                            note(
-                                "Needs authentication".into(),
-                                Some(if server.source == McpSource::Account {
-                                    "Sign in to it where your account's connectors are managed, then reconnect here."
-                                } else {
-                                    "Sign in with /mcp in a terminal where this session runs, then reconnect here."
-                                }),
-                            )
-                            .centered_y(),
-                            action(format!("{MCP_RECONNECT}{}", server.name), "Reconnect"),
+                    let name = &server.name;
+                    let status = match (mcp.phases.get(name), server.status) {
+                        (Some(McpPhase::Opening), _) => note("Opening sign-in\u{2026}".into(), None),
+                        (Some(McpPhase::InBrowser), _) => {
+                            note("Complete sign-in in your browser\u{2026}".into(), None)
+                        }
+                        (None, McpStatus::Connected) => note(tools(server.tools.len()), None),
+                        (None, McpStatus::Pending) => note("Connecting\u{2026}".into(), None),
+                        (None, McpStatus::NeedsAuth) if server.sign_in => {
+                            action(format!("{MCP_CONNECT}{name}"), "Connect")
+                        }
+                        (None, McpStatus::NeedsAuth) => Element::row(vec![
+                            note("Needs authentication".into(), Some(needs_auth(server)))
+                                .centered_y(),
+                            action(format!("{MCP_RECONNECT}{name}"), "Reconnect"),
                         ])
                         .gap(8.0),
-                        McpStatus::Failed => Element::row(vec![
+                        (None, McpStatus::Failed) => Element::row(vec![
                             note("Failed".into(), server.error.as_deref()).centered_y(),
-                            action(format!("{MCP_RECONNECT}{}", server.name), "Reconnect"),
+                            action(format!("{MCP_RECONNECT}{name}"), "Reconnect"),
                         ])
                         .gap(8.0),
-                        McpStatus::Disabled => {
-                            action(format!("{MCP_TURN_ON}{}", server.name), "Turn on")
+                        (None, McpStatus::Disabled) => {
+                            action(format!("{MCP_TURN_ON}{name}"), "Turn on")
                         }
                     };
                     limn::TableRow::new(
-                        format!("mcp:row:{}", server.name),
+                        format!("{MCP_ROW}{name}"),
                         vec![
                             Element::column(who).gap(2.0).centered_y(),
-                            muted(kind).font_size(BODY).centered_y(),
+                            words(kind(server.source).to_owned()).centered_y(),
                             status.centered_y(),
                         ],
                     )
+                    .controls([MCP_CONNECT, MCP_RECONNECT, MCP_TURN_ON].map(|a| format!("{a}{name}")))
                 })
                 .collect();
             // Two lines for a plugin's server, as Desktop's rows (`min-h-14`) hold.
@@ -7394,14 +7538,14 @@ fn mcp_dialog(
                 .sizing(sizing)
                 .rows(rows)
                 .render();
-            Element::scroll("mcp:scroll", table).max_height(window.height * 0.6)
+            body.push(Element::scroll("mcp:scroll", table).max_height(window.height * 0.6));
         }
-    };
+    }
     let footer = Element::row(vec![
         Element::spacer().flex(1.0),
         keyed_button(MCP_DONE, "Done", "", true, true, palette),
     ]);
-    limn::Modal::new(
+    let dialog = limn::Modal::new(
         base,
         true,
         "MCP servers in this session",
@@ -7410,11 +7554,27 @@ fn mcp_dialog(
         look::palette(),
     )
     .width(width)
-    .body(body)
+    .body(Element::column(body).gap(4.0))
     .footer(footer)
     .backdrop_dismiss(true)
     .scrim(look::scrim())
-    .render()
+    .render();
+    // Desktop's question before forgetting a server's credentials (`cff0db614`).
+    let clearing = (mcp.clearing.as_ref())
+        .map(|name| {
+            let found = servers.and_then(|all| all.iter().find(|s| &s.name == name));
+            found.map_or(name.clone(), |s| s.label.clone())
+        })
+        .unwrap_or_default();
+    confirm(
+        dialog,
+        mcp.clearing.is_some(),
+        &format!("Clear authentication for {clearing}?"),
+        "The stored credentials for this server are revoked and deleted. You can authenticate again afterwards.",
+        "Clear authentication",
+        MCP_CLEAR_YES,
+        MCP_CLEAR_NO,
+    )
 }
 
 /// Settings, in Desktop's measures at 1×: a 1024 × 772 card whose body

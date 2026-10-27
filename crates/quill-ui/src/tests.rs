@@ -1616,7 +1616,8 @@ fn mcp_lists_the_sessions_servers_and_reconnects_or_turns_one_on() {
         },
         plugin: plugin.map(str::to_owned),
         error: None,
-        tools: vec!["a".into(), "b".into()],
+        tools: vec![Default::default(), Default::default()],
+        sign_in: plugin.is_some(),
     };
     agent(
         &mut store,
@@ -1651,8 +1652,75 @@ fn mcp_lists_the_sessions_servers_and_reconnects_or_turns_one_on() {
             enabled: true
         }
     );
+    // Signing in: the agent's page opens in the browser, and the sign-in is over once the
+    // server's status changes.
+    let vercel = "plugin:vercel:vercel";
+    assert_eq!(
+        click(&store, &mut ui, &format!("{}{vercel}", view::MCP_CONNECT)),
+        vec![Intent::McpAuthenticate {
+            session: 1,
+            name: vercel.into()
+        }]
+    );
+    assert!(shows(&store, &ui, "Opening sign-in"));
+    let heard = |ui: &mut Ui, event: AgentEvent| {
+        ui.applied(&Event::Agent {
+            session: 1,
+            request: None,
+            event,
+        })
+    };
+    heard(
+        &mut ui,
+        AgentEvent::McpSignIn {
+            server: vercel.into(),
+            url: Some("https://example.com/authorize".into()),
+            error: None,
+        },
+    );
+    assert!(shows(&store, &ui, "Complete sign-in in your browser"));
+    click(&store, &mut ui, &format!("{}{vercel}", view::MCP_ROW));
+    assert!(shows(&store, &ui, "Finished signing in from your browser?"));
+    let mut connected = server(vercel, McpStatus::Connected, Some("vercel"));
+    connected.tools[0] = quill_model::McpTool {
+        name: "deploy".into(),
+        destructive: true,
+        ..Default::default()
+    };
+    heard(
+        &mut ui,
+        AgentEvent::McpServers(vec![server(vercel, McpStatus::NeedsAuth, Some("vercel"))]),
+    );
+    heard(&mut ui, AgentEvent::McpServers(vec![connected.clone()]));
+    agent(&mut store, AgentEvent::McpServers(vec![connected]));
+    assert!(ui.mcp.as_ref().unwrap().phases.is_empty());
+    // Its details: its tools by what they do, and forgetting its credentials after asking.
+    assert!(shows(&store, &ui, "Write/delete tools (1)") && shows(&store, &ui, "deploy"));
+    click(&store, &mut ui, &format!("{}{vercel}", view::MCP_CLEAR));
+    assert!(shows(&store, &ui, "Clear authentication for vercel?"));
+    assert_eq!(
+        click(&store, &mut ui, view::MCP_CLEAR_YES)[0],
+        Intent::McpClearAuth {
+            session: 1,
+            name: vercel.into()
+        }
+    );
+    // A sign-in that needs no one reconnects at once.
+    let again = heard(
+        &mut ui,
+        AgentEvent::McpSignIn {
+            server: vercel.into(),
+            url: None,
+            error: None,
+        },
+    );
+    assert!(again.contains(&Intent::McpReconnect {
+        session: 1,
+        name: vercel.into()
+    }));
+    click(&store, &mut ui, view::MCP_BACK);
     // Open, it asks again on its own; done, it stops.
-    ui.mcp = Some((1, std::time::Instant::now() - crate::MCP_POLL));
+    ui.mcp.as_mut().unwrap().asked = std::time::Instant::now() - crate::MCP_POLL;
     assert_eq!(ui.due(), vec![Intent::McpStatus { session: 1 }]);
     assert!(ui.due().is_empty());
     click(&store, &mut ui, view::MCP_DONE);

@@ -211,6 +211,61 @@ fn mcp_status_tells_each_server_with_where_it_came_from_and_its_tools() {
 }
 
 #[test]
+fn signing_in_to_a_server_gives_its_page_or_why_not() {
+    let mut claude = Claude::new();
+    let sent = claude.encode(AgentCommand::McpAuthenticate("vercel".into()));
+    let request: Value = serde_json::from_str(&sent[0]).unwrap();
+    // No redirect address: the CLI takes the page's answer on its own localhost listener.
+    assert_eq!(
+        request["request"],
+        json!({"subtype": "mcp_authenticate", "serverName": "vercel"})
+    );
+    let id = request["request_id"].clone();
+    // The reply's shape is the CLI's schema (2.1.311, at 0x10f65f60).
+    let reply = json!({"type": "control_response", "response": {"subtype": "success", "request_id": id,
+        "response": {"authUrl": "https://mcp.vercel.com/authorize?x=1", "requiresUserAction": true,
+        "callbackExpected": true, "redirectScheme": "localhost", "callbackPort": 41000}}});
+    let events = claude.decode(&reply.to_string()).events;
+    assert_eq!(
+        events,
+        [AgentEvent::McpSignIn {
+            server: "vercel".into(),
+            url: Some("https://mcp.vercel.com/authorize?x=1".into()),
+            error: None
+        }]
+    );
+    let sent = claude.encode(AgentCommand::McpAuthenticate("rea".into()));
+    let id = serde_json::from_str::<Value>(&sent[0]).unwrap()["request_id"].clone();
+    let refused = json!({"type": "control_response", "response": {"subtype": "error", "request_id": id,
+        "error": "Server type \"stdio\" does not support OAuth authentication"}});
+    let events = claude.decode(&refused.to_string()).events;
+    assert!(
+        matches!(&events[..], [AgentEvent::McpSignIn { url: None, error: Some(e), .. }] if e.contains("stdio"))
+    );
+    // Only an http or sse server not signed in by the account can be signed in from quill.
+    let (_, events, _) = replay_at("2.1.311", "extensions");
+    let Some(AgentEvent::McpServers(servers)) = events
+        .iter()
+        .rfind(|e| matches!(e, AgentEvent::McpServers(_)))
+    else {
+        panic!("{events:?}");
+    };
+    let can: Vec<(&str, bool)> = servers
+        .iter()
+        .map(|s| (s.label.as_str(), s.sign_in))
+        .take(3)
+        .collect();
+    assert_eq!(
+        can,
+        [
+            ("vercel", true),
+            ("rea", false),
+            ("claude.ai Claude Docs", false)
+        ]
+    );
+}
+
+#[test]
 fn skills_and_plugins_are_read_as_the_cli_lists_them() {
     let (_, events, _) = replay_at("2.1.311", "extensions");
     let skills = events.iter().find_map(|e| match e {

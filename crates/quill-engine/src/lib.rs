@@ -749,6 +749,12 @@ impl Router {
             Intent::McpReconnect { session, name } => {
                 (session, Input::Command(AgentCommand::McpReconnect(name)))
             }
+            Intent::McpAuthenticate { session, name } => {
+                (session, Input::Command(AgentCommand::McpAuthenticate(name)))
+            }
+            Intent::McpClearAuth { session, name } => {
+                (session, Input::Command(AgentCommand::McpClearAuth(name)))
+            }
             Intent::McpToggle {
                 session,
                 name,
@@ -1792,6 +1798,16 @@ impl Actor {
                 // A prompt sent while the agent was starting keeps the session running.
                 AgentEvent::Ready { .. } if !self.busy => self.status(SessionStatus::Idle),
                 AgentEvent::PermissionRequest { .. } => self.status(SessionStatus::Awaiting),
+                // A server's sign-in page opens in the person's browser, as Desktop opens it
+                // (2.9939.4 `ce38f2fa6`); only a secure address.
+                AgentEvent::McpSignIn { url: Some(url), .. } if url.starts_with("https://") => {
+                    let _ = Command::new("xdg-open")
+                        .arg(url)
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .spawn();
+                }
                 _ => {}
             }
             let finished = matches!(event, AgentEvent::TurnFinished { .. });
