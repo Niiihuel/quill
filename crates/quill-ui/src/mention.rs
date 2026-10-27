@@ -281,6 +281,23 @@ pub fn clicked(store: &Store, ui: &mut Ui, id: &str) -> bool {
     false
 }
 
+/// The sessions a sent message names: each one whose `@[title]` is still in `text`, by where
+/// that first appears.
+pub(crate) fn mentions_in(
+    text: &str,
+    mentioned: &[(SessionId, String)],
+) -> Vec<(SessionId, String)> {
+    let mut named: Vec<(usize, (SessionId, String))> = mentioned
+        .iter()
+        .filter_map(|(session, title)| {
+            let at = text.find(&format!("@[{title}]"))?;
+            Some((at, (*session, title.clone())))
+        })
+        .collect();
+    named.sort_by_key(|(at, _)| *at);
+    named.into_iter().map(|(_, mention)| mention).collect()
+}
+
 /// Picks row `id` in place of the `@query`: a file as `@path `, a session as `@[title] ` and
 /// recorded in `mentioned_sessions` for the next task.
 fn pick(store: &Store, ui: &mut Ui, id: &str) {

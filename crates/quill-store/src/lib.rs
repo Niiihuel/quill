@@ -96,6 +96,22 @@ impl Store {
         Ok(())
     }
 
+    /// The events of `session`, oldest first; none for a session that is not kept.
+    pub fn load_session(&self, session: SessionId) -> Result<Vec<Event>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT event FROM events WHERE session = ?1 ORDER BY id")?;
+        let rows = statement.query_map(params![session as i64], |row| row.get::<_, String>(0))?;
+        let mut events = vec![];
+        for row in rows {
+            // An event this version cannot read is skipped, as in `load`.
+            if let Ok(event) = serde_json::from_str(&row?) {
+                events.push(event);
+            }
+        }
+        Ok(events)
+    }
+
     /// Every session with its events, oldest session first.
     pub fn load(&self) -> Result<Vec<(SessionId, Vec<Event>)>> {
         let mut statement = self
@@ -219,5 +235,27 @@ mod tests {
             tabs: vec![],
             active: None
         })));
+    }
+
+    #[test]
+    fn one_session_loads_its_own_events_in_order() {
+        let store = Store::in_memory().unwrap();
+        for session in [1, 2] {
+            store
+                .append(
+                    session,
+                    &Event::Queued {
+                        session,
+                        request: "r".into(),
+                        text: format!("hi {session}"),
+                        at: None,
+                    },
+                )
+                .unwrap();
+        }
+        let events = store.load_session(2).unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], Event::Queued { text, .. } if text == "hi 2"));
+        assert!(store.load_session(3).unwrap().is_empty());
     }
 }

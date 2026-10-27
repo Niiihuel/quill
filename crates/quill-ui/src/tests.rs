@@ -222,7 +222,8 @@ fn the_first_message_creates_a_session_then_sends_it() {
         vec![
             Intent::Send {
                 session: 7,
-                text: "hi".into()
+                text: "hi".into(),
+                mentions: vec![],
             },
             Intent::WorkingTree { session: 7 }
         ]
@@ -3897,4 +3898,35 @@ fn slash_and_mention_never_open_together() {
     ui.prompt = "look @log".into();
     assert!(slash_ids(&store, &ui).is_empty());
     assert_eq!(mention_ids(&store, &ui), ["mention:session:2"]);
+}
+
+#[test]
+fn a_sent_session_mention_goes_to_the_engine_numbered_and_not_into_the_text() {
+    let (mut store, mut ui) = store_with_session();
+    named(&mut store, 2, "Login page", "/work/web");
+    named(&mut store, 3, "Billing", "/work/api");
+    // "Gone" was picked and then deleted from the text: it is not sent.
+    ui.mentioned_sessions = vec![
+        (2, "Login page".to_owned()),
+        (3, "Billing".to_owned()),
+        (4, "Gone".to_owned()),
+    ];
+    let typed = "@[Billing] and @[Login page] see the form";
+    let sent = update(
+        &store,
+        &mut ui,
+        &UiAction::Submitted {
+            id: view::COMPOSER.into(),
+            value: typed.into(),
+        },
+    );
+    assert_eq!(
+        sent,
+        [Intent::Send {
+            session: 1,
+            text: typed.into(),
+            mentions: vec![(3, "Billing".to_owned()), (2, "Login page".to_owned())],
+        }]
+    );
+    assert!(ui.mentioned_sessions.is_empty());
 }

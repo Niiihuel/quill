@@ -82,6 +82,7 @@ fn sessions_stream_turns_and_wait_for_decisions() {
     engine.send(Intent::Send {
         session: 1,
         text: "Reply with exactly the word: ok".into(),
+        mentions: vec![],
     });
     let events = until(&rx, |e| {
         matches!(
@@ -129,6 +130,7 @@ fn sessions_stream_turns_and_wait_for_decisions() {
     engine.send(Intent::Send {
         session: 2,
         text: "Use the Bash tool to run exactly: touch denied.txt".into(),
+        mentions: vec![],
     });
     let events = until(&rx, |e| {
         matches!(
@@ -215,6 +217,7 @@ fn a_kept_session_comes_back_and_continues() {
     engine.send(Intent::Send {
         session: 1,
         text: "Reply with exactly the word: ok".into(),
+        mentions: vec![],
     });
     until(&rx, |e| {
         matches!(
@@ -262,6 +265,7 @@ fn a_kept_session_comes_back_and_continues() {
     engine.send(Intent::Send {
         session: 1,
         text: "again".into(),
+        mentions: vec![],
     });
     until(&rx, |e| {
         matches!(
@@ -303,6 +307,7 @@ fn a_request_is_attributed_and_its_undo_puts_files_back() {
     engine.send(Intent::Send {
         session: 1,
         text: "Create rewind.txt containing the line one.".into(),
+        mentions: vec![],
     });
 
     let events = until(&rx, |e| matches!(e, Event::Changes { .. }));
@@ -355,6 +360,7 @@ fn a_name_and_a_pin_are_kept_and_a_deleted_session_is_gone() {
     engine.send(Intent::Send {
         session: 1,
         text: "Reply with exactly the word: ok".into(),
+        mentions: vec![],
     });
     until(&rx, |e| {
         matches!(
@@ -402,6 +408,7 @@ fn a_name_and_a_pin_are_kept_and_a_deleted_session_is_gone() {
     engine.send(Intent::Send {
         session: 2,
         text: "again".into(),
+        mentions: vec![],
     });
     until(&rx, |e| {
         matches!(
@@ -435,6 +442,7 @@ fn a_name_and_a_pin_are_kept_and_a_deleted_session_is_gone() {
     engine.send(Intent::Send {
         session: 1,
         text: "again".into(),
+        mentions: vec![],
     });
     engine.send(Intent::Delete { session: 1 });
     until(&rx, |e| matches!(e, Event::Deleted { session: 1 }));
@@ -463,6 +471,7 @@ fn a_proposed_task_starts_a_linked_session_that_reports_back() {
     engine.send(Intent::Send {
         session: 1,
         text: "Propose a README task".into(),
+        mentions: vec![],
     });
     // The agent's start_session call becomes a proposal; nothing runs yet.
     let events = until(&rx, |e| matches!(e, Event::Proposed { session: 1, .. }));
@@ -521,6 +530,7 @@ fn a_side_question_forks_the_session_beside_it() {
     engine.send(Intent::Send {
         session: 1,
         text: "Reply with exactly the word: ok".into(),
+        mentions: vec![],
     });
     until(&rx, |e| {
         matches!(

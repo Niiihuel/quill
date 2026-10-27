@@ -618,7 +618,7 @@ impl ToolContent {
 
 /// quill's own tools, which an adapter offers its agent where the agent can take tools from
 /// its host: a tool's name, what it is for, and the JSON schema of its input.
-pub const HOST_TOOLS: [(&str, &str, &str); 3] = [
+pub const HOST_TOOLS: [(&str, &str, &str); 4] = [
     (
         "start_session",
         "Start a separate session for a task of its own while you stay with the user, or propose one. `initiation` says who wants it: \"user_asked\" (the user asked in words for separate, parallel or background work) starts it now; \"own_initiative\" (follow-up work you noticed or that your own work turned up, which the user has not asked for) shows the user a card, and nothing runs until they start it there. Both need `prompt`: the brief, standing alone (the task, the files or area, what done looks like). context \"fresh\" (default) gives the new session your `prompt` and `background` only, so `background` is required: the goal, decisions and constraints so far, for someone who has not seen this conversation; \"fork\" gives it this whole conversation and your `prompt`. A session you start reports back to you when its turn ends. A session is for a task of its own that ends in something of its own; searching, independent parts of one change, and checking what you built stay here or go to a subagent. Start nothing the user did not ask for.",
@@ -633,6 +633,11 @@ pub const HOST_TOOLS: [(&str, &str, &str); 3] = [
         "send_to_session",
         "Pass a message from the user to a session you started, when it is about that session's task: a change of plan, a detail, an answer it waits for. The session gets `message` as from the user and carries on there; tell the user in a line that you passed it on. `session` is its title as you started it.",
         r#"{"type":"object","properties":{"session":{"type":"string","description":"The session's title, as you started it."},"message":{"type":"string","description":"What it should know or do, standing alone."}},"required":["session","message"]}"#,
+    ),
+    (
+        "read_session",
+        "Read another quill session the user mentioned: its title, folder and conversation so far (the people's messages and the agent's replies, the latest last). Read-only.",
+        r#"{"type":"object","properties":{"session_id":{"type":"integer"}},"required":["session_id"]}"#,
     ),
 ];
 
@@ -832,3 +837,20 @@ pub const BROWSER_TOOLS: [(&str, &str, &str); 19] = [
 
 /// What an agent is told of the built-in browser, in words of quill's own.
 pub const BROWSER_GUIDE: &str = "# Built-in browser\n\nYou have a browser built into this app, with the browser tools (navigate, read_page, find, get_page_text, form_input, computer, javascript_tool, read_console_messages, read_network_requests, tabs_*). The user sees its tab beside the conversation and can use it too. Use it to check what you build for the web: start the dev server, open it, read the console and the page, act on it, and take a screenshot to show the result instead of asking the user to look. Prefer read_page and find to pick elements by ref; use screenshots to see layout. Local addresses are always allowed; other sites may ask the user first. Do not use it for what a plain fetch answers.";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_session_is_a_host_tool_with_a_session_id() {
+        let schema = HOST_TOOLS
+            .iter()
+            .find(|(name, ..)| *name == "read_session")
+            .map(|(_, _, schema)| *schema)
+            .expect("read_session is a host tool");
+        let schema: serde_json::Value = serde_json::from_str(schema).unwrap();
+        assert_eq!(schema["properties"]["session_id"]["type"], "integer");
+        assert_eq!(schema["required"], serde_json::json!(["session_id"]));
+    }
+}

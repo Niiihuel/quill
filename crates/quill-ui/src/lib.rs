@@ -944,8 +944,9 @@ pub struct Ui {
     /// The editors found on the computer, for Open in.
     pub editors: Vec<Editor>,
     pub expanded: Vec<String>,
-    /// A message written before its session existed, sent once it does.
-    pub waiting: Option<String>,
+    /// A message written before its session existed, and the sessions it mentions, sent once
+    /// it does.
+    pub waiting: Option<(String, Vec<(SessionId, String)>)>,
     /// The request whose changes the diff pane shows.
     pub diff: Option<(SessionId, RequestId)>,
     /// The panes open beside the conversation, in the order they opened: the first sets the
@@ -1230,6 +1231,7 @@ fn session_clicked(store: &Store, ui: &mut Ui, id: &str) -> Option<Vec<Intent>> 
             Some(s) if view::pr_blocked(s).is_none() => vec![Intent::Send {
                 session: s.id,
                 text: pr_request(ui.settings.pr_draft, ui.settings.branch_prefix()),
+                mentions: vec![],
             }],
             _ => vec![],
         });
@@ -2128,13 +2130,14 @@ impl Ui {
                 self.title_edit = None;
                 return vec![Intent::WorkingTree { session: *session }];
             }
-            if let Some(text) = self.waiting.take() {
+            if let Some((text, mentions)) = self.waiting.take() {
                 self.selected = Some(*session);
                 // The branch bar shows from the start, not after the first step.
                 return vec![
                     Intent::Send {
                         session: *session,
                         text,
+                        mentions,
                     },
                     Intent::WorkingTree { session: *session },
                 ];
@@ -2404,7 +2407,11 @@ fn update_action(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Int
             let text = value.trim().to_owned();
             ui.side_reply.clear();
             match ui.side_chat {
-                Some(session) if !text.is_empty() => vec![Intent::Send { session, text }],
+                Some(session) if !text.is_empty() => vec![Intent::Send {
+                    session,
+                    text,
+                    mentions: vec![],
+                }],
                 _ => vec![],
             }
         }
@@ -2415,6 +2422,7 @@ fn update_action(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Int
             }
             ui.prompt.clear();
             ui.slash_dismissed = None;
+            let mentions = mention::mentions_in(&text, &ui.mentioned_sessions);
             ui.mentioned_sessions.clear();
             // "/mcp" shows the session's MCP servers, as Desktop's does (3.6556.2 `cff0db614`).
             if text == "/mcp" {
@@ -2437,9 +2445,13 @@ fn update_action(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Int
                 }];
             }
             match ui.selected {
-                Some(session) => vec![Intent::Send { session, text }],
+                Some(session) => vec![Intent::Send {
+                    session,
+                    text,
+                    mentions,
+                }],
                 None => {
-                    ui.waiting = Some(text);
+                    ui.waiting = Some((text, mentions));
                     vec![Intent::NewSession(NewSession {
                         agent: ui.agent.clone(),
                         cwd: ui.cwd.clone(),

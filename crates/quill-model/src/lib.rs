@@ -314,6 +314,10 @@ pub enum Intent {
     Send {
         session: SessionId,
         text: String,
+        /// The other sessions the message names (`@[title]`), by first appearance: the agent
+        /// is told which session each is, while the stored text stays as typed.
+        #[serde(default)]
+        mentions: Vec<(SessionId, String)>,
     },
     Decide {
         session: SessionId,
