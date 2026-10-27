@@ -1338,6 +1338,17 @@ impl eframe::App for App {
         self.tree
             .set_root(quill_ui::view(&self.store, &self.ui, window));
         let mut frame = self.tree.layout(window);
+        // A tour step whose control is not in view moves on, so no bubble waits on nothing; the
+        // view is built again until a step is found (each move ends or advances the tour).
+        while let Some(target) = frame.missing_coach_target().map(str::to_owned) {
+            let Some(intents) = quill_ui::tour::skip_missing(&mut self.ui, &target) else {
+                break;
+            };
+            self.dispatch(intents);
+            self.tree
+                .set_root(quill_ui::view(&self.store, &self.ui, window));
+            frame = self.tree.layout(window);
+        }
         // A pill that just turned into a name field takes the keys.
         if !was_renaming && self.ui.terminal.renaming.is_some() {
             self.tree.focus(quill_ui::view::TERMINAL_RENAME);

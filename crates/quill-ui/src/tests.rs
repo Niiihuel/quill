@@ -4988,6 +4988,139 @@ fn the_welcome_shows_once_the_settings_are_known_until_get_started() {
     assert!(!crate::welcoming(&test));
 }
 
+fn an_agent_known() -> Vec<quill_model::AgentInfo> {
+    vec![quill_model::AgentInfo {
+        id: "claude".into(),
+        name: "Claude Code".into(),
+        tested: vec![],
+        options: vec![],
+        icon: None,
+    }]
+}
+
+#[test]
+fn get_started_starts_the_tour_which_moves_by_its_buttons_and_saves_when_skipped() {
+    let (store, mut ui) = store_with_session();
+    ui.skip_welcome = false;
+    ui.applied(&Event::Settings {
+        settings: Settings::default(),
+        agents: an_agent_known(),
+    });
+    click(&store, &mut ui, crate::welcome::START);
+    assert_eq!(ui.tour, Some(0));
+    assert!(click(&store, &mut ui, "tour:next").is_empty());
+    assert_eq!(ui.tour, Some(1));
+    assert!(click(&store, &mut ui, "tour:back").is_empty());
+    assert_eq!(ui.tour, Some(0));
+    let saved = click(&store, &mut ui, "tour:skip");
+    assert_eq!(ui.tour, None);
+    assert!(
+        matches!(&saved[..], [Intent::SaveSettings(s)] if s.toured && s.welcomed),
+        "{saved:?}"
+    );
+}
+
+#[test]
+fn the_tour_ends_after_its_last_step_and_on_escape_and_saves_that_it_was_toured() {
+    let (store, mut ui) = store_with_session();
+    ui.tour = Some(0);
+    for _ in 0..5 {
+        click(&store, &mut ui, "tour:next");
+    }
+    assert_eq!(ui.tour, Some(5));
+    let saved = click(&store, &mut ui, "tour:next");
+    assert!(
+        matches!(&saved[..], [Intent::SaveSettings(s)] if s.toured),
+        "{saved:?}"
+    );
+    assert_eq!(ui.tour, None);
+    // Escape reports the tour's own ID, which ends it as Skip does.
+    ui.tour = Some(2);
+    let saved = click(&store, &mut ui, "tour");
+    assert!(
+        matches!(&saved[..], [Intent::SaveSettings(s)] if s.toured),
+        "{saved:?}"
+    );
+    assert_eq!(ui.tour, None);
+}
+
+#[test]
+fn the_account_menu_takes_the_tour_again() {
+    let (store, mut ui) = store_with_session();
+    ui.settings.toured = true;
+    ui.account_menu = true;
+    assert!(click(&store, &mut ui, crate::tour::START).is_empty());
+    assert_eq!(ui.tour, Some(0));
+    assert!(!ui.account_menu);
+}
+
+#[test]
+fn a_welcomed_person_who_never_toured_sees_the_tour_once_at_the_start() {
+    let (_, mut ui) = store_with_session();
+    ui.skip_welcome = false;
+    ui.applied(&Event::Settings {
+        settings: Settings {
+            welcomed: true,
+            ..Settings::default()
+        },
+        agents: an_agent_known(),
+    });
+    assert_eq!(ui.tour, Some(0));
+    // A toured person's start shows nothing, and a stand-in run's never does.
+    let (_, mut toured) = store_with_session();
+    toured.skip_welcome = false;
+    toured.applied(&Event::Settings {
+        settings: Settings {
+            welcomed: true,
+            toured: true,
+            ..Settings::default()
+        },
+        agents: an_agent_known(),
+    });
+    assert_eq!(toured.tour, None);
+    let (_, mut stand_in) = store_with_session();
+    stand_in.applied(&Event::Settings {
+        settings: Settings {
+            welcomed: true,
+            ..Settings::default()
+        },
+        agents: an_agent_known(),
+    });
+    assert_eq!(stand_in.tour, None);
+}
+
+#[test]
+fn a_step_whose_control_is_not_in_view_is_passed_and_only_the_current_one_is() {
+    let (_, mut ui) = store_with_session();
+    ui.tour = Some(0);
+    assert_eq!(crate::tour::skip_missing(&mut ui, "new-session"), None);
+    assert_eq!(ui.tour, Some(0));
+    assert_eq!(
+        crate::tour::skip_missing(&mut ui, view::COMPOSER),
+        Some(vec![])
+    );
+    assert_eq!(ui.tour, Some(1));
+    // The last step passed is the end of the tour, which is saved as seen.
+    ui.tour = Some(5);
+    let saved = crate::tour::skip_missing(&mut ui, view::ACCOUNT_MENU);
+    assert!(
+        matches!(saved.as_deref(), Some([Intent::SaveSettings(s)]) if s.toured),
+        "{saved:?}"
+    );
+    assert_eq!(ui.tour, None);
+}
+
+#[test]
+fn every_step_points_at_a_control_the_window_lays_out() {
+    let (store, mut ui) = store_with_session();
+    let window = limn::Size::new(1408.0, 844.0);
+    for step in 0..6 {
+        ui.tour = Some(step);
+        let frame = UiTree::new(view(&store, &ui, window)).layout(window);
+        assert_eq!(frame.missing_coach_target(), None, "step {step}");
+    }
+}
+
 #[test]
 fn a_ready_update_puts_restart_in_the_settings_row() {
     let (store, mut ui) = store_with_session();

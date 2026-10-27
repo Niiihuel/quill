@@ -576,6 +576,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     let root = removing_dialog(ui, root);
     let root = image_viewer(ui, root, window, palette);
     let root = annotator(ui, root, window, palette);
+    let root = crate::tour::layer(ui, root, palette);
     // Desktop's own wording for both closes (Ion `cccc2cf0a`,) and for a delete
     //, less its vendor's servers: quill forgets only its own record.
     let tabs = &ui.terminal.tabs;
@@ -2032,6 +2033,11 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
     ))
     .radius(8.0);
     let mut entries = crate::updates::account_entries(ui);
+    entries.push(
+        limn::DropdownMenuItem::new(crate::tour::START, "Take the tour")
+            .icon(icons::of(icons::QUESTION))
+            .into(),
+    );
     entries.push(
         limn::DropdownMenuItem::new(SETTINGS_OPEN, "Settings")
             .icon(icons::of(icons::SETTINGS))

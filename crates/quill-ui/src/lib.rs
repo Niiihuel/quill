@@ -7,6 +7,7 @@ mod files;
 mod mention;
 mod pixels;
 mod slash;
+pub mod tour;
 mod updates;
 pub use quill_components::{icons, look};
 pub mod view;
@@ -1103,6 +1104,8 @@ pub struct Ui {
     /// The host runs quill with a stand-in agent and no settings kept (tests, captures): the
     /// welcome is not shown, unless `QUILL_WELCOME` asks for it.
     pub skip_welcome: bool,
+    /// The tour's step, from zero, while it runs (`tour`).
+    pub tour: Option<usize>,
     pub panel_shown: limn::ScalarSpring,
     /// How far the column of panes is open, 0 to 1, on a spring as it opens and shuts, and
     /// the last pane closed, which it still shows while it shuts.
@@ -1834,6 +1837,7 @@ impl Ui {
             hovered: None,
             welcome_since: Default::default(),
             skip_welcome: false,
+            tour: None,
             panel_shown: limn::ScalarSpring::new(look::PANEL_WIDTH, std::time::Instant::now()),
             column_shown: limn::ScalarSpring::new(0.0, std::time::Instant::now()),
             closing: None,
@@ -2229,6 +2233,7 @@ impl Ui {
     pub fn applied(&mut self, event: &Event) -> Vec<Intent> {
         mention::heard(self, event);
         updates::heard(self, event);
+        tour::heard(self, event);
         let mut intents = files::heard(self, event);
         intents.extend(self.mcp_heard(event));
         intents.extend(self.applied_to_view(event));
@@ -3089,6 +3094,7 @@ pub fn terminal_key(
 fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
     if id == welcome::START {
         ui.settings.welcomed = true;
+        tour::after_welcome(ui);
         return vec![Intent::SaveSettings(ui.settings.clone())];
     }
     if let Some(index) = id
@@ -3150,6 +3156,9 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         return vec![];
     }
     if let Some(intents) = updates::clicked(ui, id) {
+        return intents;
+    }
+    if let Some(intents) = tour::clicked(ui, id) {
         return intents;
     }
     if let Some(intents) = settings_clicked(ui, id) {

@@ -98,6 +98,10 @@ pub struct Settings {
     /// The welcome was seen and its Get started pressed.
     #[serde(default)]
     pub welcomed: bool,
+    /// The tour after the welcome was finished or skipped; it shows again only from the
+    /// account menu.
+    #[serde(default)]
+    pub toured: bool,
     pub theme: Theme,
     /// The size of the conversation's words.
     pub text_size: TextSize,
@@ -176,6 +180,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             welcomed: false,
+            toured: false,
             theme: Theme::System,
             text_size: TextSize::Medium,
             transcript_view: TranscriptView::Normal,
