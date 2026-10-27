@@ -6,7 +6,7 @@ use quill_agent::{
     AgentAdapter, AgentCapabilities, AgentCommand, AgentEvent, AgentId, CommandRun,
     ContextCategory, ContextKind, ContextUsage, Decision, Decoded, ExtensionOp, FileChange,
     LaunchPlan, Marketplace, McpServer, McpSource, McpStatus, McpTool, ModelInfo, PlanLimits,
-    Plugin, PluginOffer, ProgramRun, SessionSpec, Skill, Suggestion, ToolContent, Usage,
+    Plugin, PluginOffer, ProgramRun, SessionSpec, Skill, Suggestion, TaskUsage, ToolContent, Usage,
     UsageWindow, BROWSER_GUIDE, BROWSER_TOOLS, HOST_TOOLS,
 };
 use serde_json::{json, Value};
@@ -574,6 +574,10 @@ impl AgentAdapter for Claude {
             AgentCommand::McpReconnect(name) => vec![self.request(json!({
                 "subtype": "mcp_reconnect", "serverName": name,
             }))],
+            // Desktop's Stop on a background task (3.6556.2 bundle `stopTask`).
+            AgentCommand::StopTask(id) => vec![self.request(json!({
+                "subtype": "stop_task", "task_id": id,
+            }))],
             AgentCommand::McpToggle { name, enabled } => vec![self.request(json!({
                 "subtype": "mcp_toggle", "serverName": name, "enabled": enabled,
             }))],
@@ -724,10 +728,25 @@ impl AgentAdapter for Claude {
                 id: text(&msg["task_id"]),
                 call: msg["tool_use_id"].as_str().map(str::to_owned),
                 description: text(&msg["description"]),
+                // Desktop's names for the CLI's task types (3.6556.2 `cccc2cf0a` `PM`).
+                kind: match msg["task_type"].as_str().unwrap_or_default() {
+                    "local_agent" | "in_process_teammate" | "remote_agent" => "agent",
+                    "local_bash" => "command",
+                    "local_workflow" => "workflow",
+                    "monitor_mcp" | "monitor_ws" => "monitor",
+                    _ => "task",
+                }
+                .into(),
             }),
             ("system", Some(kind @ ("task_progress" | "task_notification"))) => {
-                if let Some(total) = msg["usage"]["total_tokens"].as_u64() {
-                    self.task_tokens.insert(text(&msg["task_id"]), total);
+                let usage = &msg["usage"];
+                let usage = usage.is_object().then(|| TaskUsage {
+                    tokens: usage["total_tokens"].as_u64().unwrap_or(0),
+                    tool_uses: usage["tool_uses"].as_u64().unwrap_or(0),
+                    duration_ms: usage["duration_ms"].as_u64().unwrap_or(0),
+                });
+                if let Some(usage) = usage {
+                    self.task_tokens.insert(text(&msg["task_id"]), usage.tokens);
                     decoded.events.push(self.tokens());
                 }
                 if kind == "task_notification" {
@@ -736,6 +755,13 @@ impl AgentAdapter for Claude {
                         call: msg["tool_use_id"].as_str().map(str::to_owned),
                         summary: msg["summary"].as_str().map(str::to_owned),
                         ok: msg["status"] == "completed",
+                        stopped: msg["status"] == "stopped" || msg["status"] == "killed",
+                        usage,
+                    });
+                } else if let Some(usage) = usage {
+                    decoded.events.push(AgentEvent::TaskProgress {
+                        id: text(&msg["task_id"]),
+                        usage,
                     });
                 }
             }

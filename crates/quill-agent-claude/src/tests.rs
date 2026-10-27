@@ -668,10 +668,14 @@ fn a_helper_agent_is_a_task_tied_to_its_call() {
     });
     assert!(call.is_some());
     assert!(events.iter().any(|e| matches!(e,
-        AgentEvent::TaskStarted { call: c, description, .. }
-            if *c == call && description == "Read README and list repo")));
+        AgentEvent::TaskStarted { call: c, description, kind, .. }
+            if *c == call && description == "Read README and list repo" && kind == "agent")));
+    // What it used as it went, and in all once it ended.
     assert!(events.iter().any(|e| matches!(e,
-        AgentEvent::TaskEnded { call: c, summary: Some(_), ok: true, .. } if *c == call)));
+        AgentEvent::TaskProgress { usage, .. } if usage.tool_uses == 1 && usage.tokens == 11312)));
+    assert!(events.iter().any(|e| matches!(e,
+        AgentEvent::TaskEnded { call: c, summary: Some(_), ok: true, stopped: false, usage: Some(u), .. }
+            if *c == call && u.tokens == 14773 && u.duration_ms == 3390)));
     // Its own steps come tied to the call that started it.
     assert!(events.iter().any(|e| matches!(e,
         AgentEvent::ToolUse { name, parent: Some(p), .. } if name == "Bash" && Some(p) == call.as_ref())));

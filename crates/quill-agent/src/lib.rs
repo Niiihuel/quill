@@ -37,6 +37,14 @@ pub struct SessionSpec {
     pub allow_unsafe: bool,
 }
 
+/// What a task has used: its tokens, its tool calls and how long it has run.
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TaskUsage {
+    pub tokens: u64,
+    pub tool_uses: u64,
+    pub duration_ms: u64,
+}
+
 /// One model the agent offers, with the efforts it accepts.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ModelInfo {
@@ -357,18 +365,31 @@ pub enum AgentEvent {
         tokens: u64,
     },
     /// Work the agent runs beside its turn began: a helper agent, a command in the
-    /// background. `call` is the tool call that started it.
+    /// background. `call` is the tool call that started it; `kind` says what it is in
+    /// quill's words: `agent`, `command`, `workflow`, `monitor` or `task`.
     TaskStarted {
         id: String,
         call: Option<String>,
         description: String,
+        #[serde(default)]
+        kind: String,
     },
-    /// That work ended; `summary` is its own account of what it did.
+    /// What that work has used so far.
+    TaskProgress {
+        id: String,
+        usage: TaskUsage,
+    },
+    /// That work ended; `summary` is its own account of what it did, `stopped` when it was
+    /// stopped before it finished, and `usage` what it used.
     TaskEnded {
         id: String,
         call: Option<String>,
         summary: Option<String>,
         ok: bool,
+        #[serde(default)]
+        stopped: bool,
+        #[serde(default)]
+        usage: Option<TaskUsage>,
     },
     ToolUse {
         call: String,
@@ -483,6 +504,8 @@ pub enum AgentCommand {
     McpStatus,
     /// Connect a server that failed or has not connected again, by its name.
     McpReconnect(String),
+    /// Stop a task that runs beside the turn, by its id.
+    StopTask(String),
     /// Turn a server on or off, by its name.
     McpToggle {
         name: String,

@@ -785,6 +785,7 @@ fn a_helper_agent_keeps_its_steps_and_counts_as_running_work() {
             id: "t1".into(),
             call: Some("a1".into()),
             description: "List files in folder".into(),
+            kind: "agent".into(),
         },
     );
     tool(
@@ -825,6 +826,8 @@ fn a_helper_agent_keeps_its_steps_and_counts_as_running_work() {
             call: Some("a1".into()),
             summary: Some("Two files.".into()),
             ok: true,
+            stopped: false,
+            usage: None,
         },
     );
     assert!(!store.session(1).unwrap().task_running("a1"));
@@ -1193,6 +1196,67 @@ fn a_fork_starts_with_its_parents_conversation_and_opens() {
     let fork = store.session(2).unwrap();
     assert_eq!(fork.items, store.session(1).unwrap().items);
     assert_eq!(fork.title, "Fix the bug (fork)");
+}
+
+#[test]
+fn background_tasks_list_running_and_finished_stop_and_clear() {
+    let (mut store, mut ui) = store_with_session();
+    for (id, kind) in [("t1", "agent"), ("t2", "command")] {
+        agent(
+            &mut store,
+            AgentEvent::TaskStarted {
+                id: id.into(),
+                call: Some(format!("c{id}")),
+                description: format!("Task {id}"),
+                kind: kind.into(),
+            },
+        );
+    }
+    let usage = quill_model::TaskUsage {
+        tokens: 178_600,
+        tool_uses: 31,
+        duration_ms: 285_000,
+    };
+    agent(
+        &mut store,
+        AgentEvent::TaskEnded {
+            id: "t1".into(),
+            call: Some("ct1".into()),
+            summary: None,
+            ok: true,
+            stopped: false,
+            usage: Some(usage),
+        },
+    );
+    click(&store, &mut ui, view::TASKS_OPEN);
+    settle(&store, &mut ui);
+    let window = limn::Size::new(1408.0, 844.0);
+    let shows = |ui: &Ui, words: &str| {
+        let frame = UiTree::new(view(&store, ui, window)).layout(window);
+        frame.commands.iter().any(|command| {
+            matches!(command, limn::DrawCommand::Text { text, .. } if text.contains(words))
+        })
+    };
+    for words in [
+        "Running 1",
+        "Finished 1",
+        "Completed",
+        "4m 45s",
+        "178.6k tokens",
+        "31 tool uses",
+        "View transcript",
+    ] {
+        assert!(shows(&ui, words), "{words}");
+    }
+    assert_eq!(
+        click(&store, &mut ui, "task:stop:t2"),
+        vec![Intent::StopTask {
+            session: 1,
+            task: "t2".into()
+        }]
+    );
+    click(&store, &mut ui, view::TASKS_CLEAR);
+    assert!(!shows(&ui, "Finished 1") && shows(&ui, "Running 1"));
 }
 
 #[test]

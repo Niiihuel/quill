@@ -146,7 +146,8 @@ pub struct Session {
     pub agent_version: Option<String>,
 }
 
-/// Work the agent runs beside its turns, as Desktop counts "1 running task".
+/// Work the agent runs beside its turns, as Desktop counts "1 running task" and
+/// lists them in its Background tasks.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Task {
     pub id: String,
@@ -154,6 +155,14 @@ pub struct Task {
     pub description: String,
     pub summary: Option<String>,
     pub running: bool,
+    /// `agent`, `command`, `workflow`, `monitor` or `task`.
+    pub kind: String,
+    /// How it ended when not done: it failed, or it was stopped.
+    pub failed: bool,
+    pub stopped: bool,
+    pub usage: Option<quill_model::TaskUsage>,
+    /// When it began here, for its clock while it runs.
+    pub since: std::time::Instant,
 }
 
 impl Session {
@@ -517,17 +526,38 @@ fn agent_event(s: &mut Session, event: AgentEvent) {
             id,
             call,
             description,
+            kind,
         } if !s.tasks.iter().any(|t| t.id == id) => s.tasks.push(Task {
             id,
             call,
             description,
             summary: None,
             running: true,
+            kind,
+            failed: false,
+            stopped: false,
+            usage: None,
+            since: std::time::Instant::now(),
         }),
-        AgentEvent::TaskEnded { id, summary, .. } => {
+        AgentEvent::TaskProgress { id, usage } => {
+            if let Some(task) = s.tasks.iter_mut().find(|t| t.id == id) {
+                task.usage = Some(usage);
+            }
+        }
+        AgentEvent::TaskEnded {
+            id,
+            summary,
+            ok,
+            stopped,
+            usage,
+            ..
+        } => {
             if let Some(task) = s.tasks.iter_mut().find(|t| t.id == id) {
                 task.running = false;
                 task.summary = summary;
+                task.failed = !ok && !stopped;
+                task.stopped = stopped;
+                task.usage = usage.or(task.usage);
             }
         }
         // A helper's own steps and words go with the call that started it, for its pane.
@@ -881,6 +911,9 @@ pub struct Ui {
     pub waiting_fork: bool,
     /// Words the host puts back in the message box: a message rewound or forked from.
     pub restore_prompt: Option<String>,
+    /// Finished background tasks cleared from their pane.
+    /// shortcut: kept for this run only; they come back after a restart.
+    pub cleared_tasks: std::collections::HashSet<String>,
     /// The Completed group shows every session, not its first few.
     pub show_more: bool,
     /// The side chat its pane shows, one asked for that the engine is making, and what its
@@ -1296,10 +1329,12 @@ pub enum Pane {
     Browser,
     /// The session's folder, as a tree of its files.
     Files,
+    /// What the session's agent runs beside its turns, Desktop's Background tasks.
+    Tasks,
 }
 
 impl Pane {
-    pub const ALL: [Pane; 7] = [
+    pub const ALL: [Pane; 8] = [
         Pane::Diff,
         Pane::Terminal,
         Pane::Agent,
@@ -1307,6 +1342,7 @@ impl Pane {
         Pane::Side,
         Pane::Browser,
         Pane::Files,
+        Pane::Tasks,
     ];
 
     /// The share of the room right of the sidebar this pane opens the column at. The widest
@@ -1317,7 +1353,7 @@ impl Pane {
             // captures of 2026-10-25, see look.rs).
             Pane::Diff => 0.6,
             // A helper agent and a plan open at a third too.
-            Pane::Terminal | Pane::Agent | Pane::Plan => 1.0 / 3.0,
+            Pane::Terminal | Pane::Agent | Pane::Plan | Pane::Tasks => 1.0 / 3.0,
             // A session beside reads at about Desktop's thread pane.
             Pane::Side => 0.42,
             // Inferred: a file reads best at half the room, its tree beside it, and so does a
@@ -1335,6 +1371,7 @@ impl Pane {
             Pane::Side => "side",
             Pane::Browser => "browser",
             Pane::Files => "files",
+            Pane::Tasks => "tasks",
         }
     }
 }
@@ -1471,6 +1508,7 @@ impl Ui {
             filter_menu: None,
             waiting_fork: false,
             restore_prompt: None,
+            cleared_tasks: Default::default(),
             show_more: false,
             side_chat: None,
             side_waiting: false,
@@ -1743,7 +1781,7 @@ impl Ui {
             Pane::Plan => self.plan = None,
             Pane::Side => self.side_chat = None,
             // A session's tree stays as it was, to open again where it was.
-            Pane::Terminal | Pane::Browser | Pane::Files => {}
+            Pane::Terminal | Pane::Browser | Pane::Files | Pane::Tasks => {}
         }
     }
 
@@ -2595,6 +2633,52 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
             });
         }
         return intents;
+    }
+    if id == view::TASKS_OPEN {
+        ui.open_pane(Pane::Tasks);
+        return vec![];
+    }
+    if id == view::TASKS_TOGGLE {
+        if ui.pane_open(Pane::Tasks) {
+            ui.close_pane(Pane::Tasks);
+        } else {
+            ui.open_pane(Pane::Tasks);
+        }
+        return vec![];
+    }
+    if id == view::TASKS_CLEAR {
+        let finished = (ui.selected.and_then(|s| store.session(s)))
+            .map(|s| {
+                s.tasks
+                    .iter()
+                    .filter(|t| !t.running)
+                    .map(|t| t.id.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        ui.cleared_tasks.extend(finished);
+        return vec![];
+    }
+    if let Some(key) = ["tasks:running", "tasks:finished"]
+        .into_iter()
+        .find(|k| *k == id)
+    {
+        match ui.expanded.iter().position(|k| k == key) {
+            Some(at) => drop(ui.expanded.remove(at)),
+            None => ui.expanded.push(key.to_owned()),
+        }
+        return vec![];
+    }
+    if let Some(task) = id.strip_prefix("task:stop:") {
+        return ui
+            .selected
+            .map(|session| {
+                vec![Intent::StopTask {
+                    session,
+                    task: task.to_owned(),
+                }]
+            })
+            .unwrap_or_default();
     }
     if let Some(call) = id.strip_prefix("agent:") {
         ui.helper = Some(call.to_owned());

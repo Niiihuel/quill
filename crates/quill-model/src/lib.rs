@@ -6,7 +6,8 @@ use std::path::PathBuf;
 pub use quill_agent::{
     AgentCapabilities, AgentEvent, ContextCategory, ContextKind, ContextUsage, Decision,
     ExtensionOp, Extensions, FileChange, Marketplace, McpServer, McpSource, McpStatus, McpTool,
-    ModelInfo, PlanLimits, Plugin, PluginOffer, Skill, Suggestion, ToolContent, Usage, UsageWindow,
+    ModelInfo, PlanLimits, Plugin, PluginOffer, Skill, Suggestion, TaskUsage, ToolContent, Usage,
+    UsageWindow,
 };
 
 /// quill's own id of a session.
@@ -214,6 +215,11 @@ pub enum Intent {
     McpReconnect {
         session: SessionId,
         name: String,
+    },
+    /// Stop a task that runs beside the session's turn, by its id.
+    StopTask {
+        session: SessionId,
+        task: String,
     },
     /// Sign in to one of the session's MCP servers: the agent gives the page, which the
     /// engine opens in the browser.

@@ -214,6 +214,10 @@ pub const STACK_HANDLE: &str = "split:stack";
 /// address bar, and the toolbar's buttons; tabs are "browser:tab:{id}" and their close
 /// "browser:close:{id}".
 pub const BROWSER_TOGGLE: &str = "browser:toggle";
+/// The Background tasks pane: its opening from the running line, and its trash.
+pub const TASKS_OPEN: &str = "tasks:open";
+pub const TASKS_TOGGLE: &str = "tasks:toggle";
+pub const TASKS_CLEAR: &str = "tasks:clear";
 /// The Files pane: the session's folder as a tree, and the tree's filter.
 pub const FILES_TOGGLE: &str = "files:toggle";
 pub use crate::files::{FILTER_CLEAR, FILTER_FIELD};
@@ -417,6 +421,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
                 Pane::Side => side_pane(store, ui, width, height, palette),
                 Pane::Browser => browser_pane(session, ui, width, height, palette),
                 Pane::Files => files_pane(ui, width, height, palette),
+                Pane::Tasks => tasks_pane(session, ui, width, height, palette),
             };
             stack.push(if i == 0 {
                 drawn
@@ -891,6 +896,165 @@ fn found_view(pane: &crate::files::FilesPane, width: f32, height: f32) -> Elemen
     Element::scroll("tree:found", Element::column(rows).gap(2.0).padding(6.0))
         .size(Some(width), Some(height))
         .clip_children()
+}
+
+/// Desktop's Background tasks (3.6556.2 `cccc2cf0a` `QM`, the person's capture of
+/// 2026-10-27): what the agent runs beside its turns, under Running and Finished with their
+/// counts, each its description over what it is, how it stands and how long it ran, then
+/// what it used and, for a helper agent, "View transcript" (its pane). A running one stops;
+/// the trash clears the finished. Desktop also names each agent's model, which the agent's
+/// task reports do not say.
+fn tasks_pane(
+    session: Option<&Session>,
+    ui: &Ui,
+    width: f32,
+    height: f32,
+    palette: ComponentPalette,
+) -> Element {
+    let tasks: Vec<&crate::Task> = session.map_or(vec![], |s| {
+        (s.tasks.iter())
+            .filter(|t| !ui.cleared_tasks.contains(&t.id))
+            .collect()
+    });
+    let finished = tasks.iter().filter(|t| !t.running).count();
+    let mut tools = vec![];
+    if finished > 0 {
+        tools.push(icon_tool(
+            TASKS_CLEAR,
+            icons::of(icons::TRASH),
+            "Clear finished tasks",
+            28.0,
+            palette,
+        ));
+    }
+    tools.extend(pane_tools(Pane::Tasks, ui, palette));
+    let header = pane_header(text("Background tasks").centered_y(), tools, width);
+    let below = height - look::PANE_HEADER - 1.0;
+    if tasks.is_empty() {
+        let fill = || Element::spacer().flex(1.0);
+        let body = Element::column(vec![
+            fill(),
+            Element::icon(icons::of(icons::AGENTS))
+                .foreground(look::muted())
+                .large_icon(24.0)
+                .size(Some(24.0), Some(24.0))
+                .centered_x(),
+            muted("Background tasks appear here").centered_x(),
+            fill(),
+        ])
+        .gap(10.0)
+        .size(Some(width), Some(below));
+        return Element::column(vec![header, body]).size(Some(width), Some(height));
+    }
+    let inner = width - 32.0;
+    let words = |s: String| muted(s).font_size(SMALL).centered_y();
+    let row = |task: &crate::Task| {
+        let kind = match task.kind.as_str() {
+            "agent" => "Agent",
+            "command" => "Bash",
+            "workflow" => "Workflow",
+            "monitor" => "Monitor",
+            _ => "Task",
+        };
+        let state = if task.running {
+            "Running"
+        } else if task.stopped {
+            "Stopped"
+        } else if task.failed {
+            "Failed"
+        } else {
+            "Completed"
+        };
+        let ran = if task.running {
+            Some(task.since.elapsed().as_secs())
+        } else {
+            task.usage.map(|u| u.duration_ms / 1000)
+        };
+        let mut line = vec![words(kind.into()), words(state.into())];
+        line.extend(ran.map(|secs| words(elapsed(secs))));
+        let mut lines = vec![
+            Element::truncated_text(task.description.clone())
+                .font_family(FontFamily::Sans)
+                .font_size(BODY)
+                .foreground(look::palette().text)
+                .max_width(inner),
+            Element::row(line).gap(12.0).size(None, Some(20.0)),
+        ];
+        let mut used = vec![];
+        if let Some(usage) = task.usage.filter(|u| u.tokens > 0) {
+            used.push(words(tokens(usage.tokens)));
+            used.push(words(match usage.tool_uses {
+                1 => "1 tool use".into(),
+                n => format!("{n} tool uses"),
+            }));
+        }
+        if let (Some(call), "agent") = (&task.call, task.kind.as_str()) {
+            used.push(
+                limn::Link::new(format!("agent:{call}"), "View transcript", palette)
+                    .ink(look::handle())
+                    .font_size(SMALL)
+                    .render()
+                    .centered_y(),
+            );
+        }
+        if !used.is_empty() {
+            lines.push(Element::row(used).gap(12.0).size(None, Some(20.0)));
+        }
+        let mut items = vec![Element::column(lines).gap(4.0).flex(1.0)];
+        if task.running {
+            items.push(
+                keyed_button(
+                    &format!("task:stop:{}", task.id),
+                    "Stop",
+                    "",
+                    false,
+                    true,
+                    palette,
+                )
+                .centered_y(),
+            );
+        }
+        // Flush with the group's name, 10 above and below, over a hairline, as Desktop's.
+        let gap = || Element::spacer().size(None, Some(10.0));
+        Element::column(vec![
+            gap(),
+            Element::row(items).gap(8.0).size(Some(inner), None),
+            gap(),
+            hline(inner, look::divider()),
+        ])
+    };
+    let mut column = vec![];
+    for (key, label, running) in [
+        ("tasks:running", "Running", true),
+        ("tasks:finished", "Finished", false),
+    ] {
+        let group: Vec<&&crate::Task> = tasks.iter().filter(|t| t.running == running).collect();
+        if group.is_empty() {
+            continue;
+        }
+        // Open until folded, as Desktop's groups start.
+        let open = !ui.expanded.iter().any(|k| k == key);
+        column.push(Element::clickable(
+            key,
+            Element::row(vec![
+                muted(format!("{label} {}", group.len())).centered_y(),
+                caret(open),
+            ])
+            .gap(6.0)
+            .size(None, Some(32.0)),
+        ));
+        if open {
+            column.extend(group.into_iter().map(|t| row(t)));
+        }
+    }
+    let body = Element::scroll(
+        "tasks:scroll",
+        Element::column(column)
+            .padding(16.0)
+            .size(Some(width), None),
+    )
+    .size(Some(width), Some(below));
+    Element::column(vec![header, body]).size(Some(width), Some(height))
 }
 
 /// The file on screen, as Desktop's: its path, folders muted leading to the tree and its name
@@ -1525,6 +1689,16 @@ fn top_bar(session: Option<&Session>, ui: &Ui, main: f32, beside: f32) -> Elemen
             "Browser",
             ui.pane_open(Pane::Browser),
             Some("Ctrl+Shift+B"),
+        ));
+    }
+    // Once the session has some, as Desktop's menu lists Background tasks then.
+    if session.is_some_and(|s| !s.tasks.is_empty()) {
+        row.push(toggle(
+            TASKS_TOGGLE,
+            icons::of(icons::AGENTS),
+            "Background tasks",
+            ui.pane_open(Pane::Tasks),
+            None,
         ));
     }
     row.push(toggle(
@@ -2985,15 +3159,20 @@ fn status_line(
             if session.tokens > 0 {
                 parts.push(tokens(session.tokens));
             }
-            parts.extend(tasks);
             if session.thinking {
                 parts.push("Thinking".into());
             }
-            Element::row(vec![
+            let mut line = vec![
                 dots(),
                 muted(parts.join(" · ")).font_size(chat()).centered_y(),
-            ])
-            .gap(12.0)
+            ];
+            // The running tasks open their pane.
+            line.extend(tasks.map(|tasks| {
+                Element::clickable(TASKS_OPEN, muted(tasks).font_size(chat()))
+                    .underline_on_hover()
+                    .centered_y()
+            }));
+            Element::row(line).gap(12.0)
         }
         // A ringed orange dot and a white pill with an orange edge.
         SessionStatus::Awaiting => Element::row(vec![
@@ -3023,9 +3202,12 @@ fn status_line(
         SessionStatus::Failed(error) => text(error.clone()).foreground(look::removed()),
         SessionStatus::Idle | SessionStatus::Exited => {
             let tasks = tasks?;
-            TextShimmer::new("status:tasks", tasks, palette)
-                .render()
-                .font_size(chat())
+            Element::clickable(
+                TASKS_OPEN,
+                TextShimmer::new("status:tasks", tasks, palette)
+                    .render()
+                    .font_size(chat()),
+            )
         }
     })
 }

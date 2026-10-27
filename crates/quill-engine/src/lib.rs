@@ -774,6 +774,9 @@ impl Router {
                 (session, Input::Command(AgentCommand::ContextUsage))
             }
             Intent::McpStatus { session } => (session, Input::Command(AgentCommand::McpStatus)),
+            Intent::StopTask { session, task } => {
+                (session, Input::Command(AgentCommand::StopTask(task)))
+            }
             Intent::McpReconnect { session, name } => {
                 (session, Input::Command(AgentCommand::McpReconnect(name)))
             }

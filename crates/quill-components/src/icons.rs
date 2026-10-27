@@ -105,6 +105,14 @@ pub const CLOUD: &str = icon!(
 /// Reload: a circle's arc and its arrowhead, at the set's scale.
 pub const RELOAD: &str =
     icon!("<path d='M16.25 10a6.25 6.25 0 1 1-1.83-4.42M16.25 3.25v3.5h-3.5'/>");
+/// A bin with its lid, for clearing what is done.
+pub const TRASH: &str = icon!(
+    "<path d='M3.5 5.5h13M8 5.5V3.75h4V5.5M5 5.5l.75 10.25a1.5 1.5 0 0 0 1.5 1.5h5.5a1.5 1.5 0 0 0 1.5-1.5L15 5.5M8.5 8.75v5M11.5 8.75v5'/>"
+);
+/// Two figures, one behind the other: work that runs on its own beside the turn.
+pub const AGENTS: &str = icon!(
+    "<circle cx='8' cy='7' r='3'/><path d='M2.75 16.5a5.25 5.25 0 0 1 10.5 0M12.5 4.25a3 3 0 0 1 0 5.5M14.75 12a5.25 5.25 0 0 1 2.5 4.5'/>"
+);
 /// Rewind: Reload's arc turned back, as Desktop's "Rewind to here".
 pub const REWIND: &str = icon!("<path d='M3.75 10a6.25 6.25 0 1 0 1.83-4.42M3.75 3.25v3.5h3.5'/>");
 pub const GLOBE: &str = icon!(
@@ -221,6 +229,8 @@ pub const ALL: &[(&str, &str)] = &[
     ("file", FILE),
     ("laptop", LAPTOP),
     ("rewind", REWIND),
+    ("trash", TRASH),
+    ("agents", AGENTS),
     ("briefcase", BRIEFCASE),
     ("hand", HAND),
     ("scroll", SCROLL),
