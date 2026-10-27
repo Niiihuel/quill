@@ -125,6 +125,22 @@ pub const RELOAD: &str =
 pub const TRASH: &str = icon!(
     "<path d='M3.5 5.5h13M8 5.5V3.75h4V5.5M5 5.5l.75 10.25a1.5 1.5 0 0 0 1.5 1.5h5.5a1.5 1.5 0 0 0 1.5-1.5L15 5.5M8.5 8.75v5M11.5 8.75v5'/>"
 );
+/// A pencil: the annotation editor's pen.
+pub const PENCIL: &str = icon!(
+    "<path d='M12.75 4.25l3 3M3.75 16.25l.75-3.25L13.5 3.75a1.75 1.75 0 0 1 2.5 2.5L7 15.5z'/>"
+);
+/// An arc turning back, for undo.
+pub const UNDO: &str = icon!("<path d='M7.5 6.5H13a3.75 3.75 0 0 1 0 7.5H8M7.5 3.5l-3 3 3 3'/>");
+/// The same arc turning forward, for redo.
+pub const REDO: &str = icon!("<path d='M12.5 6.5H7a3.75 3.75 0 0 0 0 7.5h5M12.5 3.5l3 3-3 3'/>");
+/// A straight line, for the annotation editor's line.
+pub const SHAPE_LINE: &str = icon!("<path d='M4 16L16 4'/>");
+/// A line with a head at its end, for the annotation editor's arrow.
+pub const SHAPE_ARROW: &str = icon!("<path d='M4 16L15 5M9.5 5H15v5.5'/>");
+/// An outlined rectangle, for the annotation editor.
+pub const SHAPE_RECTANGLE: &str = icon!("<rect x='3.5' y='5' width='13' height='10' rx='1'/>");
+/// An outlined ellipse, for the annotation editor.
+pub const SHAPE_ELLIPSE: &str = icon!("<ellipse cx='10' cy='10' rx='6.5' ry='4.5'/>");
 /// Two figures, one behind the other: work that runs on its own beside the turn.
 pub const AGENTS: &str = icon!(
     "<circle cx='8' cy='7' r='3'/><path d='M2.75 16.5a5.25 5.25 0 0 1 10.5 0M12.5 4.25a3 3 0 0 1 0 5.5M14.75 12a5.25 5.25 0 0 1 2.5 4.5'/>"
@@ -252,6 +268,13 @@ pub const ALL: &[(&str, &str)] = &[
     ("laptop", LAPTOP),
     ("rewind", REWIND),
     ("trash", TRASH),
+    ("pencil", PENCIL),
+    ("undo", UNDO),
+    ("redo", REDO),
+    ("shape_line", SHAPE_LINE),
+    ("shape_arrow", SHAPE_ARROW),
+    ("shape_rectangle", SHAPE_RECTANGLE),
+    ("shape_ellipse", SHAPE_ELLIPSE),
     ("agents", AGENTS),
     ("briefcase", BRIEFCASE),
     ("hand", HAND),

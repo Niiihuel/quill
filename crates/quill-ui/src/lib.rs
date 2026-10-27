@@ -2,6 +2,7 @@
 //! is doing ([`Ui`]), what their actions ask ([`update`]) and the window ([`view`]).
 //! Layout and colors follow Claude Desktop's Code surface (docs/ui.md, features/code-*.md).
 
+pub mod annotate;
 mod files;
 mod mention;
 mod pixels;
@@ -1002,8 +1003,25 @@ pub struct Ui {
     /// The images at up to 2048 px for the viewer, decoded off the window's thread once it opens
     /// on them; until then it shows the thumbnail.
     pub full: std::collections::HashMap<PathBuf, limn::RasterImage>,
-    /// The composer's image being annotated. The editor is not built yet.
+    /// The composer's image being annotated, while its editor is open.
     pub annotating: Option<PathBuf>,
+    /// The marks drawn on it, and the ones Redo brings back. Clear all moves the marks here in
+    /// reverse, so Redo restores them in order; an Undo after it has nothing to undo.
+    pub marks: Vec<limn::SketchMark>,
+    pub redo: Vec<limn::SketchMark>,
+    /// The tool a press and drag makes, and the last shape the Shapes menu chose, which its
+    /// button shows and arms.
+    pub tool: limn::SketchTool,
+    pub last_shape: limn::SketchTool,
+    /// The ink and the width of the marks, which stay for the app run as Desktop's do.
+    pub ink: limn::Color,
+    pub stroke: f32,
+    /// Whether the "Discard your annotations?" question is open, and whether a save runs.
+    pub discarding: bool,
+    pub saving: bool,
+    /// The width over height of each image, read from its file by the host for the editor's
+    /// layout.
+    pub aspects: std::collections::HashMap<PathBuf, f32>,
     /// Why the last image was left out, until the composer's images change again.
     pub image_notice: Option<String>,
     /// The request whose changes the diff pane shows.
@@ -1718,6 +1736,15 @@ impl Ui {
             viewer: None,
             full: Default::default(),
             annotating: None,
+            marks: vec![],
+            redo: vec![],
+            tool: limn::SketchTool::Pen,
+            last_shape: limn::SketchTool::Rectangle,
+            ink: annotate::INKS[0].1,
+            stroke: annotate::WIDTHS[1].1,
+            discarding: false,
+            saving: false,
+            aspects: Default::default(),
             image_notice: None,
             diff: None,
             panes: vec![],
@@ -2324,6 +2351,9 @@ pub fn update(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Intent
 
 fn update_action(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Intent> {
     use limn::UiAction;
+    if annotate::action(ui, action) {
+        return vec![];
+    }
     match action {
         UiAction::InputChanged { id, value } if id == view::TERMINAL_RENAME => {
             if let Some((_, name)) = &mut ui.terminal.renaming {
@@ -2832,7 +2862,7 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         return vec![];
     }
     if id == view::IMAGE_ANNOTATE {
-        // Desktop closes the viewer as the editor opens; the editor itself is the next task.
+        // Desktop closes the viewer as the editor opens.
         ui.annotating = ui.viewer.take().map(|viewer| viewer.path);
         return vec![];
     }

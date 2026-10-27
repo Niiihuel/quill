@@ -15,6 +15,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+/// An annotated copy and the picture it replaces: `None` when the copy could not be written.
+type AnnotatedCopy = (PathBuf, Option<PathBuf>);
+
 struct App {
     tree: UiTree,
     store: Store,
@@ -42,6 +45,13 @@ struct App {
     /// The viewer's full-size pictures, decoded like the thumbnails, and the images asked for.
     full_done: Arc<Mutex<Vec<(PathBuf, limn::RasterImage)>>>,
     full_asked: std::collections::HashSet<PathBuf>,
+    /// The width over height of the picture the editor lays out, read from its file off the
+    /// window's thread, and the images asked for so far.
+    aspects_done: Arc<Mutex<Vec<(PathBuf, f32)>>>,
+    aspects_asked: std::collections::HashSet<PathBuf>,
+    /// Annotated copies made off the window's thread, each with the picture it replaces; `None`
+    /// when the copy could not be written.
+    annotated: Arc<Mutex<Vec<AnnotatedCopy>>>,
     /// The terminal tabs of each folder, kept while the window lives (features/terminal.md).
     terminals: HashMap<PathBuf, quill_pty::Tabs>,
     fonts_attached: bool,
@@ -769,6 +779,25 @@ impl eframe::App for App {
         for (path, full) in std::mem::take(&mut *self.full_done.lock().unwrap()) {
             self.ui.full.insert(path, full);
         }
+        // The editor lays its picture out at the shape of the file, read off the window's thread.
+        if let Some(path) = self.ui.annotating.clone() {
+            if !self.ui.aspects.contains_key(&path) && self.aspects_asked.insert(path.clone()) {
+                let (done, ctx) = (self.aspects_done.clone(), ctx.clone());
+                std::thread::spawn(move || {
+                    if let Some(aspect) = images::aspect(&path) {
+                        done.lock().unwrap().push((path, aspect));
+                        ctx.request_repaint();
+                    }
+                });
+            }
+        }
+        for (path, aspect) in std::mem::take(&mut *self.aspects_done.lock().unwrap()) {
+            self.ui.aspects.insert(path, aspect);
+        }
+        // An annotated copy made: it takes the picture's place, or the editor says it failed.
+        for (original, copy) in std::mem::take(&mut *self.annotated.lock().unwrap()) {
+            quill_ui::annotate::finish_save(&mut self.ui, original, copy);
+        }
         if let Some(folder) = self.picked.lock().unwrap().take() {
             self.ui.cwd = folder;
         }
@@ -1001,7 +1030,9 @@ impl eframe::App for App {
                 continue;
             }
             if let limn::UiEvent::Key { key, shift, ctrl } = &event {
-                if let Some(id) = quill_ui::shortcut(&self.store, &self.ui, *key, *ctrl, *shift) {
+                let shortcut = quill_ui::shortcut(&self.store, &self.ui, *key, *ctrl, *shift)
+                    .or_else(|| quill_ui::annotate::key(&self.ui, *key, *ctrl, *shift));
+                if let Some(id) = shortcut {
                     actions.push(limn::UiAction::Clicked { id });
                     continue;
                 }
@@ -1186,6 +1217,19 @@ impl eframe::App for App {
                 }
                 _ => None,
             };
+            // Save: the copy is made off the window's thread and answered on a later frame.
+            if matches!(&action, limn::UiAction::Clicked { id } if id == quill_ui::annotate::SAVE) {
+                if let Some((original, marks, window)) =
+                    quill_ui::annotate::start_save(&mut self.ui)
+                {
+                    let (done, ctx) = (self.annotated.clone(), ctx.clone());
+                    std::thread::spawn(move || {
+                        let copy = images::annotate(&original, &marks, window);
+                        done.lock().unwrap().push((original, copy));
+                        ctx.request_repaint();
+                    });
+                }
+            }
             let intents = quill_ui::update(&self.store, &mut self.ui, &action);
             if let (Some(viewer), Some(rect)) = (self.ui.viewer.as_mut(), tile) {
                 viewer.origin = Some(rect);
@@ -1585,6 +1629,9 @@ fn main() -> eframe::Result {
                 thumbs_asked: Default::default(),
                 full_done: Arc::default(),
                 full_asked: Default::default(),
+                aspects_done: Arc::default(),
+                aspects_asked: Default::default(),
+                annotated: Arc::default(),
                 terminals: HashMap::new(),
                 transcript: None,
                 beside: None,

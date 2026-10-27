@@ -4274,3 +4274,200 @@ fn more_than_twenty_images_keep_the_first_twenty_and_say_so() {
     add_images(&mut ui, vec![]);
     assert!(ui.image_notice.is_none());
 }
+
+fn open_editor(store: &Store, ui: &mut Ui) {
+    add_images(ui, vec!["/work/a.png".into()]);
+    click(store, ui, "image:open:0");
+    click(store, ui, view::IMAGE_ANNOTATE);
+    assert_eq!(ui.annotating, Some(PathBuf::from("/work/a.png")));
+}
+
+fn a_mark(x: f32) -> limn::SketchMark {
+    limn::SketchMark::Line {
+        from: limn::Point::new(x, 0.1),
+        to: limn::Point::new(x, 0.9),
+        color: limn::Color::rgb(0xE0, 0x31, 0x31),
+        width: 4.0,
+    }
+}
+
+fn sketch(store: &Store, ui: &mut Ui, mark: limn::SketchMark) {
+    update(
+        store,
+        ui,
+        &UiAction::Sketched {
+            id: annotate::SKETCH.into(),
+            mark,
+        },
+    );
+}
+
+#[test]
+fn a_sketched_mark_is_kept_and_lets_the_editor_save() {
+    let (store, mut ui) = store_with_session();
+    open_editor(&store, &mut ui);
+    assert!(annotate::start_save(&mut ui).is_none());
+    sketch(&store, &mut ui, a_mark(0.2));
+    assert_eq!(ui.marks, vec![a_mark(0.2)]);
+    let (path, marks, _) = annotate::start_save(&mut ui).expect("the marks can be saved");
+    assert_eq!(path, PathBuf::from("/work/a.png"));
+    assert_eq!(marks, vec![a_mark(0.2)]);
+    assert!(
+        annotate::start_save(&mut ui).is_none(),
+        "one save at a time"
+    );
+}
+
+#[test]
+fn undo_and_redo_move_the_marks_between_the_two_stacks() {
+    let (store, mut ui) = store_with_session();
+    open_editor(&store, &mut ui);
+    sketch(&store, &mut ui, a_mark(0.1));
+    sketch(&store, &mut ui, a_mark(0.2));
+    click(&store, &mut ui, annotate::UNDO);
+    assert_eq!(ui.marks, vec![a_mark(0.1)]);
+    assert_eq!(ui.redo, vec![a_mark(0.2)]);
+    click(&store, &mut ui, annotate::REDO);
+    assert_eq!(ui.marks, vec![a_mark(0.1), a_mark(0.2)]);
+    assert!(ui.redo.is_empty());
+    click(&store, &mut ui, annotate::UNDO);
+    sketch(&store, &mut ui, a_mark(0.3));
+    assert!(ui.redo.is_empty(), "a new mark clears the redo");
+}
+
+#[test]
+fn clear_all_moves_the_marks_to_redo_in_their_order() {
+    let (store, mut ui) = store_with_session();
+    open_editor(&store, &mut ui);
+    sketch(&store, &mut ui, a_mark(0.1));
+    sketch(&store, &mut ui, a_mark(0.2));
+    click(&store, &mut ui, annotate::CLEAR);
+    assert!(ui.marks.is_empty());
+    click(&store, &mut ui, annotate::REDO);
+    click(&store, &mut ui, annotate::REDO);
+    assert_eq!(ui.marks, vec![a_mark(0.1), a_mark(0.2)]);
+}
+
+#[test]
+fn close_with_marks_asks_and_discard_or_keep_editing_answers() {
+    let (store, mut ui) = store_with_session();
+    open_editor(&store, &mut ui);
+    sketch(&store, &mut ui, a_mark(0.1));
+    click(&store, &mut ui, annotate::CLOSE);
+    assert!(ui.discarding);
+    assert!(ui.annotating.is_some());
+    click(&store, &mut ui, annotate::KEEP);
+    assert!(!ui.discarding);
+    assert_eq!(ui.marks.len(), 1);
+    click(&store, &mut ui, annotate::BACKDROP);
+    click(&store, &mut ui, annotate::DISCARD);
+    assert!(ui.annotating.is_none());
+    assert!(ui.marks.is_empty() && ui.redo.is_empty());
+}
+
+#[test]
+fn close_without_marks_just_closes() {
+    let (store, mut ui) = store_with_session();
+    open_editor(&store, &mut ui);
+    click(&store, &mut ui, annotate::CLOSE);
+    assert!(ui.annotating.is_none());
+    assert!(!ui.discarding);
+}
+
+#[test]
+fn escape_asks_to_close_the_editor() {
+    let (store, mut ui) = store_with_session();
+    open_editor(&store, &mut ui);
+    sketch(&store, &mut ui, a_mark(0.1));
+    let window = limn::Size::new(1408.0, 844.0);
+    let mut tree = UiTree::new(view(&store, &ui, window));
+    let frame = tree.layout(window);
+    assert!(frame.regions.iter().any(|r| r.id == annotate::SKETCH));
+    let actions = tree.handle_event(key(limn::Key::Escape));
+    assert!(actions.contains(&UiAction::Clicked {
+        id: annotate::CLOSE.into()
+    }));
+}
+
+#[test]
+fn choosing_arrow_from_shapes_arms_it_and_the_button_shows_it() {
+    let (store, mut ui) = store_with_session();
+    open_editor(&store, &mut ui);
+    assert_eq!(ui.last_shape, limn::SketchTool::Rectangle);
+    click(&store, &mut ui, annotate::SHAPES_MENU);
+    assert_eq!(ui.open_menu, Some(annotate::SHAPES_MENU));
+    click(&store, &mut ui, "annotate:shape:1");
+    assert_eq!(ui.tool, limn::SketchTool::Arrow);
+    assert_eq!(ui.last_shape, limn::SketchTool::Arrow);
+    assert_eq!(ui.open_menu, None);
+    let window = limn::Size::new(1408.0, 844.0);
+    let frame = UiTree::new(view(&store, &ui, window)).layout(window);
+    assert!(frame.regions.iter().any(|r| r.id == annotate::SHAPE));
+}
+
+#[test]
+fn ink_and_width_survive_closing_and_reopening_the_editor() {
+    let (store, mut ui) = store_with_session();
+    open_editor(&store, &mut ui);
+    assert_eq!(ui.ink, limn::Color::rgb(0xE0, 0x31, 0x31));
+    assert_eq!(ui.stroke, 4.0);
+    click(&store, &mut ui, "annotate:ink:2");
+    click(&store, &mut ui, "annotate:width:0");
+    assert_eq!(ui.ink, limn::Color::rgb(0x2F, 0x9E, 0x44));
+    assert_eq!(ui.stroke, 2.0);
+    click(&store, &mut ui, annotate::CLOSE);
+    open_editor(&store, &mut ui);
+    assert_eq!(ui.ink, limn::Color::rgb(0x2F, 0x9E, 0x44));
+    assert_eq!(ui.stroke, 2.0);
+}
+
+#[test]
+fn ctrl_z_and_ctrl_shift_z_undo_and_redo_while_the_editor_is_open() {
+    let (store, mut ui) = store_with_session();
+    assert_eq!(annotate::key(&ui, limn::Key::Z, true, false), None);
+    open_editor(&store, &mut ui);
+    assert_eq!(
+        annotate::key(&ui, limn::Key::Z, true, false).as_deref(),
+        Some(annotate::UNDO)
+    );
+    assert_eq!(
+        annotate::key(&ui, limn::Key::Z, true, true).as_deref(),
+        Some(annotate::REDO)
+    );
+    assert_eq!(annotate::key(&ui, limn::Key::Z, false, false), None);
+}
+
+#[test]
+fn a_saved_copy_takes_the_pictures_place_and_a_failed_one_keeps_the_editor() {
+    let (store, mut ui) = store_with_session();
+    open_editor(&store, &mut ui);
+    sketch(&store, &mut ui, a_mark(0.1));
+    annotate::start_save(&mut ui);
+    annotate::finish_save(&mut ui, "/work/a.png".into(), None);
+    assert!(ui.annotating.is_some());
+    assert!(!ui.saving);
+    assert_eq!(
+        ui.image_notice.as_deref(),
+        Some("Couldn't save your annotations. Try again.")
+    );
+    annotate::start_save(&mut ui);
+    annotate::finish_save(
+        &mut ui,
+        "/work/a.png".into(),
+        Some("/att/a-annotated.png".into()),
+    );
+    assert_eq!(ui.images, vec![PathBuf::from("/att/a-annotated.png")]);
+    assert!(ui.annotating.is_none() && ui.marks.is_empty());
+    assert_eq!(ui.image_notice, None);
+}
+
+#[test]
+fn the_editor_fits_the_picture_to_the_window() {
+    let window = limn::Size::new(1408.0, 844.0);
+    let wide = annotate::shown(1.5, window);
+    assert_eq!((wide.width, wide.height.round()), (640.0, 427.0));
+    let tall = annotate::shown(0.5, window);
+    assert_eq!((tall.width, tall.height), (342.0, 684.0));
+    let narrow = annotate::shown(1.0, limn::Size::new(500.0, 844.0));
+    assert_eq!(narrow.width, 468.0);
+}

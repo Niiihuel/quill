@@ -1,5 +1,6 @@
 //! The window: sidebar of sessions, transcript and composer (features/code-*.md, docs/ui.md §2).
 
+use crate::annotate;
 use crate::icons;
 use crate::look::{self, chat, BODY, SMALL};
 use crate::{
@@ -7,11 +8,12 @@ use crate::{
 };
 use limn::{
     Attachment, Button, ButtonGroup, ButtonSize, ButtonVariant, Component, ComponentPalette,
-    Composer, ControlSize, Element, FontFamily, Markdown, OutputBlock, Size, Spinner, TextShimmer,
+    Composer, ControlSize, Element, FontFamily, Markdown, OutputBlock, Size, Sketch, Spinner,
+    TextShimmer,
 };
 use quill_components::pieces::{
-    confirm, hgap, hline, icon_tool, keyed_button, menu, muted, pane_header, pane_tab, tabs_header,
-    text, toggle, tool_surface, vline,
+    confirm, confirm_keeping, hgap, hline, icon_tool, keyed_button, menu, muted, pane_header,
+    pane_tab, tabs_header, text, toggle, tool_surface, vline,
 };
 use quill_components::settings::{
     self, choices, setting, setting_button, setting_switch, Setting, SettingsPage,
@@ -561,6 +563,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     let root = server_dialog(ui, root, palette);
     let root = removing_dialog(ui, root);
     let root = image_viewer(ui, root, window, palette);
+    let root = annotator(ui, root, window, palette);
     // Desktop's own wording for both closes (Ion `cccc2cf0a`,) and for a delete
     //, less its vendor's servers: quill forgets only its own record.
     let tabs = &ui.terminal.tabs;
@@ -3068,6 +3071,341 @@ fn new_divider(column: f32) -> Element {
         hline(side, look::spark()).centered_y(),
     ])
     .gap(10.0)
+}
+
+/// The annotation editor over the window [spec §3 "Editor"]: the picture under the marks on the
+/// same dimmed backdrop as the viewer, and the toolbar 24 px above the bottom. A click on the
+/// backdrop, Escape and ✕ all ask to close.
+fn annotator(ui: &Ui, base: Element, window: Size, palette: ComponentPalette) -> Element {
+    let Some(path) = &ui.annotating else {
+        return base;
+    };
+    let aspect = ui.aspects.get(path).copied().unwrap_or(1.0);
+    let shown = annotate::shown(aspect, window);
+    let mut board = vec![
+        Sketch::new(annotate::SKETCH, &ui.marks, ui.tool, ui.ink, ui.stroke)
+            .size(shown.width, shown.height)
+            .render(),
+    ];
+    if let Some(picture) = ui.full.get(path).or(ui.thumbs.get(path)) {
+        board.insert(
+            0,
+            Element::raster_image(picture.clone().full_resolution())
+                .radius(5.0)
+                .size(Some(shown.width), Some(shown.height)),
+        );
+    }
+    let board = Element::stack(board).size(Some(shown.width), Some(shown.height));
+    let top = ((window.height - shown.height) / 2.0).max(0.0);
+    let mut column = vec![
+        Element::spacer().size(None, Some(top)),
+        Element::row(vec![
+            Element::spacer().flex(1.0),
+            board,
+            Element::spacer().flex(1.0),
+        ])
+        .size(None, Some(shown.height)),
+        Element::spacer().flex(1.0),
+    ];
+    if let Some(notice) = &ui.image_notice {
+        column.push(
+            Element::row(vec![
+                Element::spacer().flex(1.0),
+                text(notice)
+                    .font_size(BODY)
+                    .foreground(limn::Color::rgb(255, 255, 255)),
+                Element::spacer().flex(1.0),
+            ])
+            .size(None, Some(24.0)),
+        );
+    }
+    column.push(
+        Element::row(vec![
+            Element::spacer().flex(1.0),
+            annotate_toolbar(ui, palette),
+            Element::spacer().flex(1.0),
+        ])
+        .size(None, Some(ANNOTATE_TOOLBAR)),
+    );
+    column.push(Element::spacer().size(None, Some(24.0)));
+    let content = Element::stack(vec![
+        Element::clickable(
+            annotate::BACKDROP,
+            Element::spacer().size(Some(window.width), Some(window.height)),
+        ),
+        Element::column(column).size(Some(window.width), Some(window.height)),
+    ])
+    .size(Some(window.width), Some(window.height));
+    let editor = Element::popover(
+        base,
+        content,
+        annotate::CLOSE,
+        limn::PopoverPlacement::Center,
+    )
+    .popover_scrim(limn::Color::rgba(0, 0, 0, 230));
+    // The question sits over the editor, as Desktop's does.
+    confirm_keeping(
+        editor,
+        ui.discarding,
+        "Discard your annotations?",
+        "You have unsaved marks on this image. Discarding removes them.",
+        "Discard",
+        annotate::DISCARD,
+        "Keep editing",
+        annotate::KEEP,
+    )
+}
+
+/// The editor's toolbar's height: 40 px, its buttons 32.
+const ANNOTATE_TOOLBAR: f32 = 40.0;
+
+/// The floating toolbar: Pen, Shapes, a line, Ink color and Line width, a line, then Undo,
+/// Redo and Clear all once there is history, then Save and ✕.
+// The text tool is not here: its text has to be painted into the pixels, which the sketch does not do.
+fn annotate_toolbar(ui: &Ui, palette: ComponentPalette) -> Element {
+    let ink = look::palette().text;
+    let armed = |tool: limn::SketchTool| ui.tool == tool;
+    let shape_name = |tool: limn::SketchTool| {
+        annotate::SHAPES
+            .iter()
+            .find(|(_, shape)| *shape == tool)
+            .map_or("Shape", |(name, _)| name)
+    };
+    let shapes = menu(
+        Element::row(vec![
+            tool_button(
+                annotate::SHAPE,
+                icon_glyph(icons::of(shape_icon(ui.last_shape)), ink),
+                shape_name(ui.last_shape),
+                32.0,
+                !armed(limn::SketchTool::Pen),
+                true,
+            ),
+            tool_button(
+                annotate::SHAPES_MENU,
+                icon_glyph(icons::of(icons::CARET_DOWN), ink),
+                "Shapes",
+                14.0,
+                false,
+                true,
+            ),
+        ]),
+        annotate::SHAPES
+            .iter()
+            .enumerate()
+            .map(|(i, (name, tool))| {
+                limn::DropdownMenuItem::new(format!("{}{i}", annotate::SHAPE_PICK), *name)
+                    .icon(icons::of(shape_icon(*tool)))
+                    .selected(ui.last_shape == *tool)
+                    .into()
+            })
+            .collect(),
+        ui.open_menu == Some(annotate::SHAPES_MENU),
+        annotate::SHAPES_MENU,
+        160.0,
+        limn::PopoverPlacement::TopStart,
+    );
+    let inks = menu(
+        tool_button(
+            annotate::INK_MENU,
+            Element::row(vec![
+                Element::spacer()
+                    .size(Some(14.0), Some(14.0))
+                    .background(ui.ink)
+                    .radius(7.0),
+                icon_glyph(icons::of(icons::CARET_DOWN), ink),
+            ])
+            .gap(2.0)
+            .centered(),
+            "Ink color",
+            40.0,
+            false,
+            true,
+        ),
+        vec![limn::DropdownMenuEntry::Custom(Box::new(
+            Element::row(
+                annotate::INKS
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (name, color))| {
+                        let dot = Element::spacer()
+                            .size(Some(20.0), Some(20.0))
+                            .background(*color)
+                            .radius(10.0);
+                        let dot = if ui.ink == *color {
+                            dot.border(look::handle(), 2.0)
+                        } else {
+                            dot
+                        };
+                        Element::clickable(format!("{}{i}", annotate::INK_PICK), dot)
+                            .accessibility_label(*name)
+                    })
+                    .collect(),
+            )
+            .gap(8.0)
+            .padding(8.0),
+        ))],
+        ui.open_menu == Some(annotate::INK_MENU),
+        annotate::INK_MENU,
+        180.0,
+        limn::PopoverPlacement::TopStart,
+    );
+    let widths = menu(
+        tool_button(
+            annotate::WIDTH_MENU,
+            Element::row(vec![
+                Element::spacer()
+                    .size(Some(16.0), Some(ui.stroke))
+                    .background(ink)
+                    .radius(ui.stroke / 2.0),
+                icon_glyph(icons::of(icons::CARET_DOWN), ink),
+            ])
+            .gap(2.0)
+            .centered(),
+            "Line width",
+            40.0,
+            false,
+            true,
+        ),
+        annotate::WIDTHS
+            .iter()
+            .enumerate()
+            .map(|(i, (name, width))| {
+                limn::DropdownMenuItem::new(
+                    format!("{}{i}", annotate::WIDTH_PICK),
+                    format!("{name} {width}"),
+                )
+                .selected(ui.stroke == *width)
+                .into()
+            })
+            .collect(),
+        ui.open_menu == Some(annotate::WIDTH_MENU),
+        annotate::WIDTH_MENU,
+        160.0,
+        limn::PopoverPlacement::TopStart,
+    );
+    let history = !ui.marks.is_empty() || !ui.redo.is_empty();
+    let mut items = vec![
+        tool_button(
+            annotate::PEN,
+            icon_glyph(icons::of(icons::PENCIL), ink),
+            "Pen",
+            32.0,
+            armed(limn::SketchTool::Pen),
+            true,
+        ),
+        shapes,
+        vline(24.0),
+        inks,
+        widths,
+        vline(24.0),
+    ];
+    if history {
+        let marks = !ui.marks.is_empty();
+        items.extend([
+            tool_button(
+                annotate::UNDO,
+                icon_glyph(icons::of(icons::UNDO), ink),
+                "Undo",
+                32.0,
+                false,
+                marks,
+            ),
+            tool_button(
+                annotate::REDO,
+                icon_glyph(icons::of(icons::REDO), ink),
+                "Redo",
+                32.0,
+                false,
+                !ui.redo.is_empty(),
+            ),
+            tool_button(
+                annotate::CLEAR,
+                icon_glyph(icons::of(icons::TRASH), ink),
+                "Clear all",
+                32.0,
+                false,
+                marks,
+            ),
+        ]);
+    }
+    items.extend([
+        keyed_button(
+            annotate::SAVE,
+            "Save",
+            "",
+            true,
+            !ui.marks.is_empty() && !ui.saving,
+            palette,
+        ),
+        tool_button(
+            annotate::CLOSE,
+            icon_glyph(icons::of(icons::CLOSE), ink),
+            "Close",
+            32.0,
+            false,
+            true,
+        ),
+    ]);
+    let panel = look::menu_palette();
+    Element::row(items)
+        .gap(4.0)
+        .padding(4.0)
+        .background(panel.surface)
+        .border(panel.border, 1.0)
+        .radius(10.0)
+        .size(None, Some(ANNOTATE_TOOLBAR))
+}
+
+/// A toolbar button: its icon or other glyph, pressed when `pressed`, and its title as the
+/// tooltip. Disabled it is drawn without a click.
+fn tool_button(
+    id: &str,
+    glyph: Element,
+    label: &str,
+    width: f32,
+    pressed: bool,
+    enabled: bool,
+) -> Element {
+    let hover = look::tool_hover();
+    let palette = ComponentPalette {
+        hover,
+        selected: hover,
+        ..look::palette()
+    };
+    let target = if enabled {
+        Element::clickable(id, glyph)
+    } else {
+        glyph
+    };
+    let button = palette
+        .interactive_surface(target.accessibility_label(label))
+        .radius(6.0)
+        .size(Some(width), Some(32.0));
+    let button = if pressed {
+        button.background(look::active())
+    } else {
+        button
+    };
+    limn::Tooltip::new(button, id, label, look::palette()).render()
+}
+
+/// An icon drawn in a toolbar button, centred in it.
+fn icon_glyph(icon: limn::Icon, ink: limn::Color) -> Element {
+    Element::icon(icon)
+        .foreground(ink)
+        .size(Some(16.0), Some(16.0))
+        .centered()
+}
+
+/// The icon of a shape, which the Shapes button shows and its menu lists.
+fn shape_icon(tool: limn::SketchTool) -> &'static str {
+    match tool {
+        limn::SketchTool::Line => icons::SHAPE_LINE,
+        limn::SketchTool::Arrow => icons::SHAPE_ARROW,
+        limn::SketchTool::Ellipse => icons::SHAPE_ELLIPSE,
+        limn::SketchTool::Pen | limn::SketchTool::Rectangle => icons::SHAPE_RECTANGLE,
+    }
 }
 
 /// The image viewer over the window: the picture at full size once decoded, else its thumbnail,

@@ -308,6 +308,30 @@ pub fn confirm(
     confirm_id: &str,
     cancel_id: &str,
 ) -> Element {
+    confirm_keeping(
+        base,
+        open,
+        title,
+        description,
+        confirm,
+        confirm_id,
+        "Cancel",
+        cancel_id,
+    )
+}
+
+/// A confirmation whose other button says `cancel` rather than "Cancel".
+#[allow(clippy::too_many_arguments)]
+pub fn confirm_keeping(
+    base: Element,
+    open: bool,
+    title: &str,
+    description: &str,
+    confirm: &str,
+    confirm_id: &str,
+    cancel: &str,
+    cancel_id: &str,
+) -> Element {
     limn::AlertDialog::new(
         base,
         open,
@@ -323,6 +347,7 @@ pub fn confirm(
     )
     .width(400.0)
     .confirm_label(confirm)
+    .cancel_label(cancel)
     .soft_destructive(
         look::danger_fill(),
         look::danger_border(),
