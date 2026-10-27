@@ -1624,6 +1624,9 @@ fn main() -> eframe::Result {
             let direct = native
                 .as_ref()
                 .and_then(|native| start_direct(creation, native));
+            // A stand-in agent keeps no settings: the welcome would show at every start.
+            let skip_welcome = std::env::var_os("QUILL_PROGRAMS").is_some()
+                && std::env::var_os("QUILL_WELCOME").is_none();
             let engine = match std::env::var("QUILL_PROGRAMS") {
                 Ok(programs) => Engine::start_with(
                     sink,
@@ -1678,6 +1681,7 @@ fn main() -> eframe::Result {
                     model: std::env::var("QUILL_MODEL").ok(),
                     name: first_name(),
                     utc_offset: utc_offset(),
+                    skip_welcome,
                     ..Ui::new(cwd)
                 },
                 engine,

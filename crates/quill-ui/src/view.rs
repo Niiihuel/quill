@@ -437,6 +437,9 @@ fn pad(child: Element, x: f32, y: f32) -> Element {
 }
 
 pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
+    if crate::welcoming(ui) {
+        return crate::welcome::view(ui, window);
+    }
     let palette = look::palette();
     let session = ui.selected.and_then(|id| store.session(id));
     let layout = layout(store, ui, window);

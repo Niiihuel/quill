@@ -26,6 +26,8 @@ fn store_with_session() -> (Store, Ui) {
     });
     let mut ui = Ui::new("/work".into());
     ui.selected = Some(1);
+    // As a stand-in agent's run: the window, not the welcome.
+    ui.skip_welcome = true;
     (store, ui)
 }
 
@@ -4930,4 +4932,34 @@ fn the_logos_of_connectors_and_plugins_are_asked_once_and_only_while_shown() {
     ui.settings.logos = false;
     click(&store, &mut ui, &page);
     assert!(ui.logos_due(&store).is_empty());
+}
+
+#[test]
+fn the_welcome_shows_once_the_settings_are_known_until_get_started() {
+    let (store, mut ui) = store_with_session();
+    ui.skip_welcome = false;
+    // Before the settings arrive, nothing says whether it was seen.
+    assert!(!crate::welcoming(&ui));
+    ui.applied(&Event::Settings {
+        settings: Settings::default(),
+        agents: vec![quill_model::AgentInfo {
+            id: "claude".into(),
+            name: "Claude Code".into(),
+            tested: vec![],
+            options: vec![],
+            icon: None,
+        }],
+    });
+    assert!(crate::welcoming(&ui));
+    let saved = click(&store, &mut ui, crate::welcome::START);
+    assert!(
+        matches!(&saved[..], [Intent::SaveSettings(s)] if s.welcomed),
+        "{saved:?}"
+    );
+    assert!(!crate::welcoming(&ui));
+    // A stand-in agent's run skips it.
+    let mut test = Ui::new("/work".into());
+    test.skip_welcome = true;
+    test.agents = ui.agents.clone();
+    assert!(!crate::welcoming(&test));
 }

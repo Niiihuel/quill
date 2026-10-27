@@ -9,6 +9,7 @@ mod pixels;
 mod slash;
 pub use quill_components::{icons, look};
 pub mod view;
+pub mod welcome;
 
 pub use files::key as files_key;
 pub use mention::{key as mention_key, mention_query};
@@ -1095,6 +1096,11 @@ pub struct Ui {
     pub pointer: Option<limn::Point>,
     pub hovered: Option<String>,
     /// The right panel's width, on a spring to 0 or its own width as it closes and opens.
+    /// When the welcome was first drawn: what comes in under its word is timed from it.
+    pub welcome_since: std::cell::OnceCell<std::time::Instant>,
+    /// The host runs quill with a stand-in agent and no settings kept (tests, captures): the
+    /// welcome is not shown, unless `QUILL_WELCOME` asks for it.
+    pub skip_welcome: bool,
     pub panel_shown: limn::ScalarSpring,
     /// How far the column of panes is open, 0 to 1, on a spring as it opens and shuts, and
     /// the last pane closed, which it still shows while it shuts.
@@ -1821,6 +1827,8 @@ impl Ui {
             sidebar: quill_components::sidebar::Sidebar::new(look::SIDEBAR_WIDTH),
             pointer: None,
             hovered: None,
+            welcome_since: Default::default(),
+            skip_welcome: false,
             panel_shown: limn::ScalarSpring::new(look::PANEL_WIDTH, std::time::Instant::now()),
             column_shown: limn::ScalarSpring::new(0.0, std::time::Instant::now()),
             closing: None,
@@ -2450,6 +2458,12 @@ pub fn add_images(ui: &mut Ui, paths: Vec<PathBuf>) {
 /// messages.
 /// The name a server's logo is looked up and kept by: the Connectors page's label for the
 /// server called `name`, else `label`, else `name` itself.
+/// Whether the welcome shows: once the settings are known (their agents with them), until
+/// its Get started is pressed.
+pub fn welcoming(ui: &Ui) -> bool {
+    !ui.skip_welcome && !ui.agents.is_empty() && !ui.settings.welcomed
+}
+
 pub(crate) fn server_logo_name(ui: &Ui, name: &str, label: &str) -> String {
     let listed = (ui.connectors.listed.values())
         .flat_map(|l| l.servers.iter().flatten())
@@ -3065,6 +3079,10 @@ pub fn terminal_key(
 }
 
 fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
+    if id == welcome::START {
+        ui.settings.welcomed = true;
+        return vec![Intent::SaveSettings(ui.settings.clone())];
+    }
     if let Some(index) = id
         .strip_prefix("image:remove:")
         .and_then(|i| i.parse::<usize>().ok())
