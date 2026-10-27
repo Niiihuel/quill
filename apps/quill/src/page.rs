@@ -33,6 +33,9 @@ pub struct Page {
     held: Option<egui::PointerButton>,
     /// The last press, to count double and triple clicks.
     last: Option<(Instant, egui::Pos2, egui::PointerButton, u8)>,
+    /// Where the pointer was last seen in the window, kept across frames: a wheel often comes
+    /// in a frame of its own, without a move (Hyprland's), and goes where the pointer is.
+    pointer: Option<egui::Pos2>,
 }
 
 impl Page {
@@ -49,6 +52,13 @@ impl Page {
         let (mut asks, mut taken) = (vec![], vec![]);
         let at = |rect: egui::Rect, pos: egui::Pos2| (pos.x - rect.min.x, pos.y - rect.min.y);
         for (index, event) in events.iter().enumerate() {
+            match event {
+                egui::Event::PointerMoved(pos) | egui::Event::PointerButton { pos, .. } => {
+                    self.pointer = Some(*pos)
+                }
+                egui::Event::PointerGone => self.pointer = None,
+                _ => {}
+            }
             match event {
                 egui::Event::PointerMoved(pos) => {
                     let rect = over(*pos).or(page.filter(|_| self.held.is_some()));
@@ -115,7 +125,10 @@ impl Page {
                     modifiers,
                     ..
                 } => {
-                    let Some((rect, pos)) = self.pointer_over(events, index, &over) else {
+                    // Where the pointer is now, not where the page was last pressed.
+                    let Some((rect, pos)) =
+                        self.pointer.and_then(|pos| over(pos).map(|r| (r, pos)))
+                    else {
                         continue;
                     };
                     // A notch moves 100 px, as Chromium's own wheel does on Linux.
@@ -201,21 +214,6 @@ impl Page {
         };
         self.last = Some((now, pos, button, clicks));
         clicks
-    }
-
-    /// Where the pointer was at the wheel event `index`: the last move before it.
-    fn pointer_over(
-        &self,
-        events: &[egui::Event],
-        index: usize,
-        over: &impl Fn(egui::Pos2) -> Option<egui::Rect>,
-    ) -> Option<(egui::Rect, egui::Pos2)> {
-        let pos = events[..index].iter().rev().find_map(|event| match event {
-            egui::Event::PointerMoved(pos) | egui::Event::PointerButton { pos, .. } => Some(*pos),
-            _ => None,
-        });
-        let pos = pos.or(self.last.map(|(_, pos, ..)| pos))?;
-        over(pos).map(|rect| (rect, pos))
     }
 }
 
@@ -318,6 +316,39 @@ mod tests {
 
     fn rect() -> egui::Rect {
         egui::Rect::from_min_size(egui::pos2(100.0, 50.0), egui::vec2(400.0, 300.0))
+    }
+
+    #[test]
+    fn a_wheel_in_a_frame_of_its_own_goes_where_the_pointer_is_not_where_the_page_was_pressed() {
+        let mut page = Page::default();
+        let over = |pos: egui::Pos2| rect().contains(pos).then(rect);
+        let press = |pressed| egui::Event::PointerButton {
+            pos: egui::pos2(150.0, 70.0),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        let wheel = || {
+            vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                delta: egui::vec2(0.0, -1.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::default(),
+            }]
+        };
+        page.route(&[press(true), press(false)], over, Some(rect()), true);
+        // Over the page, a wheel alone scrolls it.
+        let (asks, taken) = page.route(&wheel(), over, Some(rect()), true);
+        assert_eq!((asks.len(), taken), (1, vec![0]));
+        // Moved off it in one frame, the next frame's wheel is limn's.
+        page.route(
+            &[egui::Event::PointerMoved(egui::pos2(700.0, 400.0))],
+            over,
+            Some(rect()),
+            true,
+        );
+        let (asks, taken) = page.route(&wheel(), over, Some(rect()), true);
+        assert!(asks.is_empty() && taken.is_empty(), "{asks:?}");
     }
 
     #[test]

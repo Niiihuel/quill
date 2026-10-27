@@ -611,10 +611,6 @@ impl eframe::App for App {
             .transcript
             .is_none_or(|(id, ..)| self.tree.is_scroll_at_end(&format!("transcript:{id}"), 8.0));
         self.ui.at_end = at_end;
-        let beside_at_end = self.beside.is_none_or(|(id, ..)| {
-            self.tree
-                .is_scroll_at_end(&format!("side:{id}:scroll"), 8.0)
-        });
         let events = std::mem::take(&mut *self.inbox.lock().unwrap());
         let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
         for event in events {
@@ -863,6 +859,19 @@ impl eframe::App for App {
                 })
                 .collect();
             self.dispatch(archive);
+        }
+        // What came in may have grown a transcript kept at its end: this layout, which input is
+        // read against, keeps it there as well, else the end would move away from it before
+        // the frame's own follow below.
+        let pressed = ctx.input(|i| i.pointer.primary_down());
+        let scrolls = [
+            self.transcript.map(|(id, ..)| format!("transcript:{id}")),
+            self.beside.map(|(id, ..)| format!("side:{id}:scroll")),
+        ];
+        for scroll in scrolls.iter().flatten() {
+            if !pressed && self.tree.is_scroll_at_end(scroll, 0.5) {
+                self.tree.scroll_to_end(scroll);
+            }
         }
         self.tree
             .set_root(quill_ui::view(&self.store, &self.ui, window));
@@ -1290,29 +1299,30 @@ impl eframe::App for App {
         if (follow && changed) || focus_terminal {
             self.tree.scroll_to_end(quill_ui::view::TERMINAL_SCROLL);
         }
-        // At the end, the transcript stays there every frame, not only when a message grows:
-        // the text is revealed over frames, and thumbnails and steps open after it. A frame in
-        // which the person scrolls (the wheel, a drag on the bar, the paging keys) is left to
-        // them, so scrolling up to read lets go of the end.
-        let scrolling = ctx.input(|i| {
-            i.pointer.primary_down()
-                || (i.events.iter()).any(|e| {
-                    matches!(e, egui::Event::MouseWheel { .. })
-                        || matches!(e, egui::Event::Key { key, pressed: true, .. } if matches!(key,
-                            egui::Key::PageUp | egui::Key::PageDown | egui::Key::Home | egui::Key::End))
-                })
-        });
+        // At its end, the transcript stays there every frame, not only when a message grows:
+        // the text is revealed over frames, and thumbnails and steps open after it. Whether it
+        // is at its end is read after this frame's input reached the tree, to the pixel, so the
+        // person moving it up at all lets go of the end: a wheel's smallest step (Hyprland's
+        // smooth scroll sends many), the bar or the paging keys. Bringing it back down to the
+        // end takes it up again; a press, as when selecting its text, holds it where it is.
+        let kept = |tree: &limn::UiTree, id: &str| !pressed && tree.is_scroll_at_end(id, 0.5);
         let mark = self.transcript_mark(self.ui.selected);
         let opened = mark.map(|m| m.0) != self.transcript.map(|m| m.0);
-        if let Some((id, ..)) = mark.filter(|_| opened || (at_end && !scrolling)) {
-            self.tree.scroll_to_end(&format!("transcript:{id}"));
+        if let Some((id, ..)) = mark {
+            let scroll = format!("transcript:{id}");
+            if opened || kept(&self.tree, &scroll) {
+                self.tree.scroll_to_end(&scroll);
+            }
         }
         self.transcript = mark;
         // The session beside opens at its end too, and follows it the same way.
         let mark = self.transcript_mark(self.ui.side_chat);
         let opened = mark.map(|m| m.0) != self.beside.map(|m| m.0);
-        if let Some((id, ..)) = mark.filter(|_| opened || (beside_at_end && !scrolling)) {
-            self.tree.scroll_to_end(&format!("side:{id}:scroll"));
+        if let Some((id, ..)) = mark {
+            let scroll = format!("side:{id}:scroll");
+            if opened || kept(&self.tree, &scroll) {
+                self.tree.scroll_to_end(&scroll);
+            }
         }
         self.beside = mark;
         self.sync_address();
