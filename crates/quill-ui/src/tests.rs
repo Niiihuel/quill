@@ -2566,6 +2566,20 @@ fn agent_in(store: &mut Store, session: SessionId, text: &str) {
 }
 
 #[test]
+fn a_session_remembers_the_pull_request_its_agent_named() {
+    let (mut store, _ui) = store_with_session();
+    store.apply(Event::PullRequest {
+        session: 1,
+        url: "https://github.com/o/r/pull/3".into(),
+    });
+    let session = store.sessions.iter().find(|s| s.id == 1).unwrap();
+    assert_eq!(
+        session.pull_request.as_deref(),
+        Some("https://github.com/o/r/pull/3")
+    );
+}
+
+#[test]
 fn settings_save_through_the_engine_and_shape_what_comes_next() {
     use quill_model::{AgentInfo, Settings, TextSize};
     let (mut store, mut ui) = store_with_session();
@@ -2619,6 +2633,11 @@ fn settings_save_through_the_engine_and_shape_what_comes_next() {
         panic!("{saved:?}");
     };
     assert!(settings.prs_in_browser && !ui.settings.prs_in_browser);
+    let saved = click(&store, &mut ui, "set:archive_on_merge");
+    let [Intent::SaveSettings(settings)] = saved.as_slice() else {
+        panic!("{saved:?}");
+    };
+    assert!(settings.archive_on_merge && !ui.settings.archive_on_merge);
     // Not kept, it says so over the page until the next change.
     ui.applied(&Event::SettingsNotSaved {
         error: "read-only file system".into(),

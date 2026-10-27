@@ -170,6 +170,10 @@ enum Internal {
     TurnEnded { session: SessionId, text: String },
     /// Time to look at the power source again.
     Power,
+    /// Time to ask the pull requests whether they were merged.
+    PullRequests,
+    /// A session's pull request was merged.
+    Merged { session: SessionId },
 }
 
 /// Whether the computer runs on battery: a battery and no mains or USB supply online. Each
@@ -219,6 +223,14 @@ async fn route(mut rx: UnboundedReceiver<Intent>, ui: Sink, config: Config) {
             every.tick().await;
         }
     });
+    // Pull requests are asked about every 5 minutes, for "Auto-archive after PR merge".
+    let ask = internal.clone();
+    tokio::spawn(async move {
+        let mut every = tokio::time::interval(std::time::Duration::from_secs(300));
+        while ask.send(Internal::PullRequests).is_ok() {
+            every.tick().await;
+        }
+    });
     let mut router = Router::new(ui, config, internal);
     let path = router.config.settings.clone();
     router.settings = tokio::task::spawn_blocking(move || read_settings(path.as_deref()))
@@ -258,6 +270,10 @@ struct Router {
     parents: HashMap<SessionId, SessionId>,
     /// A started session's name, for its reports.
     titles: HashMap<SessionId, String>,
+    /// Each session's pull request, as its agent last gave its address.
+    pull_requests: HashMap<SessionId, String>,
+    /// Sessions archived, which are not asked about their pull request.
+    archived: std::collections::HashSet<SessionId>,
     /// Proposals nobody answered yet, by the session that made them and their id.
     proposals: HashMap<(SessionId, String), quill_model::Proposal>,
     /// What started sessions said, waiting for their parent to be free to hear it.
@@ -394,6 +410,8 @@ impl Router {
             next: 0,
             parents: HashMap::new(),
             titles: HashMap::new(),
+            pull_requests: HashMap::new(),
+            archived: Default::default(),
             proposals: HashMap::new(),
             reports: HashMap::new(),
             busy: Default::default(),
@@ -605,6 +623,12 @@ impl Router {
             }
             if let Some(title) = restored.title.clone() {
                 self.titles.insert(session, title);
+            }
+            if let Some(url) = restored.pull_request.clone() {
+                self.pull_requests.insert(session, url);
+            }
+            if restored.archived {
+                self.archived.insert(session);
             }
             self.browser
                 .remember(session, restored.browser_tabs.clone());
@@ -946,11 +970,7 @@ impl Router {
                 return;
             }
             Intent::Archive { session, archived } => {
-                (self.sink)(Event::Archived { session, archived });
-                if archived {
-                    let browser = self.browser.clone();
-                    tokio::spawn(async move { browser.forget(session).await });
-                }
+                self.archive(session, archived);
                 return;
             }
             Intent::Browser { session, op } => {
@@ -1242,6 +1262,8 @@ impl Router {
                 tokio::spawn(async move { browser.forget(session).await });
                 self.folders.remove(&session);
                 self.started.remove(&session);
+                self.pull_requests.remove(&session);
+                self.archived.remove(&session);
                 self.agent_ids.lock().unwrap().remove(&session);
                 let (done, stopped) = tokio::sync::oneshot::channel();
                 let stopping = self
@@ -1306,6 +1328,18 @@ impl Router {
             task,
             outcome,
         });
+    }
+
+    /// Puts a session out of the sidebar or back, and stops its browser once it is out.
+    fn archive(&mut self, session: SessionId, archived: bool) {
+        (self.sink)(Event::Archived { session, archived });
+        if archived {
+            self.archived.insert(session);
+            let browser = self.browser.clone();
+            tokio::spawn(async move { browser.forget(session).await });
+        } else {
+            self.archived.remove(&session);
+        }
     }
 
     async fn internal(&mut self, note: Internal) {
@@ -1404,7 +1438,52 @@ impl Router {
                 self.hold_awake();
             }
             Internal::Power => self.hold_awake(),
+            Internal::PullRequests if self.settings.archive_on_merge => {
+                for (&session, url) in &self.pull_requests {
+                    let Some(folder) = self.folders.get(&session).cloned() else {
+                        continue;
+                    };
+                    if self.archived.contains(&session) || self.busy.contains(&session) {
+                        continue;
+                    }
+                    let (url, merged) = (url.clone(), self.internal.clone());
+                    tokio::spawn(async move {
+                        // shortcut: only GitHub's `gh` is asked; another forge's CLI when one is wanted.
+                        let run = quill_agent::ProgramRun {
+                            args: ["pr", "view", &url, "--json", "state", "--jq", ".state"]
+                                .map(String::from)
+                                .to_vec(),
+                            stdin: None,
+                            timeout: 30,
+                        };
+                        if let Ok(state) = run_program("gh", &run, &folder).await {
+                            if state.trim() == "MERGED" {
+                                let _ = merged.send(Internal::Merged { session });
+                            }
+                        }
+                    });
+                }
+            }
+            Internal::PullRequests => {}
+            // A session that went back to work keeps on; it is asked again in 5 minutes.
+            Internal::Merged { session } => {
+                if self.settings.archive_on_merge
+                    && !self.archived.contains(&session)
+                    && !self.busy.contains(&session)
+                {
+                    self.archive(session, true);
+                }
+            }
             Internal::TurnEnded { session, text } => {
+                if let Some(url) = quill_model::find_pull_request(&text) {
+                    if self.pull_requests.get(&session).map(String::as_str) != Some(url) {
+                        self.pull_requests.insert(session, url.to_owned());
+                        (self.sink)(Event::PullRequest {
+                            session,
+                            url: url.to_owned(),
+                        });
+                    }
+                }
                 self.busy.remove(&session);
                 self.hold_awake();
                 if let Some(&parent) = self.parents.get(&session) {
@@ -1592,6 +1671,9 @@ struct Restored {
     forked: Option<(SessionId, Option<String>)>,
     /// Its browser's tabs when quill last ran.
     browser_tabs: Vec<String>,
+    /// The pull request its agent last named, and whether it is archived.
+    pull_request: Option<String>,
+    archived: bool,
     /// Taken back to the agent's message (`Some(None)`: to the start) and not written to
     /// since: the next launch goes on from there.
     rewound: Option<Option<String>>,
@@ -1614,6 +1696,7 @@ impl Restored {
         let (mut parent, mut title, mut proposals, mut forked) = (None, None, vec![], None);
         let mut browser_tabs = vec![];
         let mut rewound = None;
+        let (mut pull_request, mut archived) = (None, false);
         for event in events {
             match event {
                 Event::RewoundTo { at, .. } => rewound = Some(at.clone()),
@@ -1644,6 +1727,8 @@ impl Restored {
                     update: quill_model::BrowserUpdate::Kept(urls),
                     ..
                 } => browser_tabs = urls.clone(),
+                Event::PullRequest { url, .. } => pull_request = Some(url.clone()),
+                Event::Archived { archived: a, .. } => archived = *a,
                 _ => {}
             }
         }
@@ -1657,6 +1742,8 @@ impl Restored {
             forked,
             browser_tabs,
             rewound,
+            pull_request,
+            archived,
         })
     }
 }
@@ -2418,6 +2505,44 @@ mod tests {
         std::fs::write(&path, r#"{"width": "wide", "someday": 1}"#).unwrap();
         assert_eq!(read_settings(Some(&path)).width, quill_model::Width::Wide);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_restored_session_keeps_its_pull_request_and_archive() {
+        let events = vec![
+            Event::SessionCreated {
+                session: 1,
+                agent: "claude".into(),
+                cwd: "/work".into(),
+            },
+            Event::PullRequest {
+                session: 1,
+                url: "https://github.com/o/r/pull/1".into(),
+            },
+            Event::Archived {
+                session: 1,
+                archived: true,
+            },
+            Event::PullRequest {
+                session: 1,
+                url: "https://github.com/o/r/pull/2".into(),
+            },
+        ];
+        let restored = Restored::from(&events).unwrap();
+        assert_eq!(
+            restored.pull_request.as_deref(),
+            Some("https://github.com/o/r/pull/2")
+        );
+        assert!(restored.archived);
+        let unarchived = [
+            events.as_slice(),
+            &[Event::Archived {
+                session: 1,
+                archived: false,
+            }],
+        ]
+        .concat();
+        assert!(!Restored::from(&unarchived).unwrap().archived);
     }
 
     #[test]

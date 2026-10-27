@@ -108,6 +108,9 @@ pub struct Settings {
     /// Open a pull request's link in the computer's default browser even while links open in
     /// the built-in one (Desktop's "Open pull requests in browser"); off is inferred.
     pub prs_in_browser: bool,
+    /// Archive a session once its pull request is merged (Desktop's "Auto-archive after PR
+    /// merge"); off is inferred.
+    pub archive_on_merge: bool,
     /// Start quill when the person logs in.
     pub open_at_login: bool,
     /// Sites the agents may use in the built-in browser without asking; local addresses
@@ -144,6 +147,7 @@ impl Default for Settings {
             attention: true,
             pr_draft: false,
             prs_in_browser: false,
+            archive_on_merge: false,
             open_at_login: false,
             browser_sites: vec![],
             browser_program: None,
@@ -755,6 +759,11 @@ pub enum Event {
         session: SessionId,
         archived: bool,
     },
+    /// The session's pull request, as the agent gave its address.
+    PullRequest {
+        session: SessionId,
+        url: String,
+    },
     Unread {
         session: SessionId,
         unread: bool,
@@ -902,6 +911,7 @@ impl Event {
             | Event::TasksCleared { session, .. }
             | Event::Deleted { session }
             | Event::Archived { session, .. }
+            | Event::PullRequest { session, .. }
             | Event::Unread { session, .. }
             | Event::Forked { session, .. }
             | Event::Reading { session, .. }
@@ -924,5 +934,80 @@ impl Event {
             | Event::Servers { .. }
             | Event::ServersFound { .. } => 0,
         }
+    }
+}
+
+/// A link to a pull request (`/pull/12`, `/merge_requests/7`), with or without what follows it.
+pub fn is_pull_request(url: &str) -> bool {
+    let url = url.split(['?', '#']).next().unwrap_or(url);
+    let Some(path) = url.splitn(4, '/').nth(3) else {
+        return false;
+    };
+    path.split('/').collect::<Vec<_>>().windows(2).any(|pair| {
+        matches!(pair[0], "pull" | "merge_requests")
+            && !pair[1].is_empty()
+            && pair[1].bytes().all(|b| b.is_ascii_digit())
+    })
+}
+
+/// The last pull request link in `text`, from what an agent said; a markdown link or a link
+/// with a period after it counts.
+pub fn find_pull_request(text: &str) -> Option<&str> {
+    text.match_indices("http")
+        .filter_map(|(at, _)| {
+            let rest = &text[at..];
+            let end = rest
+                .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '`'))
+                .unwrap_or(rest.len());
+            let url = rest[..end].trim_end_matches([')', ']', ',', '.', ';', ':', '!', '*', '\'']);
+            ((url.starts_with("http://") || url.starts_with("https://")) && is_pull_request(url))
+                .then_some(url)
+        })
+        .last()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pull_request_link_is_recognised_with_or_without_what_follows() {
+        for url in [
+            "https://github.com/o/r/pull/12",
+            "https://github.com/o/r/pull/12/files",
+            "https://github.com/o/r/pull/12?tab=files",
+            "https://gitlab.com/g/p/-/merge_requests/7",
+        ] {
+            assert!(is_pull_request(url), "{url}");
+        }
+        for url in [
+            "https://github.com/o/r/pulls",
+            "https://example.com/pull/abc",
+            "https://example.com/docs",
+            "mailto:someone@example.com",
+        ] {
+            assert!(!is_pull_request(url), "{url}");
+        }
+    }
+
+    #[test]
+    fn the_last_pull_request_in_a_text_is_found() {
+        let pr = "https://github.com/o/r/pull/3";
+        assert_eq!(find_pull_request(&format!("Opened {pr}")), Some(pr));
+        assert_eq!(
+            find_pull_request(&format!("See [the PR]({pr}) now")),
+            Some(pr)
+        );
+        assert_eq!(find_pull_request(&format!("Done: {pr}.")), Some(pr));
+        assert_eq!(
+            find_pull_request(&format!("{pr} and {pr}/files.")),
+            Some("https://github.com/o/r/pull/3/files")
+        );
+        assert_eq!(find_pull_request("first https://github.com/o/r/pull/1 then https://gitlab.com/g/p/-/merge_requests/2!"), Some("https://gitlab.com/g/p/-/merge_requests/2"));
+        assert_eq!(
+            find_pull_request("https://example.com/docs and nothing else"),
+            None
+        );
+        assert_eq!(find_pull_request("no link at all"), None);
     }
 }

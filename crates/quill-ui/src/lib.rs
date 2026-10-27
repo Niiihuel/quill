@@ -137,6 +137,8 @@ pub struct Session {
     pub repo: Option<quill_model::Repo>,
     /// Out of the sidebar; the search still finds it.
     pub archived: bool,
+    /// The pull request the agent last gave the address of, if any.
+    pub pull_request: Option<String>,
     /// Has news the person has not seen: a gray dot in its row.
     pub unread: bool,
     /// When it last changed in this run, for "Last updated".
@@ -249,6 +251,7 @@ impl Store {
                 pinned: false,
                 repo: None,
                 archived: false,
+                pull_request: None,
                 unread: false,
                 touched: 0,
                 parent: None,
@@ -375,6 +378,11 @@ impl Store {
             Event::Pinned { session, pinned } => {
                 if let Some(s) = self.session_mut(session) {
                     s.pinned = pinned;
+                }
+            }
+            Event::PullRequest { session, url } => {
+                if let Some(s) = self.session_mut(session) {
+                    s.pull_request = Some(url);
                 }
             }
             Event::TasksCleared { session, tasks } => {
@@ -1038,20 +1046,8 @@ pub enum Allow {
 /// browser" is on. The UI and the host both ask this, so they cannot disagree.
 pub fn opens_outside(settings: &quill_model::Settings, url: &str) -> bool {
     (url.starts_with("http://") || url.starts_with("https://"))
-        && (!settings.links_in_browser || (settings.prs_in_browser && pull_request(url)))
-}
-
-/// A link to a pull request (`/pull/12`, `/merge_requests/7`), with or without what follows it.
-fn pull_request(url: &str) -> bool {
-    let url = url.split(['?', '#']).next().unwrap_or(url);
-    let Some(path) = url.splitn(4, '/').nth(3) else {
-        return false;
-    };
-    path.split('/').collect::<Vec<_>>().windows(2).any(|pair| {
-        matches!(pair[0], "pull" | "merge_requests")
-            && !pair[1].is_empty()
-            && pair[1].bytes().all(|b| b.is_ascii_digit())
-    })
+        && (!settings.links_in_browser
+            || (settings.prs_in_browser && quill_model::is_pull_request(url)))
 }
 
 /// What the branch bar asks of the agent to open a pull request: commit what is left, push,
@@ -3896,6 +3892,7 @@ fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
         "browser_native" => settings.browser_native = !settings.browser_native,
         "links_in_browser" => settings.links_in_browser = !settings.links_in_browser,
         "prs_in_browser" => settings.prs_in_browser = !settings.prs_in_browser,
+        "archive_on_merge" => settings.archive_on_merge = !settings.archive_on_merge,
         other => match other
             .strip_prefix("agent:")
             .and_then(|r| r.strip_suffix(":unsafe"))

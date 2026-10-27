@@ -7670,6 +7670,11 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
                             "Open pull request links in your default browser instead of the built-in browser.",
                             setting_switch("prs_in_browser", s.prs_in_browser, palette),
                         ),
+                        setting(
+                            "Auto-archive after PR merge",
+                            "Automatically archive sessions when the associated pull request is merged.",
+                            setting_switch("archive_on_merge", s.archive_on_merge, palette),
+                        ),
                     ],
                 ),
             ],
