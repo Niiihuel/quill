@@ -2751,14 +2751,25 @@ fn entries<'a>(
                     items.push(Element::spacer().size(None, Some(32.0)));
                 }
                 let element = self::item(other, store, session, ui, column, palette);
-                // Under a reply, its actions show while the pointer is on it.
+                // Under a turn's last reply, once the turn ended, its actions show while the
+                // pointer is on it; the replies between its steps have none and
+                // keep no room for them (inferred from the person's capture of 2026-10-27).
+                let ends_turn = list[at + 1..]
+                    .iter()
+                    .find(|item| {
+                        matches!(
+                            item,
+                            Item::Assistant { .. } | Item::User { .. } | Item::TurnEnd { .. }
+                        )
+                    })
+                    .map_or(!busy, |item| matches!(item, Item::TurnEnd { .. }));
                 let element = match other {
                     Item::Assistant {
                         streaming: false,
                         id,
                         at: when,
                         ..
-                    } if main => {
+                    } if main && ends_turn => {
                         // The turn's changes go between the reply and its actions, as
                         // Desktop's (the person's capture of 2026-10-27).
                         let changes = (at + 1..list.len())

@@ -4830,3 +4830,54 @@ fn a_source_names_its_site_and_its_letter_hue_is_stable() {
     assert_eq!(view::site_hue("rust-lang"), 178);
     assert_eq!(view::site_hue("x"), 135);
 }
+
+#[test]
+fn only_a_turns_last_reply_has_its_actions_once_the_turn_ended() {
+    let (mut store, ui) = store_with_session();
+    let text = |store: &mut Store, words: &str, id: &str| {
+        agent(
+            store,
+            AgentEvent::Text {
+                text: words.into(),
+                parent: None,
+                id: Some(id.into()),
+                at: Some(0),
+            },
+        )
+    };
+    text(&mut store, "Looking first", "m1");
+    agent(
+        &mut store,
+        AgentEvent::ToolUse {
+            call: "t1".into(),
+            name: "Bash".into(),
+            input: serde_json::json!({ "command": "ls" }),
+            parent: None,
+        },
+    );
+    text(&mut store, "Done", "m2");
+    let window = limn::Size::new(1408.0, 844.0);
+    let actions = |store: &Store| {
+        let frame = UiTree::new(view(store, &ui, window)).layout(window);
+        frame
+            .regions
+            .iter()
+            // The person's own message, item 0, has its copy too.
+            .filter(|r| r.id.starts_with("copy:1:") && r.id != "copy:1:0")
+            .map(|r| r.id.clone())
+            .collect::<Vec<_>>()
+    };
+    // Still working: no reply has its row yet.
+    assert!(actions(&store).is_empty());
+    agent(
+        &mut store,
+        AgentEvent::TurnFinished {
+            ok: true,
+            interrupted: false,
+            usage: Usage::default(),
+            error: None,
+        },
+    );
+    // The reply between the steps has none; the last one, after the step, has its row.
+    assert_eq!(actions(&store), ["copy:1:3"]);
+}
