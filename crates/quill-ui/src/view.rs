@@ -7662,6 +7662,19 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
                 (
                     "Pull requests".into(),
                     vec![
+                        // Desktop's "Branch prefix" and its own default.
+                        setting(
+                            "Branch prefix",
+                            "Prefix added to the branch names quill asks agents to create.",
+                            limn::TextField::new(
+                                "set:branch_prefix",
+                                s.branch_prefix.as_str(),
+                                "quill",
+                                palette,
+                            )
+                            .render()
+                            .size(Some(220.0), Some(32.0)),
+                        ),
                         setting(
                             "Pull request kind",
                             "What the branch bar's button opens. Picking a kind in its menu changes this too.",

@@ -2674,6 +2674,15 @@ fn settings_save_through_the_engine_and_shape_what_comes_next() {
         },
     );
     assert!(matches!(saved.as_slice(), [Intent::SaveSettings(s)] if s.code_font == "Fira Code"));
+    let saved = update(
+        &store,
+        &mut ui,
+        &UiAction::Submitted {
+            id: "set:branch_prefix".into(),
+            value: " team/ ".into(),
+        },
+    );
+    assert!(matches!(saved.as_slice(), [Intent::SaveSettings(s)] if s.branch_prefix == "team"));
     // An agent's defaults: a new model drops the effort chosen for the old one.
     let mut settings = Settings::default();
     settings.agents.entry("claude".into()).or_default().effort = Some("high".into());
@@ -3041,4 +3050,16 @@ fn a_wider_pane_widens_the_column_and_panes_stack_and_expand_on_springs() {
     ui.tick(&store);
     assert_eq!(ui.expand_shown.target(), 1.0);
     assert!(ui.animating());
+}
+
+#[test]
+fn the_pr_request_names_the_branch_prefix() {
+    assert!(
+        pr_request(false, quill_model::Settings::default().branch_prefix()).contains("`quill/`")
+    );
+    let settings = quill_model::Settings {
+        branch_prefix: "team/".into(),
+        ..quill_model::Settings::default()
+    };
+    assert!(pr_request(true, settings.branch_prefix()).contains("`team/`"));
 }

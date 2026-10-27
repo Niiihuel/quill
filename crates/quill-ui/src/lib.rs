@@ -1053,7 +1053,7 @@ pub fn opens_outside(settings: &quill_model::Settings, url: &str) -> bool {
 /// What the branch bar asks of the agent to open a pull request: commit what is left, push,
 /// open it with `gh`, as a draft when that kind was chosen, and give its address. Desktop
 /// sends its own request of the same steps [3.6556.2/c06cf64bb]; these words are quill's.
-fn pr_request(draft: bool) -> String {
+fn pr_request(draft: bool, prefix: &str) -> String {
     let (kind, open) = if draft {
         ("as a draft", "`gh pr create --draft`")
     } else {
@@ -1061,13 +1061,16 @@ fn pr_request(draft: bool) -> String {
     };
     format!(
         "Create a pull request for the changes in this session, {kind}.\n\n\
-         1. If there are uncommitted changes, commit them with a message that says what \
+         1. If the current branch is the repository's default branch, first create and switch \
+         to a new branch named `{prefix}/` followed by a few words naming the change, in \
+         kebab-case.\n\
+         2. If there are uncommitted changes, commit them with a message that says what \
          changed and why.\n\
-         2. Push the branch.\n\
-         3. Open the pull request with {open}. Give it a title that sums up the change and a \
+         3. Push the branch.\n\
+         4. Open the pull request with {open}. Give it a title that sums up the change and a \
          body that says what changed, why, and what a reviewer should know; follow the \
          repository's template if it has one.\n\
-         4. Reply with the pull request's address.\n\n\
+         5. Reply with the pull request's address.\n\n\
          If this branch has a pull request already, push any new commits and give its address \
          instead of opening another."
     )
@@ -1119,7 +1122,7 @@ fn session_clicked(store: &Store, ui: &mut Ui, id: &str) -> Option<Vec<Intent>> 
         return Some(match session {
             Some(s) if view::pr_blocked(s).is_none() => vec![Intent::Send {
                 session: s.id,
-                text: pr_request(ui.settings.pr_draft),
+                text: pr_request(ui.settings.pr_draft, ui.settings.branch_prefix()),
             }],
             _ => vec![],
         });
@@ -2217,6 +2220,11 @@ fn update_action(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Int
         UiAction::Submitted { id, value } if id == "set:code_font" => {
             let mut settings = ui.settings.clone();
             settings.code_font = value.trim().to_owned();
+            vec![Intent::SaveSettings(settings)]
+        }
+        UiAction::Submitted { id, value } if id == "set:branch_prefix" => {
+            let mut settings = ui.settings.clone();
+            settings.branch_prefix = value.trim().trim_end_matches('/').to_owned();
             vec![Intent::SaveSettings(settings)]
         }
         UiAction::InputChanged { id, value } if id.starts_with("set:agent:") => {

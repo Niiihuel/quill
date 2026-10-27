@@ -110,6 +110,9 @@ pub struct Settings {
     pub attention: bool,
     /// A pull request opens as a draft unless the person picks otherwise.
     pub pr_draft: bool,
+    /// The prefix of the branch names agents are asked to create, without its `/` (Desktop's
+    /// "Branch prefix", whose default is the app's own name); empty takes "quill".
+    pub branch_prefix: String,
     /// Open a pull request's link in the computer's default browser even while links open in
     /// the built-in one (Desktop's "Open pull requests in browser"); off is inferred.
     pub prs_in_browser: bool,
@@ -153,6 +156,7 @@ impl Default for Settings {
             keep_awake_on_battery: true,
             attention: true,
             pr_draft: false,
+            branch_prefix: String::new(),
             prs_in_browser: false,
             archive_on_merge: false,
             open_at_login: false,
@@ -168,6 +172,16 @@ impl Default for Settings {
 impl Settings {
     pub fn agent(&self, agent: &str) -> AgentSettings {
         self.agents.get(agent).cloned().unwrap_or_default()
+    }
+
+    /// The branch prefix without its trailing `/`, or "quill" when none is set.
+    pub fn branch_prefix(&self) -> &str {
+        let prefix = self.branch_prefix.trim().trim_end_matches('/');
+        if prefix.is_empty() {
+            "quill"
+        } else {
+            prefix
+        }
     }
 }
 
