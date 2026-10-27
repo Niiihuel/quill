@@ -3667,6 +3667,54 @@ pub(crate) fn ago_from(seconds: u64) -> String {
 /// turn's clock, its tokens, the work running beside it and whether the model thinks, muted,
 /// at the transcript's size. Waiting on the person it says so; with only background work
 /// left, it counts it.
+/// The line under the nib in quill's icon (`apps/quill/assets/icons/quill.svg`), in logical
+/// pixels of the 48 by 24 working indicator.
+const SIGNATURE: [(f32, f32); 10] = [
+    (3.0, 20.0),
+    (6.2, 21.3),
+    (10.8, 20.8),
+    (16.0, 18.4),
+    (19.9, 16.4),
+    (22.5, 15.9),
+    (23.8, 17.1),
+    (24.4, 18.4),
+    (26.1, 18.7),
+    (29.0, 18.1),
+];
+
+/// The icon's pen, 16 px from nib to tip, its nib at (0, 0): the feather, its shaft, the
+/// ferrule and the nib.
+const PEN: [&[(f32, f32)]; 4] = [
+    &[
+        (2.9, -3.3),
+        (2.3, -4.3),
+        (2.6, -5.8),
+        (3.4, -7.4),
+        (4.7, -9.0),
+        (6.5, -10.5),
+        (8.5, -11.6),
+        (10.4, -12.1),
+        (10.1, -10.5),
+        (9.7, -9.3),
+        (9.0, -8.8),
+        (8.4, -7.7),
+        (7.9, -6.4),
+        (7.0, -6.1),
+        (5.6, -5.3),
+        (4.0, -4.3),
+        (2.9, -3.3),
+    ],
+    &[(2.9, -4.0), (4.6, -6.1), (6.6, -8.8)],
+    &[(1.5, -3.2), (2.9, -2.2)],
+    &[
+        (1.2, -2.8),
+        (0.6, -1.3),
+        (0.0, 0.0),
+        (1.5, -0.6),
+        (2.6, -2.3),
+    ],
+];
+
 fn status_line(
     session: &Session,
     running: Option<&Step>,
@@ -3675,10 +3723,22 @@ fn status_line(
     palette: ComponentPalette,
 ) -> Option<Element> {
     let dots = || {
-        // Large enough for its loops to stay open at a 1.5 px line.
-        limn::Scribble::new("status:scribble", look::running())
-            .size(34.0, 15.0)
+        // quill's own pen writes the line and the two dots of its icon, in the ink of the theme.
+        limn::Scribble::new("status:scribble", look::palette().text)
+            .size(48.0, 24.0)
             .stroke(1.5)
+            .marks(vec![
+                limn::Mark::Line(SIGNATURE.to_vec()),
+                limn::Mark::Dot {
+                    at: (33.5, 15.6),
+                    diameter: 3.4,
+                },
+                limn::Mark::Dot {
+                    at: (36.4, 12.2),
+                    diameter: 2.3,
+                },
+            ])
+            .pen(PEN.iter().map(|line| line.to_vec()).collect())
             .render()
             .centered_y()
     };
