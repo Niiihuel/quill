@@ -163,10 +163,10 @@ pub const SHOW_MORE: &str = "sidebar:show-more";
 /// The effort slider, its width, and the way its thumb travels.
 pub const EFFORT_SLIDER: &str = "effort:slider";
 const EFFORT_WIDTH: f32 = 192.0;
-/// The stops and the thumb's middle sit 12 px in, so the 20 px thumb at an end reaches the
-/// track's end, 2 px inside it, as the person asked (2026-10-27; before, 6 px of track
-/// showed beside it); Desktop's dots sit 13.5 px in.
-const EFFORT_INSET: f32 = 12.0;
+/// The stops and the thumb's middle sit 10 px in, so the 20 px thumb at an end meets the
+/// track's end, flush, its corners on the track's, as the person asked (2026-10-27);
+/// Desktop's dots sit 13.5 px in.
+const EFFORT_INSET: f32 = 10.0;
 pub const EFFORT_TRAVEL: f32 = EFFORT_WIDTH - 2.0 * EFFORT_INSET;
 pub const DELETE_CONFIRM: &str = "delete:confirm";
 pub const DELETE_CANCEL: &str = "delete:cancel";
@@ -6387,8 +6387,8 @@ fn effort_state(store: &Store, ui: &Ui) -> Option<EffortState> {
         Some(thumb) if ui.effort_dragging || thumb.is_active(now) => thumb.value(now),
         _ => rest * EFFORT_TRAVEL,
     }
-    // The spring's overshoot stays within the track's 2 px.
-    .clamp(-2.0, EFFORT_TRAVEL + 2.0);
+    // The spring does not overshoot the track's ends.
+    .clamp(0.0, EFFORT_TRAVEL);
     let shown = ((thumb_x / EFFORT_TRAVEL * last).round().max(0.0) as usize).min(n - 1);
     Some(EffortState {
         efforts,
