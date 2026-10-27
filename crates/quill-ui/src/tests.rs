@@ -1914,6 +1914,39 @@ fn btw_asks_beside_the_session_and_closing_puts_it_away() {
 }
 
 #[test]
+fn a_turns_changes_list_three_files_then_the_rest_and_each_opens_the_diff() {
+    use quill_model::{ChangeKind, FileEffect};
+    let (mut store, mut ui) = store_with_session();
+    store.apply(Event::Changes {
+        session: 1,
+        request: "r1".into(),
+        files: (0..5)
+            .map(|i| FileEffect {
+                path: format!("src/f{i}.rs"),
+                kind: ChangeKind::Modified,
+                added: 1,
+                removed: 0,
+                patch: String::new(),
+            })
+            .collect(),
+        snapshot: "s".into(),
+    });
+    let window = limn::Size::new(1408.0, 844.0);
+    let shown = |ui: &Ui, id: &str| {
+        let frame = UiTree::new(view(&store, ui, window)).layout(window);
+        frame.regions.iter().any(|r| r.id == id)
+    };
+    assert!(shown(&ui, "changes:r1:view"));
+    assert!(shown(&ui, "changes:r1:view:src/f2.rs"));
+    assert!(!shown(&ui, "changes:r1:view:src/f3.rs"));
+    click(&store, &mut ui, "changes:r1:more");
+    assert!(shown(&ui, "changes:r1:view:src/f4.rs"));
+    click(&store, &mut ui, "changes:r1:view:src/f1.rs");
+    assert_eq!(ui.diff, Some((1, "r1".into())));
+    assert!(ui.pane_open(Pane::Diff));
+}
+
+#[test]
 fn outputs_open_in_a_document_pane_that_saves_and_follows_the_agent() {
     use quill_model::{ChangeKind, FileEffect};
     let (mut store, mut ui) = store_with_session();

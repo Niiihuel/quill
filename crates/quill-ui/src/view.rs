@@ -5,8 +5,7 @@ use crate::look::{self, chat, BODY, SMALL};
 use crate::{Item, Pane, Session, Store, ToolResult, Ui};
 use limn::{
     Button, ButtonGroup, ButtonSize, ButtonVariant, Component, ComponentPalette, Composer,
-    ControlSize, Element, FontFamily, FramedCard, Markdown, OutputBlock, Size, Spinner,
-    TextShimmer,
+    ControlSize, Element, FontFamily, Markdown, OutputBlock, Size, Spinner, TextShimmer,
 };
 use quill_components::pieces::{
     confirm, hgap, hline, icon_tool, keyed_button, menu, muted, pane_header, text, toggle,
@@ -1129,22 +1128,50 @@ fn browser_pane(
         ])
     });
     let below = height - look::PANE_HEADER - 1.0 - 41.0 - if notice.is_some() { 33.0 } else { 0.0 };
-    let body = match (tab, &browser.failed) {
-        (Some(tab), _) => Element::focus_area(
+    // A blank tab shows Desktop's empty state instead of its page (3.6556.2, the person's
+    // capture of 2026-10-27), less the agent's name and the dev server it offers to find.
+    let blank = |failed: Option<&String>| {
+        let fill = || Element::spacer().flex(1.0);
+        let mut column = vec![
+            fill(),
+            Element::icon(icons::of(icons::GLOBE))
+                .foreground(look::muted())
+                .large_icon(24.0)
+                .size(Some(24.0), Some(24.0))
+                .centered_x(),
+            Element::spacer().size(None, Some(6.0)),
+            text("Browse the web").centered_x(),
+        ];
+        // Two centred lines: limn centres a line, not the lines of a paragraph.
+        let words = match failed {
+            Some(failed) => vec![failed.clone()],
+            None => vec![
+                "Type a URL or ask the agent to open a site.".into(),
+                "It can read, click, and type.".into(),
+            ],
+        };
+        column.extend(words.into_iter().map(|line| {
+            Element::truncated_text(line)
+                .font_family(FontFamily::Sans)
+                .font_size(SMALL)
+                .foreground(look::muted())
+                .max_width(width - 32.0)
+                .centered_x()
+        }));
+        column.push(fill());
+        Element::column(column)
+            .gap(6.0)
+            .size(Some(width), Some(below.max(0.0)))
+    };
+    let body = match tab {
+        Some(tab) if tab.url != "about:blank" || tab.loading => Element::focus_area(
             BROWSER_VIEW,
             Element::surface(browser_surface(session.id, tab.id), "Page"),
         )
         .accessibility_label("Browser page")
         .size(Some(width), Some(below.max(0.0))),
-        (None, failed) => {
-            Element::column(vec![muted(failed.clone().unwrap_or_else(|| {
-                "Type a URL or ask the agent to open a site.".into()
-            }))
-            .font_size(SMALL)
-            .centered_x()])
-            .padding(24.0)
-            .size(Some(width), Some(below.max(0.0)))
-        }
+        Some(_) => blank(None),
+        None => blank(browser.failed.as_ref()),
     };
     let mut column = vec![header, toolbar, body];
     column.extend(notice);
@@ -1815,15 +1842,8 @@ fn group_header(
     palette: ComponentPalette,
 ) -> Element {
     let folder_key = key;
-    // Solid, as Desktop's (3.6556.2, captured 2026-10-27).
-    let caret = Element::icon(if open {
-        icons::of(icons::TRIANGLE_DOWN)
-    } else {
-        icons::of(icons::TRIANGLE_RIGHT)
-    })
-    .foreground(look::muted())
-    .size(Some(12.0), Some(12.0))
-    .centered_y();
+    // The right panel's chevrons, the person's choice over Desktop's solid triangles.
+    let caret = caret(open);
     // Status groups read as plain words, Folder ones as small gray names with a caret.
     let status = key.to_string_lossy().starts_with("status:");
     let mut items = if status {
@@ -2236,7 +2256,12 @@ fn entries<'a>(
     let main = std::ptr::eq(list, session.items.as_slice());
     let mut waiting = None;
     let new_from = ui.new_from.get(&session.id).copied().filter(|_| main);
+    // A turn's changes drawn with the reply before them, which they are then skipped as.
+    let mut drawn = None;
     for (at, item) in list.iter().enumerate() {
+        if drawn == Some(at) {
+            continue;
+        }
         if new_from == Some(at) && at > 0 {
             flush(&mut steps, &mut items);
             items.push(new_divider(column));
@@ -2332,12 +2357,23 @@ fn entries<'a>(
                         id,
                         at: when,
                         ..
-                    } if main => Element::column(vec![
-                        element,
-                        reply_actions(session, at, id.is_some(), *when, ui),
-                    ])
-                    .gap(4.0)
-                    .hover_region(),
+                    } if main => {
+                        // The turn's changes go between the reply and its actions, as
+                        // Desktop's (the person's capture of 2026-10-27).
+                        let changes = (at + 1..list.len())
+                            .take_while(|&i| {
+                                matches!(list[i], Item::TurnEnd { .. } | Item::Changes { .. })
+                            })
+                            .find(|&i| matches!(list[i], Item::Changes { .. }));
+                        let mut parts = vec![element];
+                        if let Some(i) = changes {
+                            drawn = Some(i);
+                            parts.push(Element::spacer().size(None, Some(8.0)));
+                            parts.push(self::item(&list[i], store, session, ui, column, palette));
+                        }
+                        parts.push(reply_actions(session, at, id.is_some(), *when, ui));
+                        Element::column(parts).gap(4.0).hover_region()
+                    }
                     _ => element,
                 };
                 items.push(element);
@@ -2968,7 +3004,7 @@ fn item(
             request,
             files,
             rewound,
-        } => changes_card(request, files, *rewound, column, palette),
+        } => changes_card(request, files, *rewound, ui, column),
         Item::Proposals { tasks } => proposals_card(store, tasks, palette),
         Item::Reports { request, reports } => {
             reports_block(store, request, reports, session, ui, column)
@@ -5403,67 +5439,128 @@ fn pixel_field(ui: &Ui, width: f32, height: f32) -> Element {
     Element::column(rows).size(Some(width), Some(height))
 }
 
-/// What one request changed, under its turn: every file with how it changed,
-/// and a real undo (Desktop's asks the agent instead, engine.md §6).
+/// What one request changed, under its turn, as Desktop 3.6556.2 draws it (`B0e` in
+/// `c96d752d0`): one file is a single row, its name with Undo, its counts and a chevron;
+/// more are "Edited N files" with them over the first three files and "N more". Every row
+/// opens the request's diff, and Undo is a real one (Desktop's asks the agent instead,
+/// engine.md §6).
 fn changes_card(
     request: &str,
     files: &[FileEffect],
     rewound: bool,
+    ui: &Ui,
     column: f32,
-    palette: ComponentPalette,
 ) -> Element {
     let (added, removed) = files
         .iter()
         .fold((0, 0), |(a, r), f| (a + f.added, r + f.removed));
-    let count = if files.len() == 1 {
-        "1 file".to_string()
+    let view = format!("changes:{request}:view");
+    let undo = if rewound {
+        muted("Undone").font_size(SMALL).centered_y()
     } else {
-        format!("{} files", files.len())
-    };
-    let head = Element::row(vec![
-        text(format!("Changed {count}")),
-        text(format!("+{added}")).foreground(look::added()),
-        text(format!("−{removed}")).foreground(look::removed()),
-    ])
-    .gap(6.0);
-    let mut card = FramedCard::new(palette).width(column).section(head);
-    let rows = files
-        .iter()
-        .map(|f| {
-            let (mark, color) = match &f.kind {
-                ChangeKind::Added => ("A".to_string(), look::added()),
-                ChangeKind::Deleted => ("D".to_string(), look::removed()),
-                ChangeKind::Renamed { from } => (format!("R ← {from}"), look::muted()),
-                ChangeKind::Modified => ("M".to_string(), look::muted()),
-            };
+        let id = format!("changes:{request}:undo");
+        let button = Element::clickable(
+            id.clone(),
             Element::row(vec![
-                text(f.path.clone())
-                    .font_family(FontFamily::Monospace)
-                    .flex(1.0),
-                text(mark).foreground(color),
-                muted(format!("+{} −{}", f.added, f.removed)),
+                hgap(6.0),
+                muted("Undo").font_size(SMALL).centered_y(),
+                hgap(6.0),
             ])
-            .gap(10.0)
-        })
-        .collect();
-    card = card.section(Element::column(rows).gap(4.0));
-    let foot = if rewound {
-        muted("Files restored to before this request")
-    } else {
-        ButtonGroup::new(vec![
-            Button::new(format!("changes:{request}:undo"), "Undo", palette)
-                .variant(ButtonVariant::Ghost)
-                .button_size(ButtonSize::Small)
-                .render(),
-            Button::new(format!("changes:{request}:view"), "View changes", palette)
-                .variant(ButtonVariant::Outline)
-                .button_size(ButtonSize::Small)
-                .render(),
-        ])
-        .align_end()
+            .size(None, Some(24.0)),
+        )
+        .hover_background(look::tool_hover())
+        .radius(6.0);
+        limn::Tooltip::new(
+            button,
+            id,
+            "Undo this request's file changes",
+            look::palette(),
+        )
         .render()
+        .centered_y()
     };
-    card.foot(foot).render()
+    let counts = |added: u32, removed: u32| {
+        vec![
+            text(format!("+{added}"))
+                .font_size(SMALL)
+                .foreground(look::added())
+                .centered_y(),
+            text(format!("\u{2212}{removed}"))
+                .font_size(SMALL)
+                .foreground(look::removed())
+                .centered_y(),
+        ]
+    };
+    let row = |icon: &'static str, label: String, folder: Option<String>, end: Vec<Element>| {
+        let mut items = vec![
+            hgap(4.0),
+            Element::icon(icons::of(icon))
+                .foreground(look::muted())
+                .size(Some(14.0), Some(14.0))
+                .centered_y(),
+            Element::truncated_text(label)
+                .font_family(FontFamily::Sans)
+                .font_size(BODY)
+                .foreground(look::palette().text)
+                .centered_y(),
+        ];
+        items.extend(folder.map(|f| {
+            Element::truncated_text(f)
+                .font_family(FontFamily::Sans)
+                .font_size(SMALL)
+                .foreground(look::muted())
+                .centered_y()
+        }));
+        items.push(Element::spacer().flex(1.0));
+        items.extend(end);
+        items.push(hgap(4.0));
+        Element::row(items).gap(8.0).size(None, Some(36.0))
+    };
+    let chevron = || caret(false);
+    let opens = |id: String, row: Element| {
+        Element::clickable(id, row)
+            .hover_background(look::row_hover())
+            .radius(8.0)
+    };
+    let name = |f: &FileEffect| f.path.rsplit('/').next().unwrap_or(&f.path).to_owned();
+    let mut rows = vec![];
+    if let [file] = files {
+        let mut end = vec![undo];
+        end.extend(counts(file.added, file.removed));
+        end.push(chevron());
+        rows.push(opens(view.clone(), row(icons::CODE, name(file), None, end)));
+    } else {
+        let mut end = vec![undo];
+        end.extend(counts(added, removed));
+        end.push(chevron());
+        let label = format!("Edited {} files", files.len());
+        rows.push(opens(view.clone(), row(icons::DIFF, label, None, end)));
+        let more = format!("changes:{request}:more");
+        let all = ui.expanded.contains(&more);
+        let shown = if all { files.len() } else { files.len().min(3) };
+        for file in &files[..shown] {
+            let folder = file.path.rsplit_once('/').map(|(dir, _)| dir.to_owned());
+            let end = counts(file.added, file.removed);
+            // Each row its own id, so it lights alone under the pointer.
+            let id = format!("{view}:{}", file.path);
+            rows.push(opens(id, row(icons::CODE, name(file), folder, end)));
+        }
+        if files.len() > 3 {
+            let label = if all {
+                "Show less".to_owned()
+            } else {
+                format!("{} more", files.len() - 3)
+            };
+            let line = Element::row(vec![hgap(26.0), muted(label).font_size(SMALL).centered_y()])
+                .size(None, Some(28.0));
+            rows.push(opens(more, line));
+        }
+    }
+    Element::column(rows)
+        .padding(4.0)
+        .border(look::card_border(), 1.0)
+        .radius(12.0)
+        .size(Some(column), None)
 }
 
 /// The changes of one request, file by file, as unified diffs.

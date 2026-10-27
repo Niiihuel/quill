@@ -2418,7 +2418,12 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         let Some(session) = ui.selected else {
             return vec![];
         };
-        if let Some(request) = rest.strip_suffix(":view") {
+        if rest.ends_with(":more") {
+            match ui.expanded.iter().position(|k| k == id) {
+                Some(at) => drop(ui.expanded.remove(at)),
+                None => ui.expanded.push(id.to_owned()),
+            }
+        } else if let Some((request, _file)) = rest.split_once(":view") {
             ui.diff = Some((session, request.to_owned()));
             ui.open_pane(Pane::Diff);
         } else if let Some(request) = rest.strip_suffix(":undo") {

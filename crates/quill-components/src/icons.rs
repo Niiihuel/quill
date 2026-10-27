@@ -51,9 +51,6 @@ pub const STOP: &str = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 
 pub const STOP_CIRCLE: &str = icon!(
     "<circle cx='10' cy='10' r='7.5'/><rect x='7.5' y='7.5' width='5' height='5' rx='0.75' fill='currentColor' stroke='none'/>"
 );
-/// The small solid triangles a sidebar group's name points with, open and folded.
-pub const TRIANGLE_DOWN: &str = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='currentColor'><path d='M5.5 7.5h9L10 13z'/></svg>";
-pub const TRIANGLE_RIGHT: &str = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='currentColor'><path d='M7.5 5.5v9L13 10z'/></svg>";
 pub const DOTS_HORIZONTAL: &str = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='currentColor'><circle cx='4' cy='10' r='1.4'/><circle cx='10' cy='10' r='1.4'/><circle cx='16' cy='10' r='1.4'/></svg>";
 pub const DOTS_VERTICAL: &str = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='currentColor'><circle cx='10' cy='4' r='1.4'/><circle cx='10' cy='10' r='1.4'/><circle cx='10' cy='16' r='1.4'/></svg>";
 
@@ -206,8 +203,6 @@ pub const ALL: &[(&str, &str)] = &[
     ("caret_left", CARET_LEFT),
     ("caret_down", CARET_DOWN),
     ("caret_up", CARET_UP),
-    ("triangle_down", TRIANGLE_DOWN),
-    ("triangle_right", TRIANGLE_RIGHT),
     ("expand", EXPAND),
     ("collapse", COLLAPSE),
     ("folder", FOLDER),
