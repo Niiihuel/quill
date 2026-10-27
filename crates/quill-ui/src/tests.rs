@@ -1512,9 +1512,8 @@ fn background_tasks_list_running_and_finished_stop_and_clear() {
         "Finished 1",
         "Completed",
         "4m 45s",
+        // The rest of the line is cut at this width; the row itself opens the transcript.
         "178.6k tokens",
-        "31 tool uses",
-        "View transcript",
     ] {
         assert!(shows(&store, &ui, words), "{words}");
     }

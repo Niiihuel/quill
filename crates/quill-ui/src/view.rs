@@ -1003,7 +1003,6 @@ fn tasks_pane(
         return Element::column(vec![header, body]).size(Some(width), Some(height));
     }
     let inner = width - 32.0;
-    let words = |s: String| muted(s).font_size(SMALL).centered_y();
     let row = |task: &crate::Task| {
         let kind = match task.kind.as_str() {
             "agent" => "Agent",
@@ -1012,63 +1011,74 @@ fn tasks_pane(
             "monitor" => "Monitor",
             _ => "Task",
         };
-        let state = if task.running {
-            "Running"
-        } else if task.stopped {
-            "Stopped"
-        } else if task.failed {
-            "Failed"
-        } else {
-            "Completed"
-        };
         let ran = if task.running {
             Some(task.since.elapsed().as_secs())
         } else {
             task.usage.map(|u| u.duration_ms / 1000)
         };
-        let mut line = vec![words(kind.into()), words(state.into())];
-        line.extend(ran.map(|secs| words(elapsed(secs))));
-        let mut lines = vec![
+        // One line under the title says what it is and what it used: a running one says so
+        // by its shimmer, a finished one in words.
+        let mut meta = vec![kind.to_owned()];
+        if !task.running {
+            meta.push(
+                if task.stopped {
+                    "Stopped"
+                } else if task.failed {
+                    "Failed"
+                } else {
+                    "Completed"
+                }
+                .into(),
+            );
+        }
+        meta.extend(ran.map(elapsed));
+        if let Some(usage) = task.usage.filter(|u| u.tokens > 0) {
+            meta.push(tokens(usage.tokens));
+            meta.push(match usage.tool_uses {
+                1 => "1 tool use".into(),
+                n => format!("{n} tool uses"),
+            });
+        }
+        let meta = meta.join(" · ");
+        let wide = inner - if task.running { 36.0 } else { 0.0 };
+        let meta = if task.running {
+            Element::shimmer_truncated_text(
+                format!("task:{}:meta", task.id),
+                meta,
+                look::palette().text,
+            )
+        } else {
+            Element::truncated_text(meta)
+        }
+        .font_family(FontFamily::Sans)
+        .font_size(SMALL)
+        .foreground(look::muted())
+        .max_width(wide);
+        let lines = Element::column(vec![
             Element::truncated_text(task.description.clone())
                 .font_family(FontFamily::Sans)
                 .font_size(BODY)
                 .foreground(look::palette().text)
-                .max_width(inner),
-            Element::row(line).gap(12.0).size(None, Some(20.0)),
-        ];
-        let mut used = vec![];
-        if let Some(usage) = task.usage.filter(|u| u.tokens > 0) {
-            used.push(words(tokens(usage.tokens)));
-            used.push(words(match usage.tool_uses {
-                1 => "1 tool use".into(),
-                n => format!("{n} tool uses"),
-            }));
-        }
-        if let (Some(call), "agent") = (&task.call, task.kind.as_str()) {
-            used.push(
-                limn::Link::new(format!("agent:{call}"), "View transcript", palette)
-                    .ink(look::handle())
-                    .font_size(SMALL)
-                    .render()
-                    .centered_y(),
-            );
-        }
-        if !used.is_empty() {
-            lines.push(Element::row(used).gap(12.0).size(None, Some(20.0)));
-        }
-        let mut items = vec![Element::column(lines).gap(4.0).flex(1.0)];
+                .max_width(wide),
+            meta,
+        ])
+        .gap(4.0)
+        .flex(1.0);
+        // A helper agent's row opens its transcript.
+        let lines = match (&task.call, task.kind.as_str()) {
+            (Some(call), "agent") => Element::clickable(format!("agent:{call}"), lines)
+                .accessibility_label(format!("View transcript of {}", task.description)),
+            _ => lines,
+        };
+        let mut items = vec![lines];
         if task.running {
-            items.push(
-                keyed_button(
-                    &format!("task:stop:{}", task.id),
-                    "Stop",
-                    "",
-                    false,
-                    true,
-                    palette,
-                )
-                .centered_y(),
-            );
+            items.push(icon_tool(
+                &format!("task:stop:{}", task.id),
+                icons::of(icons::STOP),
+                "Stop",
+                28.0,
+                palette,
+            ));
         }
         // Flush with the group's name, 10 above and below, over a hairline, as Desktop's.
         let gap = || Element::spacer().size(None, Some(10.0));
@@ -3736,7 +3746,7 @@ fn status_line(
             let mut line = vec![working_words("status:turn", parts.join(" · "))];
             // The running tasks open their pane.
             line.extend(tasks.map(|tasks| {
-                Element::clickable(TASKS_OPEN, muted(tasks).font_size(chat()))
+                Element::clickable(TASKS_OPEN, working_words("status:tasks", tasks))
                     .underline_on_hover()
                     .centered_y()
             }));
@@ -8309,7 +8319,17 @@ fn agent_pane(
         28.0,
         palette,
     );
-    let lead = Element::row(vec![back, text(title.to_owned()).centered_y()]).gap(4.0);
+    // The title is cut before the pane's tools.
+    let lead = Element::row(vec![
+        back,
+        Element::truncated_text(title.to_owned())
+            .font_family(FontFamily::Sans)
+            .font_size(BODY)
+            .foreground(look::palette().text)
+            .max_width(width - 160.0)
+            .centered_y(),
+    ])
+    .gap(4.0);
     let header = pane_header(lead, pane_tools(Pane::Agent, ui, palette), width);
     let Some((session, call, input)) = found else {
         return Element::column(vec![header]).size(Some(width), Some(height));
@@ -8318,7 +8338,7 @@ fn agent_pane(
     let mut body = vec![Element::panel(
         text(input["prompt"].as_str().unwrap_or_default().to_owned())
             .font_size(BODY)
-            .size(Some(inner - 32.0), None),
+            .max_width(inner - 32.0),
     )
     .background(look::user_bubble())
     .radius(14.0)
@@ -8341,18 +8361,8 @@ fn agent_pane(
     let helper = session.helpers.get(call).map_or(&[][..], Vec::as_slice);
     body.extend(entries(store, session, helper, running, ui, inner, palette).0);
     if running {
-        body.push(
-            Element::row(vec![
-                Spinner::new("agent:dots", look::spark())
-                    .variant(limn::SpinnerVariant::Dots)
-                    .size(16.0)
-                    .decorative()
-                    .render()
-                    .centered_y(),
-                muted("Working").font_size(BODY).centered_y(),
-            ])
-            .gap(12.0),
-        );
+        // As the session's own running line: its words, shimmering.
+        body.push(working_words("agent:working", "Working".into()));
     }
     let content = Element::column(body).gap(12.0).padding(24.0);
     let scroll = Element::scroll(format!("agent:{call}:scroll"), content);
