@@ -3667,59 +3667,6 @@ pub(crate) fn ago_from(seconds: u64) -> String {
 /// turn's clock, its tokens, the work running beside it and whether the model thinks, muted,
 /// at the transcript's size. Waiting on the person it says so; with only background work
 /// left, it counts it.
-/// The line under the nib in quill's icon (`apps/quill/assets/icons/quill.svg`), waved, in
-/// logical pixels of the 52 by 28 working indicator.
-const SIGNATURE: [(f32, f32); 15] = [
-    (3.0, 24.6),
-    (4.8, 22.1),
-    (6.6, 21.1),
-    (8.4, 22.6),
-    (10.1, 24.6),
-    (11.9, 24.9),
-    (13.7, 23.0),
-    (15.5, 21.0),
-    (17.3, 21.1),
-    (19.1, 22.9),
-    (20.9, 24.2),
-    (22.6, 23.5),
-    (24.4, 21.6),
-    (26.2, 20.5),
-    (28.0, 21.2),
-];
-
-/// The icon's pen, 24 px from nib to tip, its nib at (0, 0): the feather, its shaft, the
-/// ferrule and the nib.
-const PEN: [&[(f32, f32)]; 4] = [
-    &[
-        (4.4, -5.0),
-        (3.4, -6.5),
-        (3.9, -8.6),
-        (5.1, -11.1),
-        (7.1, -13.5),
-        (9.8, -15.7),
-        (12.7, -17.3),
-        (15.7, -18.2),
-        (15.2, -15.7),
-        (14.6, -13.9),
-        (13.5, -13.2),
-        (12.6, -11.6),
-        (11.9, -9.6),
-        (10.6, -9.2),
-        (8.4, -8.0),
-        (6.0, -6.4),
-        (4.4, -5.0),
-    ],
-    &[(4.3, -6.0), (6.9, -9.2), (9.9, -13.2)],
-    &[(2.3, -4.8), (4.3, -3.3)],
-    &[
-        (1.8, -4.2),
-        (0.9, -1.9),
-        (0.0, 0.0),
-        (2.3, -0.9),
-        (3.9, -3.4),
-    ],
-];
-
 /// Words about work under way, shimmering as a working session's title does in the sidebar.
 fn working_words(id: &str, words: String) -> Element {
     Element::shimmer_text(id.to_owned(), words, look::palette().text)
@@ -3736,26 +3683,6 @@ fn status_line(
     column: f32,
     palette: ComponentPalette,
 ) -> Option<Element> {
-    let dots = || {
-        // quill's own pen writes the line and the two dots of its icon, in the ink of the theme.
-        limn::Scribble::new("status:scribble", look::palette().text)
-            .size(52.0, 28.0)
-            .stroke(1.15)
-            .marks(vec![
-                limn::Mark::Line(SIGNATURE.to_vec()),
-                limn::Mark::Dot {
-                    at: (32.2, 19.4),
-                    diameter: 2.9,
-                },
-                limn::Mark::Dot {
-                    at: (35.2, 17.0),
-                    diameter: 1.9,
-                },
-            ])
-            .pen(PEN.iter().map(|line| line.to_vec()).collect())
-            .render()
-            .centered_y()
-    };
     let tasks = session.tasks.iter().filter(|t| t.running).count();
     let tasks = match tasks {
         0 => None,
@@ -3779,7 +3706,7 @@ fn status_line(
             } else {
                 format!("{verb} {object}")
             };
-            let mut line = vec![dots(), working_words("status:step", words)];
+            let mut line = vec![working_words("status:step", words)];
             let since = session.step_since.map_or(0, |t| t.elapsed().as_secs());
             line.push(muted(elapsed(since)).font_size(chat()).centered_y());
             line.push(caret(open));
@@ -3802,7 +3729,11 @@ fn status_line(
             if session.thinking {
                 parts.push("Thinking".into());
             }
-            let mut line = vec![dots(), working_words("status:turn", parts.join(" · "))];
+            // Before its clock shows, the turn still says it works.
+            if parts.is_empty() {
+                parts.push("Working".into());
+            }
+            let mut line = vec![working_words("status:turn", parts.join(" · "))];
             // The running tasks open their pane.
             line.extend(tasks.map(|tasks| {
                 Element::clickable(TASKS_OPEN, muted(tasks).font_size(chat()))
