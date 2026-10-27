@@ -24,9 +24,9 @@ pub const ERROR_DISMISS: &str = "file-error:dismiss";
 pub const ROW: f32 = 26.0;
 const DESKTOP_ROW: f32 = 24.0;
 
-/// How the tree is drawn: quill-ide's, with its icon pack and depth guides, or Desktop's in
-/// its file tile, quieter: 24 px rows 8 px deeper a level, a folder's chevron alone, a file's
-/// plain glyph, no guides (2.9939.4 `cccc2cf0a` `ag`, `shared-15` `Qx`).
+/// How the tree is drawn: quill-ide's, with its icon pack, or Desktop's in its file tile,
+/// quieter: 24 px rows, a folder's chevron alone and a file's plain glyph (2.9939.4
+/// `cccc2cf0a` `ag`, `shared-15` `Qx`). Both draw the depth guides 3.6556.2's has.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Look {
     Ide,
@@ -541,42 +541,38 @@ pub fn view(
         look::menu_palette(),
     )
     .render()];
-    for ((entry, depth), guides) in visible.iter().zip(limn::guides_for_depths(&depths)) {
+    for ((entry, _), guides) in visible.iter().zip(limn::guides_for_depths(&depths)) {
         let open = entry.dir && tree.expanded.contains(&entry.path);
-        if style == Look::Desktop {
+        // Desktop's: a folder's chevron alone, `<>` for code and settings and a page for the
+        // rest, over the depth guides 3.6556.2 draws (the person's capture of 2026-10-27).
+        let (icon, title, height) = if style == Look::Desktop {
             let glyph = match (entry.dir, open) {
                 (true, true) => icons::CARET_DOWN,
                 (true, false) => icons::CARET_RIGHT,
+                (false, _) if code_like(&entry.path) => icons::CODE,
                 (false, _) => icons::FILE,
             };
-            let content = vec![
-                hgap(8.0 + *depth as f32 * 8.0),
-                Element::icon(icons::of(glyph))
-                    .foreground(look::muted())
-                    .size(Some(14.0), Some(14.0))
-                    .centered_y(),
-                Element::truncated_text(name(&entry.path))
-                    .font_family(limn::FontFamily::Sans)
-                    .font_size(look::BODY)
-                    .foreground(look::palette().text)
-                    .flex(1.0)
-                    .centered_y(),
-            ];
-            let id = row_id(&entry.path, entry.dir);
-            let selected = selected == Some(entry.path.as_path());
-            let row = side_row(id, content, selected, DESKTOP_ROW).size(Some(row_width), None);
-            rows.push(row_menu(tree, &entry.path, entry.dir, row));
-            continue;
-        }
-        let (icon, ink) = pack.icon(&entry.path, entry.dir, open);
-        let icon = Element::icon(icon)
-            .foreground(ink)
-            .size(Some(16.0), Some(16.0))
-            .centered();
+            let icon = Element::icon(icons::of(glyph))
+                .foreground(look::muted())
+                .size(Some(14.0), Some(14.0))
+                .centered();
+            let title = Element::truncated_text(name(&entry.path))
+                .font_family(limn::FontFamily::Sans)
+                .font_size(look::BODY)
+                .foreground(look::palette().text)
+                .centered_y();
+            (icon, title, DESKTOP_ROW)
+        } else {
+            let (icon, ink) = pack.icon(&entry.path, entry.dir, open);
+            let icon = Element::icon(icon)
+                .foreground(ink)
+                .size(Some(16.0), Some(16.0))
+                .centered();
+            (icon, text(name(&entry.path)).centered_y(), ROW)
+        };
         let id = row_id(&entry.path, entry.dir);
-        let title = text(name(&entry.path)).centered_y();
         let row = TreeRow::new(|c| Element::clickable(id, c), icon, title, guides, palette)
-            .height(ROW)
+            .height(height)
             .width(row_width)
             .guide_color(guide)
             .selected(selected == Some(entry.path.as_path()));
@@ -586,6 +582,19 @@ pub fn view(
     Element::scroll("tree:scroll", Element::column(rows).padding(6.0))
         .size(Some(width), Some(height))
         .clip_children()
+}
+
+/// Whether a file reads as code or settings, which Desktop marks `<>` (inferred from the
+/// person's capture: package.json and docker-compose.yml are, Dockerfile and .env are not).
+fn code_like(path: &Path) -> bool {
+    const CODE: [&str; 30] = [
+        "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "json", "yml", "yaml", "toml", "py", "go",
+        "c", "h", "cpp", "java", "kt", "swift", "rb", "php", "sh", "css", "scss", "html", "vue",
+        "svelte", "sql", "lua", "nix",
+    ];
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| CODE.contains(&e.to_ascii_lowercase().as_str()))
 }
 
 /// `base` under the tree's dialogs, when one is open: the name being typed, or the trash's

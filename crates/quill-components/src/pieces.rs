@@ -220,6 +220,83 @@ pub fn pane_header(lead: Element, tools: Vec<Element>, width: f32) -> Element {
     ])
 }
 
+/// A pane's tab, the same in Files, the browser and the terminal: its name, a muted detail
+/// when it has one (a terminal's folder), and its close on a 28 px pill as wide as they are,
+/// the name up to 200, so a name always reads; the one on screen on the active fill.
+pub fn pane_tab(
+    id: &str,
+    close: &str,
+    close_label: &str,
+    name: &str,
+    detail: Option<&str>,
+    active: bool,
+) -> Element {
+    let mut items = vec![
+        hgap(4.0),
+        Element::truncated_text(name.to_owned())
+            .font_family(FontFamily::Sans)
+            .font_size(BODY)
+            .foreground(look::palette().text)
+            .max_width(200.0)
+            .centered_y(),
+    ];
+    items.extend(detail.map(|detail| muted(detail).centered_y()));
+    items.push(icon_tool(
+        close,
+        crate::icons::of(crate::icons::CLOSE),
+        close_label,
+        20.0,
+        look::palette(),
+    ));
+    let pill = Element::row(items).gap(6.0).size(None, Some(28.0));
+    let pill = Element::clickable(id, pill)
+        .accessibility_label(format!("Tab {name}"))
+        .radius(8.0);
+    if active {
+        pill.background(look::active())
+    } else {
+        pill.hover_background(look::tool_hover())
+    }
+    .centered_y()
+}
+
+/// A pane's header of tabs, the same in Files, the browser and the terminal: `tabs`, each by
+/// its id, in a strip as wide as they are up to the room there is, which then scrolls
+/// sideways under the wheel with its hidden edge faded and the `active` tab kept in view;
+/// `after` it (a new tab's +) always in sight, and `tools`, each 28 wide, at the end.
+pub fn tabs_header(
+    scroll_id: &str,
+    tabs: Vec<(String, Element)>,
+    active: Option<usize>,
+    after: Option<Element>,
+    tools: Vec<Element>,
+    width: f32,
+) -> Element {
+    // What pane_header leaves its lead: its 12 and 4 at the ends, 8 between its children,
+    // the tools, and what follows the strip with its gap.
+    let n = tools.len() as f32;
+    let follows = if after.is_some() { 28.0 + 4.0 } else { 0.0 };
+    let room = (width - 16.0 - (3.0 + n) * 8.0 - n * 28.0 - follows).max(0.0);
+    let reveal = active.and_then(|at| tabs.get(at)).map(|(id, _)| id.clone());
+    let tabs = tabs.into_iter().map(|(_, tab)| tab).collect();
+    let strip = Element::horizontal_scroll(
+        scroll_id,
+        Element::row(tabs)
+            .gap(4.0)
+            .size(None, Some(look::PANE_HEADER)),
+    )
+    .horizontal_edge_fade(look::theme().background, 24.0)
+    .max_width(room)
+    .size(None, Some(look::PANE_HEADER));
+    let strip = match reveal {
+        Some(id) => strip.reveal_horizontal_item(id),
+        None => strip,
+    };
+    let mut lead = vec![strip];
+    lead.extend(after.map(Element::centered_y));
+    pane_header(Element::row(lead).gap(4.0), tools, width)
+}
+
 /// A question before something that cannot be taken back, as Desktop asks it: its
 /// title and words, Cancel and the soft red `confirm`, over `base` while `open`.
 pub fn confirm(

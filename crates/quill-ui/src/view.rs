@@ -8,8 +8,8 @@ use limn::{
     ControlSize, Element, FontFamily, Markdown, OutputBlock, Size, Spinner, TextShimmer,
 };
 use quill_components::pieces::{
-    confirm, hgap, hline, icon_tool, keyed_button, menu, muted, pane_header, text, toggle,
-    tool_surface, vline,
+    confirm, hgap, hline, icon_tool, keyed_button, menu, muted, pane_header, pane_tab, tabs_header,
+    text, toggle, tool_surface, vline,
 };
 use quill_components::settings::{
     self, choices, setting, setting_button, setting_switch, Setting, SettingsPage,
@@ -607,7 +607,8 @@ fn terminal_pane(
     );
     let tabs = &ui.terminal.tabs;
     let folder = folder_name(session.map_or(&ui.cwd, |s| &s.cwd));
-    let lead = if tabs.len() <= 1 {
+    let tools = pane_tools(Pane::Terminal, ui, palette);
+    let header = if tabs.len() <= 1 {
         let title = match tabs.first() {
             Some(tab) if tab.named => tab.title.clone(),
             _ => "Terminal".into(),
@@ -621,46 +622,32 @@ fn terminal_pane(
             Some((0, ref name)) => rename_field(TERMINAL_RENAME, name, 160.0, palette),
             _ => tab_menu(0, 1, label, palette),
         };
-        Element::row(vec![label, Element::spacer().size(Some(4.0), None), new]).gap(8.0)
+        let lead = Element::row(vec![label, Element::spacer().size(Some(4.0), None), new]).gap(8.0);
+        pane_header(lead, tools, width)
     } else {
-        let mut pills: Vec<Element> = tabs
-            .iter()
-            .enumerate()
+        let pills = (tabs.iter().enumerate())
             .map(|(i, tab)| {
+                let id = format!("terminal:tab:{i}");
                 if let Some((at, name)) = &ui.terminal.renaming {
                     if *at == i {
-                        return rename_field(TERMINAL_RENAME, name, 160.0, palette);
+                        return (id, rename_field(TERMINAL_RENAME, name, 160.0, palette));
                     }
                 }
                 // "Terminal 2  work ×": a named tab drops the folder.
-                let mut items = vec![hgap(8.0), text(tab.title.clone()).centered_y()];
-                if !tab.named {
-                    items.push(muted(folder.clone()).centered_y());
-                }
-                items.push(icon_tool(
+                let pill = pane_tab(
+                    &id,
                     &format!("terminal:close:{i}"),
-                    icons::of(icons::CLOSE),
                     "Close terminal",
-                    20.0,
-                    palette,
-                ));
-                let pill = Element::row(items)
-                    .gap(6.0)
-                    .size(None, Some(28.0))
-                    .radius(8.0);
-                let pill = if i == ui.terminal.active {
-                    pill.background(look::active())
-                } else {
-                    pill
-                };
-                let pill = Element::clickable(format!("terminal:tab:{i}"), pill).centered_y();
-                tab_menu(i, tabs.len(), pill, palette)
+                    &tab.title,
+                    (!tab.named).then_some(folder.as_str()),
+                    i == ui.terminal.active,
+                );
+                (id, tab_menu(i, tabs.len(), pill, palette))
             })
             .collect();
-        pills.push(new);
-        Element::row(pills).gap(4.0)
+        let active = Some(ui.terminal.active);
+        tabs_header("terminal:tabs", pills, active, Some(new), tools, width)
     };
-    let header = pane_header(lead, pane_tools(Pane::Terminal, ui, palette), width);
     let body = match &ui.terminal.screen {
         Some(screen) => pad(
             // The view draws its cursor in the palette's text: Desktop's is blue.
@@ -687,9 +674,10 @@ fn terminal_pane(
     Element::column(vec![header, body.flex(1.0)]).size(Some(width), Some(height))
 }
 
-/// The Files pane, as Desktop's file tile [2.9939.4 `cccc2cf0a` `Ig`]: the tree's toggle and
-/// the open files' tabs over the tree and the file on screen. Narrower than the two side by
-/// side, the tree takes the pane while it shows, as Desktop's does over its tabs.
+/// The Files pane, as Desktop 3.6556.2's file tile (`cccc2cf0a`, and the person's capture of
+/// 2026-10-27): the open files' tabs, the tree's toggle beside expand and close, and the file
+/// on screen with the tree at its right. Narrower than the two side by side, the tree takes
+/// the pane while it shows, as Desktop's does over its tabs.
 fn files_pane(ui: &Ui, width: f32, height: f32, palette: ComponentPalette) -> Element {
     use quill_components::{packs::Pack, tree};
     let Some(pane) = ui.files_pane() else {
@@ -703,35 +691,23 @@ fn files_pane(ui: &Ui, width: f32, height: f32, palette: ComponentPalette) -> El
         } else {
             "Show file tree"
         },
-        24.0,
+        28.0,
         pane.tree_open.then(look::active),
         look::tool_hover(),
         None,
     );
-    let tools = pane_tools(Pane::Files, ui, palette);
-    // What pane_header leaves the tabs: its 12 and 4 at the ends, its 8 between children,
-    // the tools' 28, and the toggle with its 6.
-    let n = tools.len() as f32;
-    let room = (width - 16.0 - (3.0 + n) * 8.0 - n * 28.0 - 24.0 - 6.0).max(0.0);
-    let count = pane.tabs.len().max(1) as f32;
-    let each = ((room - (count - 1.0) * 4.0) / count).clamp(64.0, 180.0);
-    let tabs: Vec<Element> = (pane.tabs.iter().enumerate())
+    let mut tools = vec![toggle];
+    tools.extend(pane_tools(Pane::Files, ui, palette));
+    let tabs = (pane.tabs.iter().enumerate())
         .map(|(i, d)| {
-            let name = d.path.rsplit('/').next().unwrap_or_default().to_owned();
+            let name = d.path.rsplit('/').next().unwrap_or_default();
             let active = pane.active == Some(i);
             let (tab, close) = (format!("doc:tab:{i}"), format!("doc:close:{i}"));
-            pane_tab(tab, close, "Close file", name, active, each, palette)
+            let pill = pane_tab(&tab, &close, "Close file", name, None, active);
+            (tab, pill)
         })
         .collect();
-    let lead = Element::row(vec![
-        toggle.centered_y(),
-        Element::row(tabs)
-            .gap(4.0)
-            .size(Some(room), Some(look::PANE_HEADER))
-            .clip_children(),
-    ])
-    .gap(6.0);
-    let header = pane_header(lead, tools, width);
+    let header = tabs_header("files:tabs", tabs, pane.active, None, tools, width);
     let below = height - look::PANE_HEADER - 1.0;
     // Desktop's tree is 240 px by default, beside a file at least 160 wide (`Pg`).
     let tree_width = 240.0_f32.min((width * 0.45).round());
@@ -766,49 +742,14 @@ fn files_pane(ui: &Ui, width: f32, height: f32, palette: ComponentPalette) -> El
     };
     let body = match (pane.tree_open, beside) {
         (true, true) => Element::row(vec![
-            tree(tree_width),
-            vline(below),
             file_view(pane, width - tree_width - 1.0, below, palette),
+            vline(below),
+            tree(tree_width),
         ]),
         (true, false) => tree(width),
         (false, _) => file_view(pane, width, below, palette),
     };
     Element::column(vec![header, body]).size(Some(width), Some(height))
-}
-
-/// A pane's tab, the browser's and the open files' alike: its name and close on a 28 px pill
-/// `width` wide, the one on screen on the active fill.
-fn pane_tab(
-    id: String,
-    close: String,
-    close_label: &str,
-    name: String,
-    active: bool,
-    width: f32,
-    palette: ComponentPalette,
-) -> Element {
-    let pill = Element::row(vec![
-        hgap(8.0),
-        Element::truncated_text(name.clone())
-            .font_family(FontFamily::Sans)
-            .font_size(SMALL)
-            .foreground(look::palette().text)
-            .max_width(width - 40.0)
-            .centered_y(),
-        Element::spacer().flex(1.0),
-        icon_tool(&close, icons::of(icons::CLOSE), close_label, 20.0, palette),
-    ])
-    .gap(4.0)
-    .size(Some(width), Some(28.0))
-    .radius(8.0);
-    let pill = if active {
-        pill.background(look::active())
-    } else {
-        pill
-    };
-    Element::clickable(id, pill)
-        .accessibility_label(format!("Tab {name}"))
-        .centered_y()
 }
 
 /// The file on screen, as Desktop's: its path, folders muted leading to the tree and its name
@@ -823,27 +764,43 @@ fn file_view(
 ) -> Element {
     use crate::files;
     use quill_components::{code, find};
-    let note = |title: &str, words: &str| {
+    // Each line centred and cut to the width: limn centres a line, not a paragraph's lines.
+    let note = |title: &str, lines: &[&str]| {
         let fill = || Element::spacer().flex(1.0);
-        Element::column(vec![
-            fill(),
-            text(title).centered_x(),
-            muted(words).font_size(SMALL).centered_x(),
-            fill(),
-        ])
-        .gap(6.0)
-        .size(Some(width), Some(height))
+        let line = |words: &str, size: f32, ink: limn::Color| {
+            Element::truncated_text(words.to_owned())
+                .font_family(FontFamily::Sans)
+                .font_size(size)
+                .foreground(ink)
+                .max_width(width - 32.0)
+                .centered_x()
+        };
+        let mut column = vec![fill(), line(title, BODY, look::palette().text)];
+        column.extend(lines.iter().map(|l| line(l, SMALL, look::muted())));
+        column.push(fill());
+        Element::column(column)
+            .gap(6.0)
+            .size(Some(width), Some(height))
     };
     let Some(document) = pane.document() else {
         return note(
             "Open files appear here",
-            "Pick a file in the tree, or click a file path in the conversation.",
+            &[
+                "Pick a file in the tree,",
+                "or click a file path in the conversation.",
+            ],
         );
     };
     const BAR: f32 = 32.0;
     let root = pane.tree.root.clone();
     let file = document.path.clone();
-    let crumbs = limn::Breadcrumb::from_path("doc:crumbs", document.path.clone(), look::palette())
+    // The page's own fill for the fade where the path does not fit.
+    let crumb_palette = ComponentPalette {
+        surface: look::theme().background,
+        ..look::palette()
+    };
+    let crumbs = limn::Breadcrumb::from_path("doc:crumbs", document.path.clone(), crumb_palette)
+        .fade_overflow()
         .segment_action(move |segment| {
             Some(if segment == file {
                 files::COPY_PATH.into()
@@ -910,7 +867,7 @@ fn file_view(
     }
     let path = pane.absolute(document);
     column.push(match &document.editor {
-        None if document.unreadable => note("This file can't be shown as text.", ""),
+        None if document.unreadable => note("This file can't be shown as text.", &[]),
         None => Element::spacer().size(Some(width), Some(below)),
         Some(editor) if document.markdown() && document.preview => {
             let text = document.text().unwrap_or_default();
@@ -980,39 +937,35 @@ fn browser_pane(
         return Element::spacer().size(Some(width), Some(height));
     };
     let browser = &session.browser;
-    let room = (width - 140.0).max(80.0);
-    let each = (room / browser.tabs.len().max(1) as f32).clamp(64.0, 180.0);
-    let mut strip: Vec<Element> = browser
-        .tabs
-        .iter()
+    let tabs = (browser.tabs.iter())
         .map(|tab| {
             let name = if !tab.title.is_empty() {
-                tab.title.clone()
+                tab.title.as_str()
             } else if tab.url == "about:blank" {
-                "New tab".into()
+                "New tab"
             } else {
-                tab.url.clone()
+                tab.url.as_str()
             };
-            pane_tab(
-                format!("browser:tab:{}", tab.id),
-                format!("browser:close:{}", tab.id),
-                "Close tab",
-                name,
-                Some(tab.id) == browser.active,
-                each,
-                palette,
-            )
+            let id = format!("browser:tab:{}", tab.id);
+            let close = format!("browser:close:{}", tab.id);
+            let active = Some(tab.id) == browser.active;
+            let pill = pane_tab(&id, &close, "Close tab", name, None, active);
+            (id, pill)
         })
         .collect();
-    strip.push(icon_tool(
+    let new = icon_tool(
         BROWSER_NEW_TAB,
         icons::of(icons::ADD),
         "New tab",
         28.0,
         palette,
-    ));
-    let header = pane_header(
-        Element::row(strip).gap(4.0),
+    );
+    let active = (browser.tabs.iter()).position(|t| Some(t.id) == browser.active);
+    let header = tabs_header(
+        "browser:tabs",
+        tabs,
+        active,
+        Some(new),
         pane_tools(Pane::Browser, ui, palette),
         width,
     );
