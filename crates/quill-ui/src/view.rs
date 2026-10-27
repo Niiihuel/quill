@@ -1023,7 +1023,8 @@ fn browser_pane(
             Element::row(vec![Element::icon(icons::of(icon))
                 .foreground(look::muted())
                 .size(Some(16.0), Some(16.0))
-                .centered()])
+                .centered()
+                .flex(1.0)])
             .size(Some(28.0), Some(28.0))
             .centered_y()
         }
@@ -7038,7 +7039,7 @@ fn skills_page(ui: &Ui, window: Size) -> Element {
         vec![],
         vec![
             customize::search(CZ_SEARCH, &ui.customize_query, "Search"),
-            customize::folder_chip(PICK_FOLDER, &folder_name(&folder), 28.0),
+            customize::folder_chip(PICK_FOLDER, &folder_name(&folder)),
         ],
         width,
     );
@@ -7293,11 +7294,7 @@ fn plugins_page(ui: &Ui, window: Size) -> Element {
             column.push(customize::section(
                 "In this project",
                 Some(here.len()),
-                Some(customize::folder_chip(
-                    PICK_FOLDER,
-                    &folder_name(&folder),
-                    34.0,
-                )),
+                Some(customize::folder_chip(PICK_FOLDER, &folder_name(&folder))),
                 width,
             ));
             if here.is_empty() {
@@ -7312,7 +7309,7 @@ fn plugins_page(ui: &Ui, window: Size) -> Element {
         if !yours.is_empty() {
             column.push(Element::spacer().size(None, Some(16.0)));
             let trailing =
-                (!project).then(|| customize::folder_chip(PICK_FOLDER, "Choose a project", 34.0));
+                (!project).then(|| customize::folder_chip(PICK_FOLDER, "Choose a project"));
             column.push(customize::section(
                 "Your plugins",
                 Some(yours.len()),
@@ -7458,7 +7455,8 @@ fn directory_dialog(ui: &Ui, base: Element, window: Size, palette: ComponentPale
             let tile = Element::row(vec![Element::icon(icons::of(icons::PLUG))
                 .foreground(look::palette().text)
                 .size(Some(16.0), Some(16.0))
-                .centered()])
+                .centered()
+                .flex(1.0)])
             .size(Some(36.0), Some(36.0))
             .background(look::customize_tile())
             .radius(8.0);

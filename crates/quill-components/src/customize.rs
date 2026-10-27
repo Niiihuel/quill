@@ -145,9 +145,9 @@ pub fn section(
     Element::row(row).gap(8.0).size(Some(width), Some(34.0))
 }
 
-/// The folder a section is about, outlined, its icon before its name (Desktop's "work"): 34
-/// high at a section's end, 28 in a header.
-pub fn folder_chip(id: &str, name: &str, height: f32) -> Element {
+/// The folder a section is about, outlined, its icon before its name (Desktop's "work"), 28
+/// high as the header's buttons.
+pub fn folder_chip(id: &str, name: &str) -> Element {
     let row = Element::row(vec![
         hgap(4.0),
         Element::icon(icons::of(icons::FOLDER))
@@ -158,7 +158,7 @@ pub fn folder_chip(id: &str, name: &str, height: f32) -> Element {
         hgap(4.0),
     ])
     .gap(6.0)
-    .size(None, Some(height));
+    .size(None, Some(28.0));
     Element::clickable(id, row)
         .hover_background(look::tool_hover())
         .border(look::customize_edge(), 1.0)
@@ -178,7 +178,8 @@ pub fn item(
     let tile = Element::row(vec![Element::icon(icons::of(icon))
         .foreground(look::palette().text)
         .size(Some(16.0), Some(16.0))
-        .centered()])
+        .centered()
+        .flex(1.0)])
     .size(Some(36.0), Some(36.0))
     .background(look::customize_tile())
     .radius(8.0)
@@ -214,9 +215,12 @@ pub fn more(id: &str, entries: Vec<limn::DropdownMenuEntry>, open: bool) -> Elem
         .foreground(look::palette().text)
         .size(Some(16.0), Some(16.0))
         .centered();
-    let trigger = Element::clickable(id, Element::row(vec![glyph]).size(Some(28.0), Some(28.0)))
-        .hover_background(look::tool_hover())
-        .radius(6.0);
+    let trigger = Element::clickable(
+        id,
+        Element::row(vec![glyph.flex(1.0)]).size(Some(28.0), Some(28.0)),
+    )
+    .hover_background(look::tool_hover())
+    .radius(6.0);
     menu_button(trigger, id, entries, open)
 }
 
@@ -239,7 +243,8 @@ pub fn empty(icon: &'static str, words: &str, width: f32) -> Element {
     let tile = Element::row(vec![Element::icon(icons::of(icon))
         .foreground(look::muted())
         .size(Some(16.0), Some(16.0))
-        .centered()])
+        .centered()
+        .flex(1.0)])
     .size(Some(36.0), Some(36.0))
     .background(look::customize_tile())
     .radius(8.0)
