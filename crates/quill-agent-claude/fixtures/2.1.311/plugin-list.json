@@ -1,0 +1,80 @@
+[
+ {
+  "id": "agent-skills@addy-agent-skills",
+  "version": "0.6.12",
+  "scope": "user",
+  "enabled": true,
+  "installPath": "/home/user/.claude/plugins/cache/addy-agent-skills/agent-skills/0.6.12",
+  "installedAt": "2026-10-09T16:06:45.341Z",
+  "lastUpdated": "2026-10-09T16:06:45.341Z",
+  "projectEnabled": false
+ },
+ {
+  "id": "commit@better-claude",
+  "version": "0.2.0",
+  "scope": "user",
+  "enabled": true,
+  "installPath": "/home/user/.claude/plugins/cache/better-claude/commit/0.2.0",
+  "installedAt": "2026-10-16T19:28:07.846Z",
+  "lastUpdated": "2026-10-16T19:28:07.846Z",
+  "projectEnabled": false
+ },
+ {
+  "id": "image-preview@better-claude",
+  "version": "0.1.0",
+  "scope": "user",
+  "enabled": true,
+  "installPath": "/home/user/.claude/plugins/cache/better-claude/image-preview/0.1.0",
+  "installedAt": "2026-10-16T19:28:06.300Z",
+  "lastUpdated": "2026-10-16T19:28:06.300Z",
+  "projectEnabled": false,
+  "hasUserConfig": true
+ },
+ {
+  "id": "ponytail@ponytail",
+  "version": "5.1.0",
+  "scope": "user",
+  "enabled": true,
+  "installPath": "/home/user/.claude/plugins/cache/ponytail/ponytail/5.1.0",
+  "installedAt": "2026-10-09T16:06:46.102Z",
+  "lastUpdated": "2026-10-09T16:06:46.102Z",
+  "projectEnabled": false
+ },
+ {
+  "id": "rust-analyzer-lsp@claude-plugins-official",
+  "version": "1.0.0",
+  "scope": "user",
+  "enabled": true,
+  "installPath": "/home/user/.claude/plugins/cache/claude-plugins-official/rust-analyzer-lsp/1.0.0",
+  "installedAt": "2026-10-10T00:29:52.407Z",
+  "lastUpdated": "2026-10-10T00:29:52.407Z",
+  "projectEnabled": false
+ },
+ {
+  "id": "sub-meter@better-claude",
+  "version": "0.1.0",
+  "scope": "user",
+  "enabled": true,
+  "installPath": "/home/user/.claude/plugins/cache/better-claude/sub-meter/0.1.0",
+  "installedAt": "2026-10-16T19:28:07.067Z",
+  "lastUpdated": "2026-10-16T19:28:07.067Z",
+  "projectEnabled": false,
+  "hasUserConfig": true
+ },
+ {
+  "id": "vercel@claude-plugins-official",
+  "version": "0.50.0",
+  "scope": "user",
+  "enabled": true,
+  "installPath": "/home/user/.claude/plugins/cache/claude-plugins-official/vercel/0.50.0",
+  "installedAt": "2026-08-11T19:49:58.529Z",
+  "lastUpdated": "2026-10-09T15:51:41.747Z",
+  "mcpServers": {
+   "vercel": {
+    "type": "http",
+    "url": "https://mcp.vercel.com"
+   }
+  },
+  "projectEnabled": false
+ }
+]
