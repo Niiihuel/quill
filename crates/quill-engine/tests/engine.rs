@@ -1,7 +1,7 @@
 //! The engine driving a fake agent that replays real captures (crates/quill-agent-claude/fixtures).
 
 use quill_engine::Engine;
-use quill_model::{AgentEvent, Decision, Event, Intent, NewSession, SessionStatus};
+use quill_model::{AgentEvent, Decision, Event, Intent, Lane, NewSession, SessionStatus};
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver};
 use std::time::Duration;
@@ -94,6 +94,7 @@ fn a_message_keeps_its_images_and_a_text_file_among_them_is_left_out() {
         text: "look".into(),
         mentions: vec![],
         images: vec![picture.clone(), notes.clone()],
+        lane: Lane::Steer,
     });
     let events = until(&rx, |e| {
         matches!(
@@ -126,6 +127,7 @@ fn sessions_stream_turns_and_wait_for_decisions() {
         text: "Reply with exactly the word: ok".into(),
         mentions: vec![],
         images: vec![],
+        lane: Lane::Steer,
     });
     let events = until(&rx, |e| {
         matches!(
@@ -175,6 +177,7 @@ fn sessions_stream_turns_and_wait_for_decisions() {
         text: "Use the Bash tool to run exactly: touch denied.txt".into(),
         mentions: vec![],
         images: vec![],
+        lane: Lane::Steer,
     });
     let events = until(&rx, |e| {
         matches!(
@@ -263,6 +266,7 @@ fn a_kept_session_comes_back_and_continues() {
         text: "Reply with exactly the word: ok".into(),
         mentions: vec![],
         images: vec![],
+        lane: Lane::Steer,
     });
     until(&rx, |e| {
         matches!(
@@ -327,6 +331,7 @@ fn a_kept_session_comes_back_and_continues() {
         text: "again".into(),
         mentions: vec![],
         images: vec![],
+        lane: Lane::Steer,
     });
     until(&rx, |e| {
         matches!(
@@ -370,6 +375,7 @@ fn a_request_is_attributed_and_its_undo_puts_files_back() {
         text: "Create rewind.txt containing the line one.".into(),
         mentions: vec![],
         images: vec![],
+        lane: Lane::Steer,
     });
 
     let events = until(&rx, |e| matches!(e, Event::Changes { .. }));
@@ -424,6 +430,7 @@ fn a_name_and_a_pin_are_kept_and_a_deleted_session_is_gone() {
         text: "Reply with exactly the word: ok".into(),
         mentions: vec![],
         images: vec![],
+        lane: Lane::Steer,
     });
     until(&rx, |e| {
         matches!(
@@ -473,6 +480,7 @@ fn a_name_and_a_pin_are_kept_and_a_deleted_session_is_gone() {
         text: "again".into(),
         mentions: vec![],
         images: vec![],
+        lane: Lane::Steer,
     });
     until(&rx, |e| {
         matches!(
@@ -508,6 +516,7 @@ fn a_name_and_a_pin_are_kept_and_a_deleted_session_is_gone() {
         text: "again".into(),
         mentions: vec![],
         images: vec![],
+        lane: Lane::Steer,
     });
     engine.send(Intent::Delete { session: 1 });
     until(&rx, |e| matches!(e, Event::Deleted { session: 1 }));
@@ -538,6 +547,7 @@ fn a_proposed_task_starts_a_linked_session_that_reports_back() {
         text: "Propose a README task".into(),
         mentions: vec![],
         images: vec![],
+        lane: Lane::Steer,
     });
     // The agent's start_session call becomes a proposal; nothing runs yet.
     let events = until(&rx, |e| matches!(e, Event::Proposed { session: 1, .. }));
@@ -598,6 +608,7 @@ fn a_side_question_forks_the_session_beside_it() {
         text: "Reply with exactly the word: ok".into(),
         mentions: vec![],
         images: vec![],
+        lane: Lane::Steer,
     });
     until(&rx, |e| {
         matches!(
@@ -625,4 +636,264 @@ fn a_side_question_forks_the_session_beside_it() {
     assert!(events
         .iter()
         .any(|e| matches!(e, Event::Renamed { session: 2, title } if title == "what is this?")));
+}
+
+/// Events until the steer capture's turn is under way: its agent said it is ready and the
+/// prompt was written. The capture then holds the turn open at its steer line, until something
+/// is written there, so a queue has a busy turn to wait behind.
+fn busy_steer_session(engine: &Engine, rx: &Receiver<Event>) {
+    new_session(engine, "steer");
+    // The agent starts with the first message; its `Ready` says whether it steers.
+    engine.send(Intent::Send {
+        session: 1,
+        text: "Count from 1 to 40".into(),
+        mentions: vec![],
+        images: vec![],
+        lane: Lane::Steer,
+    });
+    until(rx, |e| {
+        matches!(
+            e,
+            Event::Agent {
+                event: AgentEvent::Ready { .. },
+                ..
+            }
+        )
+    });
+}
+
+fn queue_send(engine: &Engine, text: &str) {
+    engine.send(Intent::Send {
+        session: 1,
+        text: text.into(),
+        mentions: vec![],
+        images: vec![],
+        lane: Lane::Queue,
+    });
+}
+
+/// The ids of the queue as the engine last said it, after `done` matched its change.
+fn queue_ids(events: &[Event]) -> Vec<(String, String)> {
+    let Some(Event::QueueChanged { entries, .. }) = events
+        .iter()
+        .rev()
+        .find(|e| matches!(e, Event::QueueChanged { .. }))
+    else {
+        panic!("no QueueChanged in {events:#?}");
+    };
+    entries
+        .iter()
+        .map(|m| (m.id.clone(), m.text.clone()))
+        .collect()
+}
+
+#[test]
+fn a_queued_message_is_not_sent_mid_turn_and_goes_out_when_the_turn_ends() {
+    let (engine, rx) = engine();
+    busy_steer_session(&engine, &rx);
+    queue_send(&engine, "later");
+    let events = until(
+        &rx,
+        |e| matches!(e, Event::QueueChanged { entries, .. } if entries.len() == 1),
+    );
+    assert!(!events
+        .iter()
+        .any(|e| matches!(e, Event::Queued { text, .. } if text == "later")));
+    engine.send(Intent::Interrupt { session: 1 });
+    until(
+        &rx,
+        |e| matches!(e, Event::Queued { text, .. } if text == "later"),
+    );
+    // The queue is told it is empty once the message is out.
+    until(
+        &rx,
+        |e| matches!(e, Event::QueueChanged { entries, .. } if entries.is_empty()),
+    );
+}
+
+#[test]
+fn queued_messages_go_out_as_one_message() {
+    let (engine, rx) = engine();
+    busy_steer_session(&engine, &rx);
+    queue_send(&engine, "a");
+    until(
+        &rx,
+        |e| matches!(e, Event::QueueChanged { entries, .. } if entries.len() == 1),
+    );
+    queue_send(&engine, "b");
+    until(
+        &rx,
+        |e| matches!(e, Event::QueueChanged { entries, .. } if entries.len() == 2),
+    );
+    engine.send(Intent::Interrupt { session: 1 });
+    let events = until(&rx, |e| matches!(e, Event::Queued { .. }));
+    assert!(matches!(
+        events.last(),
+        Some(Event::Queued { text, .. }) if text == "a\n\nb"
+    ));
+}
+
+#[test]
+fn a_slash_command_in_the_queue_is_sent_alone() {
+    let (engine, rx) = engine();
+    busy_steer_session(&engine, &rx);
+    queue_send(&engine, "/compact");
+    until(
+        &rx,
+        |e| matches!(e, Event::QueueChanged { entries, .. } if entries.len() == 1),
+    );
+    queue_send(&engine, "c");
+    until(
+        &rx,
+        |e| matches!(e, Event::QueueChanged { entries, .. } if entries.len() == 2),
+    );
+    engine.send(Intent::Interrupt { session: 1 });
+    let events = until(
+        &rx,
+        |e| matches!(e, Event::Queued { text, .. } if text == "/compact"),
+    );
+    assert!(!events
+        .iter()
+        .any(|e| matches!(e, Event::Queued { text, .. } if text == "c")));
+    until(
+        &rx,
+        |e| matches!(e, Event::Queued { text, .. } if text == "c"),
+    );
+}
+
+#[test]
+fn a_queued_message_can_be_removed_sent_now_or_taken_back() {
+    let (engine, rx) = engine();
+    busy_steer_session(&engine, &rx);
+    for text in ["a", "b", "c"] {
+        queue_send(&engine, text);
+    }
+    let events = until(
+        &rx,
+        |e| matches!(e, Event::QueueChanged { entries, .. } if entries.len() == 3),
+    );
+    let [(a, _), (b, _), (c, _)] = queue_ids(&events).try_into().unwrap();
+    engine.send(Intent::QueueRemove { session: 1, id: a });
+    until(
+        &rx,
+        |e| matches!(e, Event::QueueChanged { entries, .. } if entries.len() == 2),
+    );
+    engine.send(Intent::QueueSendNow { session: 1, id: b });
+    // Sent now, as a steer: the capture reads it at its steer line and the turn goes on.
+    until(
+        &rx,
+        |e| matches!(e, Event::Queued { text, .. } if text == "b"),
+    );
+    engine.send(Intent::QueueTake { session: 1, id: c });
+    let events = until(&rx, |e| matches!(e, Event::QueueTaken { .. }));
+    assert!(matches!(
+        events.last(),
+        Some(Event::QueueTaken { text, images, .. }) if text == "c" && images.is_empty()
+    ));
+    engine.send(Intent::Interrupt { session: 1 });
+    let events = quiet(&rx, 800);
+    assert!(!events
+        .iter()
+        .any(|e| matches!(e, Event::Queued { text, .. } if text == "c")));
+}
+
+#[test]
+fn a_cleared_queue_sends_nothing_at_the_turn_end() {
+    let (engine, rx) = engine();
+    busy_steer_session(&engine, &rx);
+    queue_send(&engine, "a");
+    until(&rx, |e| matches!(e, Event::QueueChanged { .. }));
+    engine.send(Intent::QueueClear { session: 1 });
+    until(
+        &rx,
+        |e| matches!(e, Event::QueueChanged { entries, .. } if entries.is_empty()),
+    );
+    engine.send(Intent::Interrupt { session: 1 });
+    let events = quiet(&rx, 800);
+    assert!(!events.iter().any(|e| matches!(e, Event::Queued { .. })));
+}
+
+/// Events for `millis`, with nothing waited for: what the engine did in that time.
+fn quiet(rx: &Receiver<Event>, millis: u64) -> Vec<Event> {
+    let mut seen = vec![];
+    while let Ok(event) = rx.recv_timeout(Duration::from_millis(millis)) {
+        seen.push(event);
+    }
+    seen
+}
+
+#[test]
+fn a_queue_kept_across_a_restart_comes_back_held_and_waits_for_the_person() {
+    let database = std::env::temp_dir().join(format!("quill-test-queue-{}.db", uuid_like()));
+    let start = || {
+        let (tx, rx) = channel();
+        let programs = HashMap::from([(
+            "claude".to_string(),
+            env!("CARGO_BIN_EXE_fake-agent").to_string(),
+        )]);
+        let config = quill_engine::Config {
+            programs,
+            database: Some(database.clone()),
+            snapshots: None,
+            settings: None,
+            ..Default::default()
+        };
+        (
+            Engine::start_with(move |event| drop(tx.send(event)), config),
+            rx,
+        )
+    };
+    let (engine, rx) = start();
+    busy_steer_session(&engine, &rx);
+    queue_send(&engine, "held one");
+    until(
+        &rx,
+        |e| matches!(e, Event::QueueChanged { entries, .. } if entries.len() == 1),
+    );
+    drop(engine);
+
+    let (engine, rx) = start();
+    let events = until(&rx, |e| {
+        matches!(e, Event::QueueChanged { entries, .. }
+            if entries.len() == 1 && entries[0].held && entries[0].text == "held one")
+    });
+    let [(id, _)] = queue_ids(&events).try_into().unwrap();
+    // A turn ending does not send it.
+    engine.send(Intent::Send {
+        session: 1,
+        text: "Count from 1 to 40".into(),
+        mentions: vec![],
+        images: vec![],
+        lane: Lane::Steer,
+    });
+    until(&rx, |e| {
+        matches!(
+            e,
+            Event::Status {
+                status: SessionStatus::Running,
+                ..
+            }
+        )
+    });
+    engine.send(Intent::Interrupt { session: 1 });
+    until(&rx, |e| {
+        matches!(
+            e,
+            Event::Agent {
+                event: AgentEvent::TurnFinished { .. },
+                ..
+            }
+        )
+    });
+    let events = quiet(&rx, 800);
+    assert!(!events
+        .iter()
+        .any(|e| matches!(e, Event::Queued { text, .. } if text == "held one")));
+    // The person sends it, which goes out.
+    engine.send(Intent::QueueSendNow { session: 1, id });
+    until(
+        &rx,
+        |e| matches!(e, Event::Queued { text, .. } if text == "held one"),
+    );
+    let _ = std::fs::remove_file(&database);
 }

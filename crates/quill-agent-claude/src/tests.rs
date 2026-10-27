@@ -1000,7 +1000,7 @@ fn a_prompt_with_an_image_sends_the_image_before_the_text() {
     let line = &claude.encode(AgentCommand::Prompt {
         request: "r1".into(),
         text: "look".into(),
-        priority: None,
+        steer: false,
         images: vec![image],
     })[0];
     let msg: Value = serde_json::from_str(line).unwrap();
@@ -1022,7 +1022,7 @@ fn a_prompt_without_images_keeps_one_text_block() {
     let line = &claude.encode(AgentCommand::Prompt {
         request: "r1".into(),
         text: "look".into(),
-        priority: None,
+        steer: false,
         images: vec![],
     })[0];
     let msg: Value = serde_json::from_str(line).unwrap();
@@ -1030,6 +1030,54 @@ fn a_prompt_without_images_keeps_one_text_block() {
         msg["message"]["content"],
         json!([{ "type": "text", "text": "look" }])
     );
+}
+
+/// A steer goes out as the CLI's `priority:"next"`, the shape Desktop sent in `steer.jsonl`.
+#[test]
+fn a_steer_prompt_is_the_clis_next_priority() {
+    let fixture = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/2.1.310/steer.jsonl"),
+    )
+    .unwrap();
+    let desktop: Value = fixture
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .find(|entry| entry["msg"]["priority"] == "next")
+        .unwrap()["msg"]
+        .clone();
+    let mut claude = Claude::new();
+    let steer: Value = serde_json::from_str(
+        &claude.encode(AgentCommand::Prompt {
+            request: "r2".into(),
+            text: "Change of plans: stop at 5.".into(),
+            steer: true,
+            images: vec![],
+        })[0],
+    )
+    .unwrap();
+    assert_eq!(steer["priority"], desktop["priority"]);
+    assert_eq!(steer["type"], desktop["type"]);
+    let mut claude = Claude::new();
+    let plain: Value = serde_json::from_str(
+        &claude.encode(AgentCommand::Prompt {
+            request: "r3".into(),
+            text: "later".into(),
+            steer: false,
+            images: vec![],
+        })[0],
+    )
+    .unwrap();
+    assert!(plain.get("priority").is_none());
+}
+
+/// The CLI in the steer capture can take a message into its running turn.
+#[test]
+fn the_claude_adapter_offers_steering() {
+    let (_, events, _) = replay("steer");
+    let steer = events
+        .iter()
+        .any(|event| matches!(event, AgentEvent::Ready { capabilities, .. } if capabilities.steer));
+    assert!(steer);
 }
 
 #[test]

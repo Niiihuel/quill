@@ -16,9 +16,9 @@ pub use slash::{key as slash_key, slash_query};
 pub use view::{menu_digit, view};
 
 use quill_model::{
-    AgentCapabilities, AgentEvent, BrowserOp, Decision, Event, FileEffect, Intent, NewSession,
-    NotifyLevel, ProposalAnswer, RequestId, SessionId, SessionStatus, Settings, Suggestion,
-    TranscriptView,
+    AgentCapabilities, AgentEvent, BrowserOp, Decision, Event, FileEffect, Intent, Lane,
+    NewSession, NotifyLevel, ProposalAnswer, QueuedMessage, RequestId, SessionId, SessionStatus,
+    Settings, Suggestion, TranscriptView,
 };
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -143,6 +143,8 @@ pub struct Session {
     pub step_since: Option<std::time::Instant>,
     /// Work running beside the turns (helper agents, background commands), oldest first.
     pub tasks: Vec<Task>,
+    /// Messages sent after the turn under way ends, as the engine last kept them.
+    pub queue: Vec<QueuedMessage>,
     /// What each helper agent wrote and did, by the tool call that started it.
     pub helpers: std::collections::HashMap<String, Vec<Item>>,
     /// Kept at the top of the sidebar, under "Pinned".
@@ -247,6 +249,7 @@ impl Store {
                 cwd,
                 status: SessionStatus::Starting,
                 items: vec![],
+                queue: vec![],
                 capabilities: None,
                 mode: "default".into(),
                 model: None,
@@ -333,6 +336,12 @@ impl Store {
                     s.items.push(Item::Notice { text });
                 }
             }
+            Event::QueueChanged { session, entries } => {
+                if let Some(s) = self.session_mut(session) {
+                    s.queue = entries;
+                }
+            }
+            Event::QueueTaken { .. } => {}
             Event::Agent {
                 event: AgentEvent::Limits(limits),
                 ..
@@ -1001,6 +1010,8 @@ pub struct Ui {
     /// The image files the composer's message attaches, sent with it, and their thumbnails
     /// the host decodes for the tiles and the messages shown.
     pub images: Vec<PathBuf>,
+    /// The composer's Enter that is being handled had Ctrl: its message queues rather than steers.
+    pub queue_submit: bool,
     pub thumbs: std::collections::HashMap<PathBuf, limn::RasterImage>,
     /// The image the viewer shows, if any.
     pub viewer: Option<Viewer>,
@@ -1317,6 +1328,7 @@ fn session_clicked(store: &Store, ui: &mut Ui, id: &str) -> Option<Vec<Intent>> 
                 text: pr_request(ui.settings.pr_draft, ui.settings.branch_prefix()),
                 mentions: vec![],
                 images: vec![],
+                lane: Lane::default(),
             }],
             _ => vec![],
         });
@@ -1736,6 +1748,7 @@ impl Ui {
             expanded: vec![],
             waiting: None,
             images: vec![],
+            queue_submit: false,
             thumbs: Default::default(),
             viewer: None,
             full: Default::default(),
@@ -2115,6 +2128,17 @@ impl Ui {
     }
 
     fn applied_to_view(&mut self, event: &Event) -> Vec<Intent> {
+        // A queued message taken back goes into the box, after what the person had written.
+        if let Event::QueueTaken { text, images, .. } = event {
+            let mut prompt = self.prompt.trim_end().to_owned();
+            if !prompt.is_empty() {
+                prompt.push_str("\n\n");
+            }
+            prompt.push_str(text);
+            self.restore_prompt = Some(prompt);
+            self.images.extend(images.iter().cloned());
+            return vec![];
+        }
         // A tab that appears in the session on screen, as when the agent opens a page, shows
         // the browser, as Desktop's does.
         if let Event::Browser {
@@ -2240,6 +2264,7 @@ impl Ui {
                         text,
                         mentions,
                         images,
+                        lane: Lane::default(),
                     },
                     Intent::WorkingTree { session: *session },
                 ];
@@ -2336,6 +2361,15 @@ pub fn image_paths(store: &Store, ui: &Ui) -> Vec<PathBuf> {
         _ => vec![],
     });
     ui.images.iter().cloned().chain(shown).collect()
+}
+
+/// Ctrl+Enter in the composer queues its message, a plain Enter steers it into the running
+/// turn. Limn reports both as one `Submitted`, so the host says which key reached the composer
+/// before the window handles it.
+pub fn composer_key(ui: &mut Ui, focused: Option<&str>, event: &limn::UiEvent) {
+    if let limn::UiEvent::Key { key, ctrl, .. } = event {
+        ui.queue_submit = *key == limn::Key::Enter && *ctrl && focused == Some(view::COMPOSER);
+    }
 }
 
 pub fn update(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Intent> {
@@ -2558,11 +2592,17 @@ fn update_action(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Int
                     text,
                     mentions: vec![],
                     images: vec![],
+                    lane: Lane::default(),
                 }],
                 _ => vec![],
             }
         }
         UiAction::Submitted { id, value } if id == view::COMPOSER => {
+            let lane = if std::mem::take(&mut ui.queue_submit) {
+                Lane::Queue
+            } else {
+                Lane::Steer
+            };
             let text = value.trim().to_owned();
             if text.is_empty() {
                 return vec![];
@@ -2598,6 +2638,7 @@ fn update_action(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Int
                     text,
                     mentions,
                     images: std::mem::take(&mut ui.images),
+                    lane,
                 }],
                 None => {
                     ui.waiting = Some((text, mentions, std::mem::take(&mut ui.images)));

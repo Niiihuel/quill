@@ -308,6 +308,32 @@ pub struct AgentInfo {
     pub icon: Option<String>,
 }
 
+/// Where a message sent while a turn runs goes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Lane {
+    /// Into the running turn: the agent reads it at its next step.
+    #[default]
+    Steer,
+    /// Waits in the queue until the turn ends.
+    Queue,
+}
+
+/// A message held in a session's queue, not yet sent.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct QueuedMessage {
+    pub id: String,
+    pub text: String,
+    #[serde(default)]
+    pub images: Vec<PathBuf>,
+    /// The other sessions the message names, as `Intent::Send` has them.
+    #[serde(default)]
+    pub mentions: Vec<(SessionId, String)>,
+    /// Restored from an earlier run: it is not sent until the person sends it.
+    #[serde(default)]
+    pub held: bool,
+}
+
 /// What the UI asks of the engine.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Intent {
@@ -323,6 +349,28 @@ pub enum Intent {
         /// or picked and dropped ones where they are); the engine reads and sizes them.
         #[serde(default)]
         images: Vec<PathBuf>,
+        /// Where the message goes when a turn is running (Enter steers, Ctrl+Enter queues).
+        #[serde(default)]
+        lane: Lane,
+    },
+    /// Take a queued message out of the queue, without sending it.
+    QueueRemove {
+        session: SessionId,
+        id: String,
+    },
+    /// Remove every queued message.
+    QueueClear {
+        session: SessionId,
+    },
+    /// Send a queued message now: as a steer when a turn runs, as a message when idle.
+    QueueSendNow {
+        session: SessionId,
+        id: String,
+    },
+    /// Take a queued message back into the composer: answered by `Event::QueueTaken`.
+    QueueTake {
+        session: SessionId,
+        id: String,
     },
     Decide {
         session: SessionId,
@@ -785,6 +833,17 @@ pub enum Event {
         #[serde(default)]
         images: Vec<PathBuf>,
     },
+    /// The session's whole queue of messages not yet sent, each time it changes.
+    QueueChanged {
+        session: SessionId,
+        entries: Vec<QueuedMessage>,
+    },
+    /// A queued message taken back for editing: its text and images go to the composer.
+    QueueTaken {
+        session: SessionId,
+        text: String,
+        images: Vec<PathBuf>,
+    },
     /// Something the person should know about a message, not stored: an image left out.
     Notice {
         session: SessionId,
@@ -1017,6 +1076,8 @@ impl Event {
             Event::SessionCreated { session, .. }
             | Event::Status { session, .. }
             | Event::Queued { session, .. }
+            | Event::QueueChanged { session, .. }
+            | Event::QueueTaken { session, .. }
             | Event::Notice { session, .. }
             | Event::Agent { session, .. }
             | Event::Changes { session, .. }

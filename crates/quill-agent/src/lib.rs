@@ -112,6 +112,9 @@ pub struct AgentCapabilities {
     /// The agent can show what its model thought.
     #[serde(default)]
     pub thinking_text: bool,
+    /// The agent can take a message into a turn already running.
+    #[serde(default)]
+    pub steer: bool,
 }
 
 /// One MCP server a session's agent loaded, as the agent reports it.
@@ -575,7 +578,9 @@ pub enum AgentCommand {
     Prompt {
         request: String,
         text: String,
-        priority: Option<String>,
+        /// Into the turn already running, read at the agent's next step ([`AgentCapabilities::steer`]).
+        #[serde(default)]
+        steer: bool,
         #[serde(default)]
         images: Vec<PromptImage>,
     },

@@ -1047,6 +1047,7 @@ impl eframe::App for App {
                 }
             }
             if !self.typed_into_terminal(&event) {
+                quill_ui::composer_key(&mut self.ui, self.tree.focused_id(), &event);
                 actions.extend(self.tree.handle_event(event));
             }
         }

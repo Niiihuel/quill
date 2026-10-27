@@ -622,7 +622,7 @@ impl AgentAdapter for Claude {
             AgentCommand::Prompt {
                 request,
                 text,
-                priority,
+                steer,
                 images,
             } => {
                 // The images come first, then the text, as Desktop sends them.
@@ -645,8 +645,9 @@ impl AgentAdapter for Claude {
                     "type": "user", "uuid": request, "session_id": "", "parent_tool_use_id": null,
                     "message": { "role": "user", "content": content },
                 });
-                if let Some(priority) = priority {
-                    msg["priority"] = json!(priority);
+                // The CLI's word for a message taken into the running turn.
+                if steer {
+                    msg["priority"] = json!("next");
                 }
                 vec![msg.to_string()]
             }
@@ -1221,6 +1222,7 @@ fn ready(body: &Value, ultracode: bool) -> AgentEvent {
             tool_hooks: true,
             mcp: true,
             thinking_text: true,
+            steer: true,
             commands: slash_commands(&body["commands"]),
             plan: body["account"]["subscriptionType"]
                 .as_str()

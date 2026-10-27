@@ -4,7 +4,8 @@
 
 use quill_agent::{AgentAdapter, AgentCommand, AgentEvent, SessionSpec};
 use quill_model::{
-    Event, Intent, NewSession, ProposalAnswer, ProposalOutcome, RequestId, SessionId, SessionStatus,
+    Event, Intent, Lane, NewSession, ProposalAnswer, ProposalOutcome, QueuedMessage, RequestId,
+    SessionId, SessionStatus,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -688,6 +689,12 @@ impl Router {
                 }
             }
             actor.before = restored.before;
+            // What was queued at the last exit comes back held: it goes only when the person sends it.
+            actor.held = !restored.queue.is_empty();
+            actor.queue = restored.queue;
+            if !actor.queue.is_empty() {
+                actor.queue_changed();
+            }
             actor.shadow_root = self.config.snapshots.clone();
             actor.route = Some(self.internal.clone());
             tokio::spawn(actor.run(rx));
@@ -816,7 +823,7 @@ impl Router {
             }
             _ => proposal.prompt.clone(),
         };
-        self.tell(child, Input::Send(brief, vec![], vec![]));
+        self.tell(child, Input::Send(brief, vec![], vec![], Lane::default()));
         Some(child)
     }
 
@@ -901,7 +908,12 @@ impl Router {
                 text,
                 mentions,
                 images,
-            } => (session, Input::Send(text, mentions, images)),
+                lane,
+            } => (session, Input::Send(text, mentions, images, lane)),
+            Intent::QueueRemove { session, id } => (session, Input::QueueRemove(id)),
+            Intent::QueueClear { session } => (session, Input::QueueClear),
+            Intent::QueueSendNow { session, id } => (session, Input::QueueSendNow(id)),
+            Intent::QueueTake { session, id } => (session, Input::QueueTake(id)),
             Intent::Decide {
                 session,
                 permission,
@@ -1278,7 +1290,7 @@ impl Router {
                     )
                     .await;
                 if let Some(side) = side {
-                    self.tell(side, Input::Send(text, vec![], vec![]));
+                    self.tell(side, Input::Send(text, vec![], vec![], Lane::default()));
                 }
                 return;
             }
@@ -1347,7 +1359,7 @@ impl Router {
             ProposalAnswer::Here => {
                 self.tell(
                     session,
-                    Input::Send(proposal.prompt.clone(), vec![], vec![]),
+                    Input::Send(proposal.prompt.clone(), vec![], vec![], Lane::default()),
                 );
                 ProposalOutcome::Kept
             }
@@ -1696,7 +1708,7 @@ impl Router {
                     session: child,
                     from: session,
                 });
-                self.tell(child, Input::Send(message, vec![], vec![]));
+                self.tell(child, Input::Send(message, vec![], vec![], Lane::default()));
                 (format!("Passed on to \u{201c}{name}\u{201d}."), false)
             }
             other => (format!("quill has no tool named {other}."), true),
@@ -1725,6 +1737,8 @@ struct Restored {
     /// Taken back to the agent's message (`Some(None)`: to the start) and not written to
     /// since, nor undone: the next launch goes on from there.
     rewound: Option<Option<String>>,
+    /// The queue as the last exit left it.
+    queue: Vec<QueuedMessage>,
 }
 
 impl Restored {
@@ -1745,9 +1759,11 @@ impl Restored {
         let mut browser_tabs = vec![];
         let mut rewound = None;
         let (mut pull_request, mut archived) = (None, false);
+        let mut queue = vec![];
         for event in events {
             match event {
                 Event::RewoundTo { at, .. } => rewound = Some(at.clone()),
+                Event::QueueChanged { entries, .. } => queue = entries.clone(),
                 Event::ModelChosen { model, .. } => new.model = Some(model.clone()),
                 Event::EffortChosen { effort, .. } => new.effort = Some(effort.clone()),
                 Event::Queued { .. } | Event::Reported { .. } | Event::RewindUndone { .. } => {
@@ -1794,14 +1810,20 @@ impl Restored {
             rewound,
             pull_request,
             archived,
+            queue,
         })
     }
 }
 
 /// What reaches a session's actor: the UI's wishes and its process's output.
 enum Input {
-    /// The message, the other sessions it names ([`mention_note`]) and its image files.
-    Send(String, Vec<(SessionId, String)>, Vec<PathBuf>),
+    /// The message, the other sessions it names ([`mention_note`]), its image files and where
+    /// it goes while a turn runs.
+    Send(String, Vec<(SessionId, String)>, Vec<PathBuf>, Lane),
+    QueueRemove(String),
+    QueueClear,
+    QueueSendNow(String),
+    QueueTake(String),
     /// What sessions it started said: sent as one message that begins a turn.
     Report(Vec<quill_model::Report>),
     Rewind(RequestId),
@@ -1851,6 +1873,11 @@ struct Actor {
     env: Vec<(String, String)>,
     /// The resume, fork and resume-at the last rewind replaced, until a message is sent.
     unrewind: Option<(Option<String>, bool, Option<String>)>,
+    /// Messages waiting for the turn to end, oldest first, and whether they are held.
+    queue: Vec<QueuedMessage>,
+    held: bool,
+    /// Whether the agent takes a message into a turn already running (its `Ready` says so).
+    steers: bool,
 }
 
 impl Actor {
@@ -1893,6 +1920,9 @@ impl Actor {
             last_text: String::new(),
             env: Vec::new(),
             unrewind: None,
+            queue: vec![],
+            held: false,
+            steers: false,
         }
     }
 
@@ -1902,22 +1932,119 @@ impl Actor {
         }
     }
 
+    /// The person sent `text`: while a turn runs, a steer goes into it when the agent takes one,
+    /// and anything else waits in the queue; when idle, it goes now.
+    async fn send(
+        &mut self,
+        text: String,
+        mentions: Vec<(SessionId, String)>,
+        images: Vec<PathBuf>,
+        lane: Lane,
+    ) {
+        if self.busy && (lane == Lane::Queue || !self.steers) {
+            self.queue.push(QueuedMessage {
+                id: uuid::Uuid::new_v4().to_string(),
+                text,
+                images,
+                mentions,
+                held: self.held,
+            });
+            self.queue_changed();
+            return;
+        }
+        self.prompt(text, None, &mentions, images, self.busy).await;
+    }
+
+    /// Hand the queue to the agent once its turn ended, unless it is held: what is sent goes
+    /// out as [`next_send`] takes it, and what is left stays queued for the next turn's end.
+    async fn drain(&mut self) {
+        if self.busy || self.held {
+            return;
+        }
+        let Some(next) = next_send(&mut self.queue) else {
+            return;
+        };
+        let back = next.clone();
+        if self
+            .prompt(next.text, None, &next.mentions, next.images, false)
+            .await
+        {
+            self.queue_changed();
+        } else {
+            // Not sent: it stays first in line, and the queue on disk is still what it was.
+            self.queue.insert(0, back);
+        }
+    }
+
+    /// Remove a queued message, if it is still queued.
+    fn queue_remove(&mut self, id: &str) -> Option<QueuedMessage> {
+        let at = self.queue.iter().position(|m| m.id == id)?;
+        let message = self.queue.remove(at);
+        self.queue_changed();
+        Some(message)
+    }
+
+    /// Send a queued message now, as a steer while a turn runs. Sending one lets go of the hold.
+    async fn send_now(&mut self, id: &str) {
+        let Some(at) = self.queue.iter().position(|m| m.id == id) else {
+            return;
+        };
+        let message = self.queue.remove(at);
+        let back = message.clone();
+        if self
+            .prompt(
+                message.text,
+                None,
+                &message.mentions,
+                message.images,
+                self.busy && self.steers,
+            )
+            .await
+        {
+            self.held = false;
+            self.queue_changed();
+        } else {
+            self.queue.insert(at, back);
+        }
+    }
+
+    /// The whole queue as it is now, to the sink, which stores it before the UI hears of it.
+    fn queue_changed(&mut self) {
+        if self.queue.is_empty() {
+            self.held = false;
+        }
+        let entries = self
+            .queue
+            .iter()
+            .map(|m| QueuedMessage {
+                held: self.held,
+                ..m.clone()
+            })
+            .collect();
+        (self.sink)(Event::QueueChanged {
+            session: self.id,
+            entries,
+        });
+    }
+
     /// Send `text` as a new request; `reports` makes it the report of started sessions, which
-    /// the transcript shows as such rather than as the person's message.
+    /// the transcript shows as such rather than as the person's message. `steer` takes it into
+    /// the turn already running. Whether it was sent.
     async fn prompt(
         &mut self,
         text: String,
         reports: Option<Vec<quill_model::Report>>,
         mentions: &[(SessionId, String)],
         images: Vec<PathBuf>,
-    ) {
+        steer: bool,
+    ) -> bool {
         if let Err(error) = self.ensure_running().await {
             self.status(SessionStatus::Failed(error));
             self.tell(Internal::Busy {
                 session: self.id,
                 busy: false,
             });
-            return;
+            return false;
         }
         // What was taken back stays taken back once a message goes on from here.
         self.unrewind = None;
@@ -1964,7 +2091,7 @@ impl Actor {
         self.write(AgentCommand::Prompt {
             request,
             text,
-            priority: None,
+            steer,
             images,
         })
         .await;
@@ -1974,6 +2101,7 @@ impl Actor {
             busy: true,
         });
         self.status(SessionStatus::Running);
+        true
     }
 
     /// The folder as it is now, off the actor's thread; `None` when files are not attributed.
@@ -2114,12 +2242,29 @@ impl Actor {
                     stopped = Some(done);
                     break;
                 }
-                Input::Send(text, mentions, images) => {
-                    self.prompt(text, None, &mentions, images).await
+                Input::Send(text, mentions, images, lane) => {
+                    self.send(text, mentions, images, lane).await
+                }
+                Input::QueueRemove(id) => drop(self.queue_remove(&id)),
+                Input::QueueClear => {
+                    if !self.queue.is_empty() {
+                        self.queue.clear();
+                        self.queue_changed();
+                    }
+                }
+                Input::QueueSendNow(id) => self.send_now(&id).await,
+                Input::QueueTake(id) => {
+                    if let Some(message) = self.queue_remove(&id) {
+                        (self.sink)(Event::QueueTaken {
+                            session: self.id,
+                            text: message.text,
+                            images: message.images,
+                        });
+                    }
                 }
                 Input::Report(reports) => {
                     let text = report_text(&reports);
-                    self.prompt(text, Some(reports), &[], vec![]).await
+                    self.prompt(text, Some(reports), &[], vec![], false).await;
                 }
                 Input::Rewind(request) => self.rewind(request).await,
                 Input::RewindTo(request, at) => self.rewind_to(request, at).await,
@@ -2300,6 +2445,9 @@ impl Actor {
                 }
                 _ => {}
             }
+            if let AgentEvent::Ready { capabilities, .. } = &event {
+                self.steers = capabilities.steer;
+            }
             let finished = matches!(event, AgentEvent::TurnFinished { .. });
             (self.sink)(Event::Agent {
                 session: self.id,
@@ -2316,9 +2464,41 @@ impl Actor {
                     session: self.id,
                     text,
                 });
+                self.drain().await;
             }
         }
     }
+}
+
+/// What the queue sends next, taken off it: all of it as one message when there are several
+/// and none is a slash command (their texts joined by a blank line, their images and names
+/// kept in order), else the first one alone.
+fn next_send(queue: &mut Vec<QueuedMessage>) -> Option<QueuedMessage> {
+    if queue.is_empty() {
+        return None;
+    }
+    let all = queue.len() > 1 && queue.iter().all(|m| !m.text.starts_with('/'));
+    let taken: Vec<QueuedMessage> = if all {
+        std::mem::take(queue)
+    } else {
+        vec![queue.remove(0)]
+    };
+    let mut taken = taken.into_iter();
+    let mut first = taken.next()?;
+    for next in taken {
+        first.text = format!("{}\n\n{}", first.text, next.text);
+        first.images.extend(next.images);
+        for mention in next.mentions {
+            if !first
+                .mentions
+                .iter()
+                .any(|(session, _)| *session == mention.0)
+            {
+                first.mentions.push(mention);
+            }
+        }
+    }
+    Some(first)
 }
 
 /// The message that tells a session what the sessions it started said, in quill's words for

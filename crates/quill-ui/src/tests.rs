@@ -226,6 +226,7 @@ fn the_first_message_creates_a_session_then_sends_it() {
                 text: "hi".into(),
                 mentions: vec![],
                 images: vec![],
+                lane: Lane::Steer,
             },
             Intent::WorkingTree { session: 7 }
         ]
@@ -4085,6 +4086,7 @@ fn a_sent_session_mention_goes_to_the_engine_numbered_and_not_into_the_text() {
             text: typed.into(),
             mentions: vec![(3, "Billing".to_owned()), (2, "Login page".to_owned())],
             images: vec![],
+            lane: Lane::Steer,
         }]
     );
     assert!(ui.mentioned_sessions.is_empty());
@@ -4209,9 +4211,80 @@ fn sending_carries_the_images_and_clears_the_composer() {
             text: "look at this".into(),
             mentions: vec![],
             images: vec!["/work/a.png".into()],
+            lane: Lane::Steer,
         }]
     );
     assert!(ui.images.is_empty());
+}
+
+#[test]
+fn ctrl_enter_in_the_composer_queues_and_a_plain_enter_steers() {
+    let (store, mut ui) = store_with_session();
+    let ctrl_enter = limn::UiEvent::Key {
+        key: limn::Key::Enter,
+        shift: false,
+        ctrl: true,
+    };
+    composer_key(&mut ui, Some(view::COMPOSER), &ctrl_enter);
+    let queued = update(
+        &store,
+        &mut ui,
+        &UiAction::Submitted {
+            id: view::COMPOSER.into(),
+            value: "after this".into(),
+        },
+    );
+    assert_eq!(
+        queued,
+        [Intent::Send {
+            session: 1,
+            text: "after this".into(),
+            mentions: vec![],
+            images: vec![],
+            lane: Lane::Queue,
+        }]
+    );
+    // The flag is used once: the next Enter steers unless its own key says otherwise.
+    composer_key(&mut ui, Some(view::COMPOSER), &key(limn::Key::Enter));
+    let steered = update(
+        &store,
+        &mut ui,
+        &UiAction::Submitted {
+            id: view::COMPOSER.into(),
+            value: "now".into(),
+        },
+    );
+    assert!(matches!(
+        steered.as_slice(),
+        [Intent::Send {
+            lane: Lane::Steer,
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn queued_messages_are_kept_per_session_and_a_taken_one_goes_back_to_the_composer() {
+    let (mut store, mut ui) = store_with_session();
+    store.apply(Event::QueueChanged {
+        session: 1,
+        entries: vec![QueuedMessage {
+            id: "q1".into(),
+            text: "and then?".into(),
+            images: vec!["/work/a.png".into()],
+            mentions: vec![],
+            held: false,
+        }],
+    });
+    assert_eq!(store.session(1).unwrap().queue.len(), 1);
+    let intents = ui.applied(&Event::QueueTaken {
+        session: 1,
+        text: "and then?".into(),
+        images: vec!["/work/a.png".into()],
+    });
+    assert!(intents.is_empty());
+    assert_eq!(ui.restore_prompt.as_deref(), Some("and then?"));
+    assert_eq!(ui.images, [PathBuf::from("/work/a.png")]);
 }
 
 #[test]
