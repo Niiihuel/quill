@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 pub use quill_agent::{
     AgentCapabilities, AgentEvent, ContextCategory, ContextKind, ContextUsage, Decision,
-    FileChange, McpServer, McpSource, McpStatus, ModelInfo, PlanLimits, Suggestion, ToolContent,
-    Usage, UsageWindow,
+    FileChange, McpServer, McpSource, McpStatus, ModelInfo, PlanLimits, Plugin, Skill, Suggestion,
+    ToolContent, Usage, UsageWindow,
 };
 
 /// quill's own id of a session.
@@ -290,6 +290,18 @@ pub enum Intent {
     SaveSettings(Settings),
     /// How much room quill's own data takes; answered by `Event::Storage`.
     MeasureStorage,
+    /// An agent's installed plugins and the skills it offers, outside any session;
+    /// answered by `Event::Extensions`.
+    Extensions {
+        agent: String,
+    },
+    /// Switch one of an agent's plugins on or off; its running sessions load their plugins
+    /// again, and `Event::Extensions` follows.
+    SetPlugin {
+        agent: String,
+        plugin: Plugin,
+        enabled: bool,
+    },
     /// Read a reply aloud with the system's voice, stopping any other; `None` stops.
     ReadAloud {
         session: SessionId,
@@ -667,6 +679,14 @@ pub enum Event {
     SettingsNotSaved {
         error: String,
     },
+    /// An agent's installed plugins and its skills, as its program lists them; `error` says
+    /// why a list could not be read (the plugins', or a change to one).
+    Extensions {
+        agent: String,
+        plugins: Vec<Plugin>,
+        skills: Vec<Skill>,
+        error: Option<String>,
+    },
     /// What the session hears next was passed on by the session `from`, which started it.
     Forwarded {
         session: SessionId,
@@ -739,7 +759,10 @@ impl Event {
             | Event::Reported { session, .. }
             | Event::Browser { session, .. } => *session,
             // quill's own, not a session's: no session has id 0.
-            Event::Settings { .. } | Event::Storage { .. } | Event::SettingsNotSaved { .. } => 0,
+            Event::Settings { .. }
+            | Event::Storage { .. }
+            | Event::SettingsNotSaved { .. }
+            | Event::Extensions { .. } => 0,
         }
     }
 }

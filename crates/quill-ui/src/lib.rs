@@ -461,7 +461,8 @@ impl Store {
             | Event::FileOpDone { .. }
             | Event::Settings { .. }
             | Event::Storage { .. }
-            | Event::SettingsNotSaved { .. } => {}
+            | Event::SettingsNotSaved { .. }
+            | Event::Extensions { .. } => {}
         }
     }
 }
@@ -886,6 +887,8 @@ pub struct Ui {
     pub storage: Option<(PathBuf, u64)>,
     /// Why the last change in Settings was not kept, until the next one.
     pub settings_error: Option<String>,
+    /// Each agent's plugins and skills, as the engine last read them, by agent id.
+    pub extensions: std::collections::HashMap<String, Extensions>,
     /// Things quill moves itself jump to where they go, as limn's do under reduced motion.
     pub reduced_motion: bool,
     /// How many of each session's items the person has had in view.
@@ -1444,6 +1447,7 @@ impl Ui {
             settings_menu: None,
             storage: None,
             settings_error: None,
+            extensions: std::collections::HashMap::new(),
             reduced_motion: false,
             seen: Default::default(),
             new_from: Default::default(),
@@ -1713,6 +1717,22 @@ impl Ui {
         }
         if let Event::SettingsNotSaved { error } = event {
             self.settings_error = Some(error.clone());
+            return vec![];
+        }
+        if let Event::Extensions {
+            agent,
+            plugins,
+            skills,
+            error,
+        } = event
+        {
+            let extensions = Extensions {
+                plugins: plugins.clone(),
+                skills: skills.clone(),
+                error: error.clone(),
+                switching: None,
+            };
+            self.extensions.insert(agent.clone(), extensions);
             return vec![];
         }
         if let Event::Reading {
@@ -2750,6 +2770,17 @@ fn answer(store: &Store, ui: &mut Ui, rest: &str) -> Vec<Intent> {
     vec![]
 }
 
+/// An agent's plugins and skills, for Settings' Customize pages.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Extensions {
+    pub plugins: Vec<quill_model::Plugin>,
+    pub skills: Vec<quill_model::Skill>,
+    /// Why a list could not be read, or a plugin not switched.
+    pub error: Option<String>,
+    /// The plugin being switched on or off, until the engine reads them again.
+    pub switching: Option<String>,
+}
+
 /// How often the open MCP dialog asks for its servers again (inferred: Desktop polls them,
 /// 3.6556.2 `cff0db614`, at a pace not found).
 pub const MCP_POLL: std::time::Duration = std::time::Duration::from_secs(2);
@@ -2799,7 +2830,29 @@ fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
     if let Some(page) = id.strip_prefix("settings:page:") {
         ui.settings_page = Some(page.to_owned());
         ui.settings_query.clear();
+        // Customize's pages read each agent's plugins and skills afresh.
+        if [view::SETTINGS_PLUGINS, view::SETTINGS_SKILLS].contains(&page) {
+            let agents = ui.agents.iter().map(|a| Intent::Extensions {
+                agent: a.id.clone(),
+            });
+            return Some(agents.collect());
+        }
         return Some(vec![]);
+    }
+    // A plugin's switch, `set:plugin:{agent}:{id}`: the engine switches it and reads again.
+    if let Some((agent, id)) = (id.strip_prefix("set:plugin:")).and_then(|r| r.split_once(':')) {
+        let known = ui.extensions.get_mut(agent);
+        let Some(plugin) = known.and_then(|known| {
+            known.switching = Some(id.to_owned());
+            known.plugins.iter().find(|p| p.id == id).cloned()
+        }) else {
+            return Some(vec![]);
+        };
+        return Some(vec![Intent::SetPlugin {
+            agent: agent.to_owned(),
+            enabled: !plugin.enabled,
+            plugin,
+        }]);
     }
     let rest = id.strip_prefix("set:")?;
     // A new change is tried afresh: the last one's failure goes.

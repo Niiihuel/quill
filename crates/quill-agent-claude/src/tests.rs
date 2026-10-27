@@ -1,4 +1,5 @@
-//! Every test replays a capture of the real CLI (`fixtures/2.1.310/`, docs/engine.md §11.4).
+//! Every test replays a capture of the real CLI (`fixtures/2.1.310/`, and `2.1.311/` for MCP,
+//! plugins and skills; docs/engine.md §11.4).
 
 use super::*;
 use std::path::Path;
@@ -30,9 +31,9 @@ fn replay_at(version: &str, name: &str) -> (Claude, Vec<AgentEvent>, Vec<String>
                         super::text(&msg["request"]["serverName"]),
                     ))),
                     // Requests quill does not send yet keep the ids of the ones after them in step.
-                    Some("get_skills_dialog" | "reload_plugins" | "reload_skills") => {
-                        drop(claude.request(json!({})))
-                    }
+                    Some("get_skills_dialog") => drop(claude.encode(AgentCommand::Skills)),
+                    Some("reload_plugins") => drop(claude.encode(AgentCommand::ReloadPlugins)),
+                    Some("reload_skills") => drop(claude.request(json!({}))),
                     _ => {}
                 }
             }
@@ -207,6 +208,54 @@ fn mcp_status_tells_each_server_with_where_it_came_from_and_its_tools() {
         _ => None,
     });
     assert_eq!(ready, Some(true));
+}
+
+#[test]
+fn skills_and_plugins_are_read_as_the_cli_lists_them() {
+    let (_, events, _) = replay_at("2.1.311", "extensions");
+    let skills = events.iter().find_map(|e| match e {
+        AgentEvent::Skills(skills) => Some(skills),
+        _ => None,
+    });
+    let skills = skills.expect("get_skills_dialog's rows");
+    assert_eq!(skills.len(), 6);
+    let sources: Vec<&str> = skills.iter().map(|s| s.source.as_str()).collect();
+    assert!(sources.contains(&"user") && sources.contains(&"plugin"));
+    assert!(skills.iter().all(|s| s.enabled && !s.name.is_empty()));
+    let claude = Claude::new();
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/2.1.311/plugin-list.json");
+    let plugins = claude.plugins(&std::fs::read_to_string(path).unwrap());
+    assert_eq!(plugins.len(), 7);
+    let first = &plugins[0];
+    assert_eq!(
+        (
+            first.id.as_str(),
+            first.name.as_str(),
+            first.version.as_deref(),
+            first.scope.as_str(),
+            first.enabled
+        ),
+        (
+            "agent-skills@addy-agent-skills",
+            "agent-skills",
+            Some("0.6.12"),
+            "user",
+            true
+        )
+    );
+    assert_eq!(
+        claude.plugin_switch(first, false).unwrap(),
+        [
+            "plugin",
+            "disable",
+            "agent-skills@addy-agent-skills",
+            "--scope",
+            "user",
+            "--json"
+        ]
+    );
+    // What it cannot read is no plugins, not a crash.
+    assert!(claude.plugins("not json").is_empty());
 }
 
 #[test]

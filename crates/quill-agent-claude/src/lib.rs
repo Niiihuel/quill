@@ -5,8 +5,8 @@
 use quill_agent::{
     AgentAdapter, AgentCapabilities, AgentCommand, AgentEvent, AgentId, CommandRun,
     ContextCategory, ContextKind, ContextUsage, Decision, Decoded, FileChange, LaunchPlan,
-    McpServer, McpSource, McpStatus, ModelInfo, PlanLimits, SessionSpec, Suggestion, ToolContent,
-    Usage, UsageWindow, BROWSER_GUIDE, BROWSER_TOOLS, HOST_TOOLS,
+    McpServer, McpSource, McpStatus, ModelInfo, PlanLimits, Plugin, SessionSpec, Skill, Suggestion,
+    ToolContent, Usage, UsageWindow, BROWSER_GUIDE, BROWSER_TOOLS, HOST_TOOLS,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -28,6 +28,8 @@ pub struct Claude {
     context_request: Option<String>,
     /// `mcp_status` requests waiting for their answers.
     mcp_requests: Vec<String>,
+    /// The `get_skills_dialog` request waiting for its answer.
+    skills_request: Option<String>,
     interrupted: bool,
     /// `can_use_tool` waiting for a decision: its tool call and input, echoed back on allow.
     pending: HashMap<String, (Value, Value)>,
@@ -329,6 +331,47 @@ impl AgentAdapter for Claude {
         }
     }
 
+    // As Desktop does, through the CLI's own commands (2.9939.4 `DuaKZOPP`: `plugin list
+    // --json`, `plugin install … --scope`), never editing its files.
+    fn plugins_query(&self) -> Option<Vec<String>> {
+        Some(["plugin", "list", "--json"].map(String::from).into())
+    }
+
+    fn plugins(&self, stdout: &str) -> Vec<Plugin> {
+        let list: Value = serde_json::from_str(stdout).unwrap_or_default();
+        let rows = list.as_array().into_iter().flatten();
+        rows.map(|row| {
+            let id = text(&row["id"]);
+            Plugin {
+                name: id
+                    .split_once('@')
+                    .map_or(id.as_str(), |(name, _)| name)
+                    .to_owned(),
+                version: row["version"].as_str().map(str::to_owned),
+                scope: text(&row["scope"]),
+                enabled: row["enabled"] == true,
+                id,
+            }
+        })
+        .collect()
+    }
+
+    fn plugin_switch(&self, plugin: &Plugin, enabled: bool) -> Option<Vec<String>> {
+        let verb = if enabled { "enable" } else { "disable" };
+        Some(
+            [
+                "plugin",
+                verb,
+                &plugin.id,
+                "--scope",
+                &plugin.scope,
+                "--json",
+            ]
+            .map(String::from)
+            .into(),
+        )
+    }
+
     fn encode(&mut self, command: AgentCommand) -> Vec<String> {
         match command {
             AgentCommand::Start => {
@@ -404,6 +447,16 @@ impl AgentAdapter for Claude {
             AgentCommand::McpToggle { name, enabled } => vec![self.request(json!({
                 "subtype": "mcp_toggle", "serverName": name, "enabled": enabled,
             }))],
+            // The rows of the CLI's /skills menu, which it offers to hosts that draw it.
+            AgentCommand::Skills => {
+                let line = self.request(json!({ "subtype": "get_skills_dialog" }));
+                self.skills_request = Some(self.last_request_id());
+                vec![line]
+            }
+            // What Desktop sends its idle sessions when plugins change (2.9939.4 `zC`).
+            AgentCommand::ReloadPlugins => {
+                vec![self.request(json!({ "subtype": "reload_plugins" }))]
+            }
             AgentCommand::HostToolResult {
                 id,
                 content,
@@ -449,6 +502,13 @@ impl AgentAdapter for Claude {
                 if ok && self.initialize.as_deref() == Some(id.as_str()) {
                     self.ultracode = offers_ultracode(&body);
                     decoded.events.push(ready(&body, self.ultracode));
+                }
+                if self.skills_request.as_deref() == Some(id.as_str()) {
+                    self.skills_request = None;
+                    if ok {
+                        decoded.events.push(AgentEvent::Skills(skills(&body)));
+                    }
+                    return decoded;
                 }
                 if let Some(at) = self.mcp_requests.iter().position(|r| *r == id) {
                     self.mcp_requests.remove(at);
@@ -794,6 +854,19 @@ fn ready(body: &Value, ultracode: bool) -> AgentEvent {
         },
         mode: body["current_permission_mode"].as_str().map(str::to_owned),
     }
+}
+
+/// The rows of `get_skills_dialog` (CLI 2.1.311): a skill whose state is `off` is listed and
+/// never used.
+fn skills(body: &Value) -> Vec<Skill> {
+    let rows = body["skills"].as_array().into_iter().flatten();
+    rows.map(|row| Skill {
+        name: text(&row["display_name"]),
+        description: text(&row["description"]),
+        source: text(&row["source"]),
+        enabled: row["state"] != "off",
+    })
+    .collect()
 }
 
 /// The answer to `mcp_status` (CLI 2.1.311): each server with its status, where it came

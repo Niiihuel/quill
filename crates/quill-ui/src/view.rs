@@ -85,6 +85,9 @@ pub const SIDE_OPEN: &str = "side:open";
 pub use quill_components::settings::{SETTINGS_CLOSE, SETTINGS_OPEN, SETTINGS_SEARCH};
 pub const SETTINGS_FIRST: &str = "general";
 pub const SETTINGS_STORAGE_OPEN: &str = "settings:storage:open";
+/// Customize's pages: each agent's skills and plugins.
+pub const SETTINGS_SKILLS: &str = "skills";
+pub const SETTINGS_PLUGINS: &str = "plugins";
 /// The session's MCP servers' dialog: closing it, and a server's actions (`{id}{name}`).
 pub const MCP_DONE: &str = "mcp:done";
 pub const MCP_RECONNECT: &str = "mcp:reconnect:";
@@ -6944,6 +6947,7 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
         ),
         None => "Sessions and their file history are kept on this computer.".to_owned(),
     };
+    pages.extend(customize_pages(ui, palette));
     pages.push(SettingsPage {
         key: "system".into(),
         title: "System".into(),
@@ -6971,6 +6975,112 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
         ],
     });
     pages
+}
+
+/// Customize's pages, Desktop's Skills and Plugins: what each agent's program
+/// lists, in a group of its own (its name heads it once there are more agents), read when the
+/// page opens. Plugins switch on and off where they are installed; skills are listed as the
+/// agent offers them (their state is the agent's, per project).
+fn customize_pages(ui: &Ui, palette: ComponentPalette) -> Vec<SettingsPage> {
+    let note = |title: &str, about: &str| {
+        setting(title, about, Element::spacer().size(Some(0.0), Some(0.0)))
+    };
+    let heading = |agent: &quill_model::AgentInfo, part: &str| {
+        if ui.agents.len() > 1 {
+            format!("{} \u{203a} {part}", agent.name)
+        } else {
+            part.to_owned()
+        }
+    };
+    let mut plugins = vec![];
+    let mut skills = vec![];
+    for agent in &ui.agents {
+        let Some(known) = ui.extensions.get(&agent.id) else {
+            plugins.push((
+                heading(agent, "Installed"),
+                vec![note("Looking for plugins\u{2026}", "")],
+            ));
+            skills.push((
+                heading(agent, "Skills"),
+                vec![note("Looking for skills\u{2026}", "")],
+            ));
+            continue;
+        };
+        let mut rows: Vec<Setting> = (known.plugins.iter())
+            .map(|plugin| {
+                let mut about = vec![];
+                about.extend(plugin.version.clone());
+                about.push(format!("installed for {}", plugin.scope));
+                let switch = setting_switch(
+                    &format!("plugin:{}:{}", agent.id, plugin.id),
+                    plugin.enabled,
+                    palette,
+                );
+                let control = if known.switching.as_deref() == Some(plugin.id.as_str()) {
+                    muted("Switching\u{2026}").font_size(BODY).centered_y()
+                } else {
+                    switch
+                };
+                setting(&plugin.name, &about.join(" \u{b7} "), control)
+            })
+            .collect();
+        if let Some(error) = &known.error {
+            rows.insert(0, note("Couldn\u{2019}t read the plugins.", error));
+        }
+        if rows.is_empty() {
+            rows.push(note(
+                "No plugins installed.",
+                "Plugins bundle skills, MCP servers and more; install them with the agent.",
+            ));
+        }
+        plugins.push((heading(agent, "Installed"), rows));
+        // One group per source, in the order the agent lists them.
+        let mut sources: Vec<&str> = vec![];
+        for skill in &known.skills {
+            if !sources.contains(&skill.source.as_str()) {
+                sources.push(&skill.source);
+            }
+        }
+        for source in sources {
+            let rows = (known.skills.iter())
+                .filter(|s| s.source == source)
+                .map(|skill| {
+                    let mut about: String = skill.description.chars().take(160).collect();
+                    if skill.description.chars().count() > 160 {
+                        about.push('\u{2026}');
+                    }
+                    let state = if skill.enabled { "" } else { "Off" };
+                    setting(
+                        &skill.name,
+                        &about,
+                        muted(state).font_size(BODY).centered_y(),
+                    )
+                })
+                .collect();
+            let mut title = source.to_owned();
+            if let Some(first) = title.get_mut(..1) {
+                first.make_ascii_uppercase();
+            }
+            skills.push((heading(agent, &title), rows));
+        }
+        if known.skills.is_empty() {
+            skills.push((heading(agent, "Skills"), vec![note("No skills found.", "")]));
+        }
+    }
+    vec![
+        SettingsPage {
+            key: SETTINGS_SKILLS.into(),
+            title: "Skills".into(),
+            icon: icons::SLASH,
+            groups: skills,
+        },
+        SettingsPage {
+            key: SETTINGS_PLUGINS.into(),
+            title: "Plugins".into(),
+            icon: icons::PLUG,
+            groups: plugins,
+        },
+    ]
 }
 
 /// An agent's page: its program and the version it runs, what new sessions start with, and
@@ -7334,6 +7444,8 @@ fn settings_dialog(
         groups.push(("Agents", agents));
     }
     groups.push(("This computer", owned(&["system"])));
+    // Desktop's Customize group, with what quill's agents offer.
+    groups.push(("Customize", owned(&[SETTINGS_SKILLS, SETTINGS_PLUGINS])));
     settings::dialog(
         base,
         pages,

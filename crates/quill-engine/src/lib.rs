@@ -387,6 +387,57 @@ impl Router {
             .or_else(|| self.settings.agent(agent).program)
     }
 
+    /// An agent's plugins and skills, read from its program outside any session, after
+    /// switching a plugin on or off first when asked; its running sessions then load their
+    /// plugins again, as Desktop's do (2.9939.4 `zC`). Answered by `Event::Extensions`.
+    fn extensions(&self, agent: String, switch: Option<(quill_model::Plugin, bool)>) {
+        let Some(adapter) = adapter(&agent) else {
+            return;
+        };
+        let program = (self.program(&agent))
+            .unwrap_or_else(|| adapter.launch(&SessionSpec::default()).program);
+        let reload: Vec<UnboundedSender<Input>> = (self.sessions.iter())
+            .filter(|(id, _)| self.started.get(id).is_some_and(|s| s.agent == agent))
+            .map(|(_, tx)| tx.clone())
+            .collect();
+        let ui = self.ui.clone();
+        tokio::spawn(async move {
+            let home = std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| ".".into());
+            let mut error = None;
+            if let Some((plugin, enabled)) = switch {
+                if let Some(args) = adapter.plugin_switch(&plugin, enabled) {
+                    match run_program(&program, &args, &home).await {
+                        Ok(_) => {
+                            for tx in &reload {
+                                let _ = tx.send(Input::Command(AgentCommand::ReloadPlugins));
+                            }
+                        }
+                        Err(e) => error = Some(e),
+                    }
+                }
+            }
+            let plugins = match adapter.plugins_query() {
+                Some(args) => match run_program(&program, &args, &home).await {
+                    Ok(listed) => adapter.plugins(&listed),
+                    Err(e) => {
+                        error.get_or_insert(e);
+                        vec![]
+                    }
+                },
+                None => vec![],
+            };
+            let skills = skills_of(adapter, &program, &home).await;
+            ui(Event::Extensions {
+                agent,
+                plugins,
+                skills,
+                error,
+            });
+        });
+    }
+
     /// Hold the computer awake while an agent works and the person wants it, as Desktop's
     /// "Keep computer awake while Claude works": idle sleep is held
     /// off, the display may still turn off and the lid still sleeps (logind ignores
@@ -852,6 +903,18 @@ impl Router {
             }
             Intent::SaveSettings(settings) => {
                 self.save_settings(settings).await;
+                return;
+            }
+            Intent::Extensions { agent } => {
+                self.extensions(agent, None);
+                return;
+            }
+            Intent::SetPlugin {
+                agent,
+                plugin,
+                enabled,
+            } => {
+                self.extensions(agent, Some((plugin, enabled)));
                 return;
             }
             Intent::MeasureStorage => {
@@ -1807,6 +1870,90 @@ fn start_at_login(on: bool) -> Result<(), String> {
 }
 
 /// The bytes the files under `path` take.
+/// Run an agent's program for one of its own commands, in `cwd`: what it printed, or why it
+/// failed in its last words.
+async fn run_program(
+    program: &str,
+    args: &[String],
+    cwd: &std::path::Path,
+) -> Result<String, String> {
+    let out = Command::new(program)
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .map_err(|e| format!("could not start {program}: {e}"))?;
+    if out.status.success() {
+        return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
+    }
+    let said = |bytes: &[u8]| String::from_utf8_lossy(bytes).trim().to_owned();
+    let (stderr, stdout) = (said(&out.stderr), said(&out.stdout));
+    let words = if stderr.is_empty() { stdout } else { stderr };
+    Err(words.lines().last().unwrap_or("failed").to_owned())
+}
+
+/// The skills an agent offers in `cwd`, asked of a short-lived start of its program that is
+/// sent no prompt, as Desktop asks a throwaway one for a folder's commands (2.9939.4
+/// `B9SZqsi8`, `getSupportedCommands`). None when it does not answer within 20 s.
+async fn skills_of(
+    mut adapter: Box<dyn AgentAdapter>,
+    program: &str,
+    cwd: &std::path::Path,
+) -> Vec<quill_model::Skill> {
+    let plan = adapter.launch(&SessionSpec {
+        cwd: cwd.to_owned(),
+        ..Default::default()
+    });
+    let mut command = Command::new(program);
+    command
+        .args(&plan.args)
+        .current_dir(&plan.cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    for (key, value) in &plan.env {
+        command.env(key, value);
+    }
+    for key in &plan.env_remove {
+        command.env_remove(key);
+    }
+    let Ok(mut child) = command.spawn() else {
+        return vec![];
+    };
+    let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        return vec![];
+    };
+    let asked = (adapter.encode(AgentCommand::Start).into_iter())
+        .chain(adapter.encode(AgentCommand::Skills));
+    for line in asked {
+        if stdin
+            .write_all(format!("{line}\n").as_bytes())
+            .await
+            .is_err()
+        {
+            return vec![];
+        }
+    }
+    let read = async {
+        let mut lines = BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            for event in adapter.decode(&line).events {
+                if let AgentEvent::Skills(skills) = event {
+                    return skills;
+                }
+            }
+        }
+        vec![]
+    };
+    let skills = tokio::time::timeout(std::time::Duration::from_secs(20), read)
+        .await
+        .unwrap_or_default();
+    let _ = child.kill().await;
+    skills
+}
+
 fn size_of(path: &std::path::Path) -> u64 {
     match std::fs::symlink_metadata(path) {
         Ok(meta) if meta.is_dir() => std::fs::read_dir(path)

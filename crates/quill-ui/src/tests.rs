@@ -1518,6 +1518,71 @@ fn a_started_session_opens_beside_and_says_when_it_waits() {
 }
 
 #[test]
+fn customize_lists_an_agents_plugins_and_skills_and_switches_a_plugin() {
+    use quill_model::{AgentInfo, Plugin, Skill};
+    let (store, mut ui) = store_with_session();
+    ui.applied(&Event::Settings {
+        settings: Default::default(),
+        agents: vec![AgentInfo {
+            id: "claude".into(),
+            name: "Claude Code".into(),
+            tested: vec![],
+        }],
+    });
+    click(&store, &mut ui, view::SETTINGS_OPEN);
+    let page = format!("settings:page:{}", view::SETTINGS_PLUGINS);
+    assert_eq!(
+        click(&store, &mut ui, &page),
+        vec![Intent::Extensions {
+            agent: "claude".into()
+        }]
+    );
+    let window = limn::Size::new(1408.0, 844.0);
+    let shows = |ui: &Ui, words: &str| {
+        let frame = UiTree::new(view(&store, ui, window)).layout(window);
+        frame.commands.iter().any(|command| {
+            matches!(command, limn::DrawCommand::Text { text, .. } if text.contains(words))
+        })
+    };
+    assert!(shows(&ui, "Looking for plugins"));
+    let plugin = Plugin {
+        id: "commit@better".into(),
+        name: "commit".into(),
+        version: Some("0.2.0".into()),
+        scope: "user".into(),
+        enabled: true,
+    };
+    ui.applied(&Event::Extensions {
+        agent: "claude".into(),
+        plugins: vec![plugin.clone()],
+        skills: vec![Skill {
+            name: "graphify".into(),
+            description: "Any input to a knowledge graph.".into(),
+            source: "user".into(),
+            enabled: false,
+        }],
+        error: None,
+    });
+    assert!(shows(&ui, "0.2.0 \u{b7} installed for user"));
+    // Its switch asks the engine to turn it off, and says so until the lists come back.
+    assert_eq!(
+        click(&store, &mut ui, "set:plugin:claude:commit@better"),
+        vec![Intent::SetPlugin {
+            agent: "claude".into(),
+            plugin,
+            enabled: false
+        }]
+    );
+    assert!(shows(&ui, "Switching"));
+    click(
+        &store,
+        &mut ui,
+        &format!("settings:page:{}", view::SETTINGS_SKILLS),
+    );
+    assert!(shows(&ui, "graphify") && shows(&ui, "Off"));
+}
+
+#[test]
 fn mcp_lists_the_sessions_servers_and_reconnects_or_turns_one_on() {
     use quill_model::{McpServer, McpSource, McpStatus};
     let (mut store, mut ui) = store_with_session();

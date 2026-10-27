@@ -98,6 +98,29 @@ pub enum McpStatus {
     Disabled,
 }
 
+/// A plugin installed for the agent, as its program lists it.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Plugin {
+    /// The agent's own id of it, which switching it on and off takes.
+    pub id: String,
+    pub name: String,
+    pub version: Option<String>,
+    /// Where it is installed, in the agent's words (`user`, `project`…).
+    pub scope: String,
+    pub enabled: bool,
+}
+
+/// A skill the agent offers, as it lists them.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Skill {
+    pub name: String,
+    pub description: String,
+    /// Where it comes from, in the agent's words (`user`, `plugin`…).
+    pub source: String,
+    /// Whether the agent offers it at all; one that is off is listed and never used.
+    pub enabled: bool,
+}
+
 /// Where a server's definition came from: the person's own settings, the project's, the
 /// person's for this project only, the organization's, a plugin, the person's account, the
 /// app running the agent (quill's own tools), or somewhere else.
@@ -304,6 +327,8 @@ pub enum AgentEvent {
     ContextUsage(ContextUsage),
     /// The answer to [`AgentCommand::McpStatus`]: every server the session loaded.
     McpServers(Vec<McpServer>),
+    /// The answer to [`AgentCommand::Skills`].
+    Skills(Vec<Skill>),
     /// The agent calls one of quill's own tools, the ones that start and propose other
     /// sessions ([`HOST_TOOLS`]). The engine answers with [`AgentCommand::HostToolResult`].
     HostTool {
@@ -362,6 +387,10 @@ pub enum AgentCommand {
         name: String,
         enabled: bool,
     },
+    /// Ask for the skills the agent offers, answered by [`AgentEvent::Skills`].
+    Skills,
+    /// Load the plugins again, after one was switched on or off.
+    ReloadPlugins,
     /// The answer to an [`AgentEvent::HostTool`] call.
     HostToolResult {
         id: String,
@@ -427,6 +456,19 @@ pub trait AgentAdapter: Send {
     /// Where, in a session's folder, the agent keeps the dev servers `preview_start` runs
     /// ([`LaunchConfig`]); `None` when it keeps none.
     fn launch_file(&self) -> Option<&'static str> {
+        None
+    }
+    /// The arguments that make the agent's program list its installed plugins, read by
+    /// [`plugins`](Self::plugins); `None` when it has none.
+    fn plugins_query(&self) -> Option<Vec<String>> {
+        None
+    }
+    /// The plugins in what [`plugins_query`](Self::plugins_query) printed.
+    fn plugins(&self, _stdout: &str) -> Vec<Plugin> {
+        vec![]
+    }
+    /// The arguments that switch `plugin` on or off where it is installed.
+    fn plugin_switch(&self, _plugin: &Plugin, _enabled: bool) -> Option<Vec<String>> {
         None
     }
     /// Lines for `command`. Commands the agent answers get an id, reported back as [`AgentEvent::Reply`].
