@@ -5065,32 +5065,6 @@ fn plus_menu(session: Option<&Session>, ui: &Ui) -> Element {
     // Desktop's Connectors and Plugins (the person's capture of 2026-10-27): ways to find and
     // manage them, then each one with its switch. A session's connectors are its agent's MCP
     // servers; the plugins are its agent's.
-    let switch_row = |id: String, icon: &'static str, name: &str, on: bool| {
-        limn::DropdownMenuEntry::custom(
-            Element::row(vec![
-                hgap(0.0),
-                Element::icon(icons::of(icon))
-                    .foreground(look::palette().text)
-                    .size(Some(16.0), Some(16.0))
-                    .centered_y(),
-                Element::truncated_text(name.to_owned())
-                    .font_family(FontFamily::Sans)
-                    .font_size(BODY)
-                    .foreground(look::palette().text)
-                    .flex(1.0)
-                    .centered_y(),
-                limn::Switch::new(id, on, look::palette())
-                    .variant(limn::SwitchVariant::Accent)
-                    .ink(look::switch_on())
-                    .off_ink(look::switch_off())
-                    .render()
-                    .centered_y(),
-                hgap(4.0),
-            ])
-            .gap(10.0)
-            .size(None, Some(32.0)),
-        )
-    };
     let mut connectors = vec![
         limn::DropdownMenuItem::new(CONNECTORS_BROWSE, "Browse connectors")
             .icon(icons::of(icons::CONNECTORS))
@@ -5112,7 +5086,10 @@ fn plus_menu(session: Option<&Session>, ui: &Ui) -> Element {
         connectors.extend(servers.iter().map(|server| {
             let on = server.status != quill_model::McpStatus::Disabled;
             let id = format!("{CONNECTOR_SWITCH}{}:{}", u8::from(!on), server.name);
-            switch_row(id, icons::PLUG, &server.label, on)
+            limn::DropdownMenuItem::new(id, server.label.clone())
+                .icon(icons::of(icons::PLUG))
+                .switch(on)
+                .into()
         }));
     }
     // Desktop's Plugins (3.6556.2 `c227f4d5e` `CL`): each plugin on with skills, its one skill
