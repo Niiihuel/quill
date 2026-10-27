@@ -5,7 +5,8 @@ use std::path::PathBuf;
 
 pub use quill_agent::{
     AgentCapabilities, AgentEvent, ContextCategory, ContextKind, ContextUsage, Decision,
-    FileChange, ModelInfo, PlanLimits, Suggestion, ToolContent, Usage, UsageWindow,
+    FileChange, McpServer, McpSource, McpStatus, ModelInfo, PlanLimits, Suggestion, ToolContent,
+    Usage, UsageWindow,
 };
 
 /// quill's own id of a session.
@@ -204,6 +205,21 @@ pub enum Intent {
     /// runs; a session whose agent is not running gets no answer.
     ContextUsage {
         session: SessionId,
+    },
+    /// The session's MCP servers, answered by the agent's `McpServers` while it runs.
+    McpStatus {
+        session: SessionId,
+    },
+    /// Connect one of the session's MCP servers again.
+    McpReconnect {
+        session: SessionId,
+        name: String,
+    },
+    /// Turn one of the session's MCP servers on or off.
+    McpToggle {
+        session: SessionId,
+        name: String,
+        enabled: bool,
     },
     /// What is uncommitted in the session's folder, answered by `Event::WorkingTree`.
     WorkingTree {

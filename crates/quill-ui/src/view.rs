@@ -85,6 +85,10 @@ pub const SIDE_OPEN: &str = "side:open";
 pub use quill_components::settings::{SETTINGS_CLOSE, SETTINGS_OPEN, SETTINGS_SEARCH};
 pub const SETTINGS_FIRST: &str = "general";
 pub const SETTINGS_STORAGE_OPEN: &str = "settings:storage:open";
+/// The session's MCP servers' dialog: closing it, and a server's actions (`{id}{name}`).
+pub const MCP_DONE: &str = "mcp:done";
+pub const MCP_RECONNECT: &str = "mcp:reconnect:";
+pub const MCP_TURN_ON: &str = "mcp:on:";
 /// The Files pane's buttons over the file on screen.
 pub const DOC_PREVIEW: &str = "doc:preview";
 pub const DOC_SAVE: &str = "doc:save";
@@ -480,6 +484,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
         _ => root,
     };
     let root = settings_dialog(store, ui, root, window, palette);
+    let root = mcp_dialog(store, ui, root, window, palette);
     // Desktop's own wording for both closes (Ion `cccc2cf0a`,) and for a delete
     //, less its vendor's servers: quill forgets only its own record.
     let tabs = &ui.terminal.tabs;
@@ -7142,6 +7147,164 @@ fn human_bytes(bytes: u64) -> String {
     } else {
         format!("{size:.1} {}", units[unit])
     }
+}
+
+/// The session's MCP servers (`/mcp`), as Desktop's dialog lists them (3.6556.2
+/// `cff0db614`): each server with what ships it, where it was configured and how it is, and
+/// what can be done about it: reconnect one that failed or wants signing in, turn on one
+/// that is off. Its words are Desktop's; while a turn runs the actions wait for it to end.
+fn mcp_dialog(
+    store: &Store,
+    ui: &Ui,
+    base: Element,
+    window: Size,
+    palette: ComponentPalette,
+) -> Element {
+    use quill_model::{McpSource, McpStatus};
+    let Some((id, _)) = ui.mcp else {
+        return base;
+    };
+    let session = store.session(id);
+    let width = limn::Modal::fit_width(window.width, 720.0);
+    let inner = limn::Modal::body_width(width);
+    let waits = session.is_some_and(|s| s.running_since.is_some());
+    let action = |id: String, label: &str| {
+        let button = keyed_button(&id, label, "", false, !waits, palette);
+        if waits {
+            limn::Tooltip::new(
+                button,
+                format!("{id}:why"),
+                "Available when the current turn finishes",
+                look::palette(),
+            )
+            .render()
+        } else {
+            button
+        }
+    };
+    let servers = session.and_then(|s| s.mcp.as_ref());
+    let body = match servers {
+        None => muted(
+            "Loading this session\u{2019}s MCP servers\u{2026} If they don\u{2019}t appear, send a message in the session to start it.",
+        )
+        .font_size(BODY)
+        .padding(12.0),
+        Some(servers) if servers.is_empty() => muted("This session has no MCP servers.")
+            .font_size(BODY)
+            .padding(12.0),
+        Some(servers) => {
+            let columns = vec![
+                limn::TableColumn::flexible("server", "Server", 200.0),
+                limn::TableColumn::fixed("type", "Type", 72.0),
+                limn::TableColumn::fixed("status", "Status", 292.0),
+            ];
+            let rows = servers
+                .iter()
+                .map(|server| {
+                    let mut who = vec![limn::Element::truncated_text(server.label.clone())
+                        .font_family(FontFamily::Sans)
+                        .font_size(BODY)
+                        .foreground(look::palette().text)];
+                    if let Some(plugin) = &server.plugin {
+                        who.push(
+                            muted(format!("Provided by the {plugin} plugin")).font_size(SMALL),
+                        );
+                    }
+                    let kind = match server.source {
+                        McpSource::User => "User",
+                        McpSource::Project => "Project",
+                        McpSource::Local => "Local",
+                        McpSource::Managed => "Managed",
+                        McpSource::Plugin => "Plugin",
+                        // Desktop lists the account's connectors apart; quill names them (inferred).
+                        McpSource::Account => "Account",
+                        McpSource::App => "App",
+                        McpSource::Other => "Other",
+                    };
+                    let note = |words: String, why: Option<&str>| {
+                        let words = muted(words).font_size(BODY);
+                        match why {
+                            Some(why) => limn::Tooltip::new(
+                                words,
+                                format!("mcp:why:{}", server.name),
+                                why,
+                                look::palette(),
+                            )
+                            .render(),
+                            None => words,
+                        }
+                    };
+                    let status = match server.status {
+                        McpStatus::Connected => note(
+                            match server.tools.len() {
+                                1 => "Connected \u{b7} 1 tool".to_owned(),
+                                n => format!("Connected \u{b7} {n} tools"),
+                            },
+                            None,
+                        ),
+                        McpStatus::Pending => note("Connecting\u{2026}".into(), None),
+                        McpStatus::NeedsAuth => Element::row(vec![
+                            note(
+                                "Needs authentication".into(),
+                                Some(if server.source == McpSource::Account {
+                                    "Sign in to it where your account's connectors are managed, then reconnect here."
+                                } else {
+                                    "Sign in with /mcp in a terminal where this session runs, then reconnect here."
+                                }),
+                            )
+                            .centered_y(),
+                            action(format!("{MCP_RECONNECT}{}", server.name), "Reconnect"),
+                        ])
+                        .gap(8.0),
+                        McpStatus::Failed => Element::row(vec![
+                            note("Failed".into(), server.error.as_deref()).centered_y(),
+                            action(format!("{MCP_RECONNECT}{}", server.name), "Reconnect"),
+                        ])
+                        .gap(8.0),
+                        McpStatus::Disabled => {
+                            action(format!("{MCP_TURN_ON}{}", server.name), "Turn on")
+                        }
+                    };
+                    limn::TableRow::new(
+                        format!("mcp:row:{}", server.name),
+                        vec![
+                            Element::column(who).gap(2.0).centered_y(),
+                            muted(kind).font_size(BODY).centered_y(),
+                            status.centered_y(),
+                        ],
+                    )
+                })
+                .collect();
+            // Two lines for a plugin's server, as Desktop's rows (`min-h-14`) hold.
+            let sizing = limn::TableSizing {
+                row_height: 44.0,
+                ..limn::TableSizing::COMPACT
+            };
+            let table = limn::Table::new("mcp:servers", columns, inner, look::palette())
+                .sizing(sizing)
+                .rows(rows)
+                .render();
+            Element::scroll("mcp:scroll", table).max_height(window.height * 0.6)
+        }
+    };
+    let footer = Element::row(vec![
+        Element::spacer().flex(1.0),
+        keyed_button(MCP_DONE, "Done", "", true, true, palette),
+    ]);
+    limn::Modal::new(
+        base,
+        true,
+        "MCP servers in this session",
+        "",
+        MCP_DONE,
+        look::palette(),
+    )
+    .width(width)
+    .body(body)
+    .footer(footer)
+    .backdrop_dismiss(true)
+    .scrim(look::scrim())
+    .render()
 }
 
 /// Settings, in Desktop's measures at 1×: a 1024 × 772 card whose body

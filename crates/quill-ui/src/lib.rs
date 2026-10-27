@@ -109,6 +109,8 @@ pub struct Session {
     pub context_window: u64,
     /// What fills the context, as the agent last told it while the Context card was open.
     pub context_usage: Option<quill_model::ContextUsage>,
+    /// Its MCP servers, as the agent last told them while their dialog was open.
+    pub mcp: Option<Vec<quill_model::McpServer>>,
     /// Its built-in browser, as the engine last told it.
     pub browser: SessionBrowser,
     pub cost: f64,
@@ -212,6 +214,7 @@ impl Store {
                 context_tokens: 0,
                 context_window: 0,
                 context_usage: None,
+                mcp: None,
                 browser: SessionBrowser::default(),
                 working: None,
                 cost: 0.0,
@@ -486,6 +489,7 @@ fn agent_event(s: &mut Session, event: AgentEvent) {
         AgentEvent::ModeChanged { mode } => s.mode = mode,
         AgentEvent::Tokens { tokens } => s.tokens = tokens,
         AgentEvent::ContextUsage(usage) => s.context_usage = Some(usage),
+        AgentEvent::McpServers(servers) => s.mcp = Some(servers),
         AgentEvent::TaskStarted {
             id,
             call,
@@ -835,6 +839,8 @@ pub struct Ui {
     pub deleting: Option<SessionId>,
     /// What the search dialog looks for, while it is open.
     pub search: Option<String>,
+    /// The session whose MCP servers' dialog is open (`/mcp`), and when they were last asked.
+    pub mcp: Option<(SessionId, std::time::Instant)>,
     /// Sessions whose branch bar the person closed.
     pub bar_closed: Vec<SessionId>,
     /// How the sidebar groups and orders the sessions.
@@ -1412,6 +1418,7 @@ impl Ui {
             title_edit: None,
             deleting: None,
             search: None,
+            mcp: None,
             bar_closed: vec![],
             group_by: GroupBy::default(),
             sort_by: SortBy::default(),
@@ -1470,10 +1477,23 @@ impl Ui {
         let ultra = self
             .ultra_since
             .map(|_| std::time::Duration::from_millis(33));
+        let mcp = (self.mcp).map(|(_, asked)| MCP_POLL.saturating_sub(asked.elapsed()));
         if self.animating() {
             Some(std::time::Duration::ZERO)
         } else {
-            [check, ultra].into_iter().flatten().min()
+            [check, ultra, mcp].into_iter().flatten().min()
+        }
+    }
+
+    /// What is due to be asked on its own: the open MCP dialog's servers, every
+    /// [`MCP_POLL`], so one that connects or fails shows it.
+    pub fn due(&mut self) -> Vec<Intent> {
+        match &mut self.mcp {
+            Some((session, asked)) if asked.elapsed() >= MCP_POLL => {
+                *asked = std::time::Instant::now();
+                vec![Intent::McpStatus { session: *session }]
+            }
+            _ => vec![],
         }
     }
 
@@ -1938,6 +1958,13 @@ fn update_action(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Int
                 return vec![];
             }
             ui.prompt.clear();
+            // "/mcp" shows the session's MCP servers, as Desktop's does (3.6556.2 `cff0db614`).
+            if text == "/mcp" {
+                if let Some(session) = ui.selected {
+                    ui.mcp = Some((session, std::time::Instant::now()));
+                    return vec![Intent::McpStatus { session }];
+                }
+            }
             // "/btw …" asks a side question beside the session [videos of 2026-10-25].
             if let (Some(question), Some(session)) = (
                 text.strip_prefix("/btw ")
@@ -2212,6 +2239,9 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         return vec![];
     }
     if let Some(intents) = settings_clicked(ui, id) {
+        return intents;
+    }
+    if let Some(intents) = mcp_clicked(ui, id) {
         return intents;
     }
     if let Some(intents) = session_clicked(store, ui, id) {
@@ -2718,6 +2748,35 @@ fn answer(store: &Store, ui: &mut Ui, rest: &str) -> Vec<Intent> {
         }
     }
     vec![]
+}
+
+/// How often the open MCP dialog asks for its servers again (inferred: Desktop polls them,
+/// 3.6556.2 `cff0db614`, at a pace not found).
+pub const MCP_POLL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The MCP dialog's clicks: done, and a server's reconnect or turning it on, each followed
+/// by asking for the servers again. `None` when `id` is none of them.
+fn mcp_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
+    let (session, _) = ui.mcp?;
+    if id == view::MCP_DONE {
+        ui.mcp = None;
+        return Some(vec![]);
+    }
+    let asked = |intent| Some(vec![intent, Intent::McpStatus { session }]);
+    if let Some(name) = id.strip_prefix(view::MCP_RECONNECT) {
+        return asked(Intent::McpReconnect {
+            session,
+            name: name.to_owned(),
+        });
+    }
+    if let Some(name) = id.strip_prefix(view::MCP_TURN_ON) {
+        return asked(Intent::McpToggle {
+            session,
+            name: name.to_owned(),
+            enabled: true,
+        });
+    }
+    None
 }
 
 /// Settings' own clicks: open and close, pick a page, and change a

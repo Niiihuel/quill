@@ -6,7 +6,13 @@ use std::path::Path;
 /// Feed a fixture through a fresh adapter: lines quill sent become the same commands
 /// (so the adapter's state matches), lines the CLI sent are decoded.
 fn replay(name: &str) -> (Claude, Vec<AgentEvent>, Vec<String>) {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("fixtures/2.1.310/{name}.jsonl"));
+    replay_at("2.1.310", name)
+}
+
+/// [`replay`] of a capture of another version of the CLI.
+fn replay_at(version: &str, name: &str) -> (Claude, Vec<AgentEvent>, Vec<String>) {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("fixtures/{version}/{name}.jsonl"));
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     let mut claude = Claude::new();
     let (mut events, mut replies) = (vec![], vec![]);
@@ -19,6 +25,14 @@ fn replay(name: &str) -> (Claude, Vec<AgentEvent>, Vec<String>) {
                     Some("initialize") => drop(claude.encode(AgentCommand::Start)),
                     Some("interrupt") => drop(claude.encode(AgentCommand::Interrupt)),
                     Some("get_context_usage") => drop(claude.encode(AgentCommand::ContextUsage)),
+                    Some("mcp_status") => drop(claude.encode(AgentCommand::McpStatus)),
+                    Some("mcp_reconnect") => drop(claude.encode(AgentCommand::McpReconnect(
+                        super::text(&msg["request"]["serverName"]),
+                    ))),
+                    // Requests quill does not send yet keep the ids of the ones after them in step.
+                    Some("get_skills_dialog" | "reload_plugins" | "reload_skills") => {
+                        drop(claude.request(json!({})))
+                    }
                     _ => {}
                 }
             }
@@ -148,6 +162,51 @@ fn context_usage_keeps_each_category_with_its_kind_and_the_lists_under_them() {
         usage.groups[0].1[0],
         ("/home/user/.claude/CLAUDE.md".into(), 103)
     );
+}
+
+#[test]
+fn mcp_status_tells_each_server_with_where_it_came_from_and_its_tools() {
+    let (_, events, _) = replay_at("2.1.311", "extensions");
+    let answers: Vec<&Vec<McpServer>> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::McpServers(servers) => Some(servers),
+            _ => None,
+        })
+        .collect();
+    // Asked at once, the servers are still connecting; 15 s later they are connected.
+    let [first, later] = answers.as_slice() else {
+        panic!("{events:?}");
+    };
+    let row = |servers: &[McpServer], name: &str| {
+        servers.iter().find(|s| s.name == name).cloned().unwrap()
+    };
+    assert_eq!(row(first, "rea").status, McpStatus::Pending);
+    let rea = row(later, "rea");
+    assert_eq!(
+        (rea.status, rea.source),
+        (McpStatus::Connected, McpSource::User)
+    );
+    assert_eq!(rea.tools.len(), 2);
+    let vercel = row(later, "plugin:vercel:vercel");
+    assert_eq!(
+        (vercel.status, vercel.source, vercel.plugin.as_deref()),
+        (McpStatus::NeedsAuth, McpSource::Plugin, Some("vercel"))
+    );
+    assert_eq!(
+        (vercel.label.as_str(), rea.label.as_str()),
+        ("vercel", "rea")
+    );
+    assert_eq!(row(later, "claude.ai Gmail").source, McpSource::Account);
+    // Its reconnect's empty answer is a plain reply, not a server list.
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AgentEvent::Reply { ok: true, body, .. } if body.is_null())));
+    let ready = events.iter().find_map(|e| match e {
+        AgentEvent::Ready { capabilities, .. } => Some(capabilities.mcp),
+        _ => None,
+    });
+    assert_eq!(ready, Some(true));
 }
 
 #[test]

@@ -5,8 +5,8 @@
 use quill_agent::{
     AgentAdapter, AgentCapabilities, AgentCommand, AgentEvent, AgentId, CommandRun,
     ContextCategory, ContextKind, ContextUsage, Decision, Decoded, FileChange, LaunchPlan,
-    ModelInfo, PlanLimits, SessionSpec, Suggestion, ToolContent, Usage, UsageWindow, BROWSER_GUIDE,
-    BROWSER_TOOLS, HOST_TOOLS,
+    McpServer, McpSource, McpStatus, ModelInfo, PlanLimits, SessionSpec, Suggestion, ToolContent,
+    Usage, UsageWindow, BROWSER_GUIDE, BROWSER_TOOLS, HOST_TOOLS,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -26,6 +26,8 @@ pub struct Claude {
     initialize: Option<String>,
     /// The `get_context_usage` request waiting for its answer.
     context_request: Option<String>,
+    /// `mcp_status` requests waiting for their answers.
+    mcp_requests: Vec<String>,
     interrupted: bool,
     /// `can_use_tool` waiting for a decision: its tool call and input, echoed back on allow.
     pending: HashMap<String, (Value, Value)>,
@@ -389,6 +391,19 @@ impl AgentAdapter for Claude {
                 self.context_request = Some(self.last_request_id());
                 vec![line]
             }
+            // Desktop's session MCP panel polls these (3.6556.2 `cff0db614`, `mcpServerStatus`);
+            // the shapes are the CLI's own (fixtures/2.1.311/README.md).
+            AgentCommand::McpStatus => {
+                let line = self.request(json!({ "subtype": "mcp_status" }));
+                self.mcp_requests.push(self.last_request_id());
+                vec![line]
+            }
+            AgentCommand::McpReconnect(name) => vec![self.request(json!({
+                "subtype": "mcp_reconnect", "serverName": name,
+            }))],
+            AgentCommand::McpToggle { name, enabled } => vec![self.request(json!({
+                "subtype": "mcp_toggle", "serverName": name, "enabled": enabled,
+            }))],
             AgentCommand::HostToolResult {
                 id,
                 content,
@@ -434,6 +449,15 @@ impl AgentAdapter for Claude {
                 if ok && self.initialize.as_deref() == Some(id.as_str()) {
                     self.ultracode = offers_ultracode(&body);
                     decoded.events.push(ready(&body, self.ultracode));
+                }
+                if let Some(at) = self.mcp_requests.iter().position(|r| *r == id) {
+                    self.mcp_requests.remove(at);
+                    if ok {
+                        decoded
+                            .events
+                            .push(AgentEvent::McpServers(mcp_servers(&body)));
+                    }
+                    return decoded;
                 }
                 if self.context_request.as_deref() == Some(id.as_str()) {
                     self.context_request = None;
@@ -757,6 +781,7 @@ fn ready(body: &Value, ultracode: bool) -> AgentEvent {
             fork: true,
             rewind: true,
             tool_hooks: true,
+            mcp: true,
             plan: body["account"]["subscriptionType"]
                 .as_str()
                 .map(str::to_owned),
@@ -769,6 +794,49 @@ fn ready(body: &Value, ultracode: bool) -> AgentEvent {
         },
         mode: body["current_permission_mode"].as_str().map(str::to_owned),
     }
+}
+
+/// The answer to `mcp_status` (CLI 2.1.311): each server with its status, where it came
+/// from (`source`, else `scope`), why it failed and its tools. A plugin's server is named
+/// `plugin:{plugin}:{server}`; quill's own in-process ones are `sdk`.
+fn mcp_servers(body: &Value) -> Vec<McpServer> {
+    let servers = body["mcpServers"].as_array().into_iter().flatten();
+    servers
+        .map(|server| {
+            let name = text(&server["name"]);
+            let status = match server["status"].as_str() {
+                Some("connected") => McpStatus::Connected,
+                Some("needs-auth") => McpStatus::NeedsAuth,
+                Some("failed") => McpStatus::Failed,
+                Some("disabled") => McpStatus::Disabled,
+                _ => McpStatus::Pending,
+            };
+            let from = server["source"].as_str().or(server["scope"].as_str());
+            let source = match from {
+                Some("user") => McpSource::User,
+                Some("project") => McpSource::Project,
+                Some("local") => McpSource::Local,
+                Some("managed" | "enterprise") => McpSource::Managed,
+                Some("plugin") => McpSource::Plugin,
+                Some("claudeai") => McpSource::Account,
+                Some("sdk") => McpSource::App,
+                _ => McpSource::Other,
+            };
+            let parts = (name.strip_prefix("plugin:")).and_then(|rest| rest.split_once(':'));
+            let plugin = parts.map(|(plugin, _)| plugin.to_owned());
+            McpServer {
+                label: parts.map_or(name.as_str(), |(_, server)| server).to_owned(),
+                status,
+                source,
+                plugin,
+                error: server["error"].as_str().map(str::to_owned),
+                tools: (server["tools"].as_array().into_iter().flatten())
+                    .map(|tool| text(&tool["name"]))
+                    .collect(),
+                name,
+            }
+        })
+        .collect()
 }
 
 /// Rules and mode switches arrive mixed ([F:always]); quill keeps them apart so

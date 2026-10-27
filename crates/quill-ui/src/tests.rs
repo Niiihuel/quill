@@ -1518,6 +1518,83 @@ fn a_started_session_opens_beside_and_says_when_it_waits() {
 }
 
 #[test]
+fn mcp_lists_the_sessions_servers_and_reconnects_or_turns_one_on() {
+    use quill_model::{McpServer, McpSource, McpStatus};
+    let (mut store, mut ui) = store_with_session();
+    ui.selected = Some(1);
+    let typed = update(
+        &store,
+        &mut ui,
+        &UiAction::Submitted {
+            id: view::COMPOSER.into(),
+            value: "/mcp".into(),
+        },
+    );
+    assert_eq!(typed, vec![Intent::McpStatus { session: 1 }]);
+    let window = limn::Size::new(1408.0, 844.0);
+    let shows = |store: &Store, ui: &Ui, words: &str| {
+        let frame = UiTree::new(view(store, ui, window)).layout(window);
+        frame.commands.iter().any(|command| {
+            matches!(command, limn::DrawCommand::Text { text, .. } if text.contains(words))
+        })
+    };
+    // Until the agent answers, it says what it waits for.
+    assert!(shows(&store, &ui, "Loading this session"));
+    let server = |name: &str, status, plugin: Option<&str>| McpServer {
+        name: name.into(),
+        label: name.rsplit(':').next().unwrap().into(),
+        status,
+        source: if plugin.is_some() {
+            McpSource::Plugin
+        } else {
+            McpSource::User
+        },
+        plugin: plugin.map(str::to_owned),
+        error: None,
+        tools: vec!["a".into(), "b".into()],
+    };
+    agent(
+        &mut store,
+        AgentEvent::McpServers(vec![
+            server("rea", McpStatus::Connected, None),
+            server("plugin:vercel:vercel", McpStatus::NeedsAuth, Some("vercel")),
+            server("off", McpStatus::Disabled, None),
+        ]),
+    );
+    assert!(shows(&store, &ui, "Connected \u{b7} 2 tools"));
+    assert!(shows(&store, &ui, "Provided by the vercel plugin"));
+    // Each action asks for the servers again, to show what it did.
+    assert_eq!(
+        click(
+            &store,
+            &mut ui,
+            &format!("{}plugin:vercel:vercel", view::MCP_RECONNECT)
+        ),
+        vec![
+            Intent::McpReconnect {
+                session: 1,
+                name: "plugin:vercel:vercel".into()
+            },
+            Intent::McpStatus { session: 1 }
+        ]
+    );
+    assert_eq!(
+        click(&store, &mut ui, &format!("{}off", view::MCP_TURN_ON))[0],
+        Intent::McpToggle {
+            session: 1,
+            name: "off".into(),
+            enabled: true
+        }
+    );
+    // Open, it asks again on its own; done, it stops.
+    ui.mcp = Some((1, std::time::Instant::now() - crate::MCP_POLL));
+    assert_eq!(ui.due(), vec![Intent::McpStatus { session: 1 }]);
+    assert!(ui.due().is_empty());
+    click(&store, &mut ui, view::MCP_DONE);
+    assert!(ui.mcp.is_none() && !shows(&store, &ui, "MCP servers in this session"));
+}
+
+#[test]
 fn btw_asks_beside_the_session_and_closing_puts_it_away() {
     let (mut store, mut ui) = store_with_session();
     let asked = update(

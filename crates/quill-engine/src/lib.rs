@@ -694,6 +694,18 @@ impl Router {
             Intent::ContextUsage { session } => {
                 (session, Input::Command(AgentCommand::ContextUsage))
             }
+            Intent::McpStatus { session } => (session, Input::Command(AgentCommand::McpStatus)),
+            Intent::McpReconnect { session, name } => {
+                (session, Input::Command(AgentCommand::McpReconnect(name)))
+            }
+            Intent::McpToggle {
+                session,
+                name,
+                enabled,
+            } => (
+                session,
+                Input::Command(AgentCommand::McpToggle { name, enabled }),
+            ),
             Intent::Rewind { session, request } => (session, Input::Rewind(request)),
             Intent::Rename { session, title } => {
                 self.titles.insert(session, title.clone());

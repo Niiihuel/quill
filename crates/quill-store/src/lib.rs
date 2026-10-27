@@ -63,6 +63,7 @@ impl Store {
                     | AgentEvent::Running { .. }
                     | AgentEvent::Reply { .. }
                     | AgentEvent::ContextUsage(_)
+                    | AgentEvent::McpServers(_)
             ),
             _ => true,
         }

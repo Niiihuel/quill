@@ -66,6 +66,51 @@ pub struct AgentCapabilities {
     /// The person's plan, as the agent names it ("max", "pro"), when it says.
     #[serde(default)]
     pub plan: Option<String>,
+    /// The agent tells its MCP servers' state on request, and reconnects and turns them on
+    /// and off ([`AgentCommand::McpStatus`]).
+    #[serde(default)]
+    pub mcp: bool,
+}
+
+/// One MCP server a session's agent loaded, as the agent reports it.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct McpServer {
+    /// The name the agent knows it by, which reconnecting and toggling it take.
+    pub name: String,
+    /// The name to show, without what the agent prefixes to tell servers apart.
+    pub label: String,
+    pub status: McpStatus,
+    pub source: McpSource,
+    /// The plugin that ships it, for [`McpSource::Plugin`].
+    pub plugin: Option<String>,
+    /// Why it failed, when it did.
+    pub error: Option<String>,
+    /// Its tools' names, once connected.
+    pub tools: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum McpStatus {
+    Connected,
+    Pending,
+    NeedsAuth,
+    Failed,
+    Disabled,
+}
+
+/// Where a server's definition came from: the person's own settings, the project's, the
+/// person's for this project only, the organization's, a plugin, the person's account, the
+/// app running the agent (quill's own tools), or somewhere else.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum McpSource {
+    User,
+    Project,
+    Local,
+    Managed,
+    Plugin,
+    Account,
+    App,
+    Other,
 }
 
 /// One file a tool changed, as the agent reported it.
@@ -257,6 +302,8 @@ pub enum AgentEvent {
     Limits(PlanLimits),
     /// The answer to [`AgentCommand::ContextUsage`].
     ContextUsage(ContextUsage),
+    /// The answer to [`AgentCommand::McpStatus`]: every server the session loaded.
+    McpServers(Vec<McpServer>),
     /// The agent calls one of quill's own tools, the ones that start and propose other
     /// sessions ([`HOST_TOOLS`]). The engine answers with [`AgentCommand::HostToolResult`].
     HostTool {
@@ -306,6 +353,15 @@ pub enum AgentCommand {
     /// Ask how the context is spent, answered by [`AgentEvent::ContextUsage`]; an agent
     /// that cannot tell sends nothing.
     ContextUsage,
+    /// Ask for the MCP servers' state, answered by [`AgentEvent::McpServers`].
+    McpStatus,
+    /// Connect a server that failed or has not connected again, by its name.
+    McpReconnect(String),
+    /// Turn a server on or off, by its name.
+    McpToggle {
+        name: String,
+        enabled: bool,
+    },
     /// The answer to an [`AgentEvent::HostTool`] call.
     HostToolResult {
         id: String,

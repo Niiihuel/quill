@@ -667,6 +667,8 @@ impl eframe::App for App {
             .map(|p| limn::Point::new(p.x - area.min.x, p.y - area.min.y));
         self.ui.hovered = self.tree.hovered_id().map(str::to_owned);
         self.ui.tick(&self.store);
+        let due = self.ui.due();
+        self.dispatch(due);
         self.tree
             .set_root(quill_ui::view(&self.store, &self.ui, window));
         self.tree.layout(window);
