@@ -23,6 +23,8 @@ pub enum Item {
     User {
         request: RequestId,
         text: String,
+        /// When it was sent, in seconds since 1970.
+        at: Option<u64>,
     },
     Assistant {
         text: String,
@@ -68,9 +70,7 @@ pub enum Item {
         tasks: Vec<(quill_model::Proposal, Option<quill_model::ProposalOutcome>)>,
     },
     /// The message after it was passed on by the session `from`.
-    Forwarded {
-        from: SessionId,
-    },
+    Forwarded { from: SessionId },
     /// What sessions it started said, sent to the agent as `request`.
     Reports {
         request: RequestId,
@@ -157,6 +157,14 @@ pub struct Task {
 }
 
 impl Session {
+    /// Whether its agent is at work on a turn, or waiting on the person within one.
+    pub fn working(&self) -> bool {
+        matches!(
+            self.status,
+            SessionStatus::Running | SessionStatus::Starting | SessionStatus::Awaiting
+        )
+    }
+
     /// Whether the tool call `call` started work that still runs.
     pub fn task_running(&self, call: &str) -> bool {
         self.tasks
@@ -260,6 +268,7 @@ impl Store {
                 session,
                 request,
                 text,
+                at,
             } => {
                 if let Some(s) = self.session_mut(session) {
                     if s.title.is_empty() {
@@ -271,7 +280,7 @@ impl Store {
                             .take(60)
                             .collect();
                     }
-                    s.items.push(Item::User { request, text });
+                    s.items.push(Item::User { request, text, at });
                 }
             }
             Event::Agent {
@@ -358,6 +367,18 @@ impl Store {
             Event::Archived { session, archived } => {
                 if let Some(s) = self.session_mut(session) {
                     s.archived = archived;
+                }
+            }
+            // "Rewind to here": the message and all after it go.
+            Event::RewoundTo {
+                session, request, ..
+            } => {
+                if let Some(s) = self.session_mut(session) {
+                    let from = (s.items.iter())
+                        .position(|i| matches!(i, Item::User { request: r, .. } if *r == request));
+                    if let Some(from) = from {
+                        s.items.truncate(from);
+                    }
                 }
             }
             Event::Unread { session, unread } => {
@@ -858,6 +879,8 @@ pub struct Ui {
     pub account_menu: bool,
     /// A fork was asked for: the session the engine makes next is it, and opens.
     pub waiting_fork: bool,
+    /// Words the host puts back in the message box: a message rewound or forked from.
+    pub restore_prompt: Option<String>,
     /// The Completed group shows every session, not its first few.
     pub show_more: bool,
     /// The side chat its pane shows, one asked for that the engine is making, and what its
@@ -1447,6 +1470,7 @@ impl Ui {
             live: Default::default(),
             filter_menu: None,
             waiting_fork: false,
+            restore_prompt: None,
             show_more: false,
             side_chat: None,
             side_waiting: false,
@@ -3379,6 +3403,39 @@ fn message_clicked(store: &Store, ui: &mut Ui, id: &str) -> Option<Vec<Intent>> 
     let (action, rest) = id.split_once(':')?;
     let (session, at) = rest.split_once(':')?;
     let (session, at): (SessionId, usize) = (session.parse().ok()?, at.parse().ok()?);
+    if let Some(Item::User { request, text, .. }) =
+        store.session(session).and_then(|s| s.items.get(at))
+    {
+        let s = store.session(session)?;
+        // Both go on from the agent's message before this one, its words back in the box.
+        let before = (s.items[..at].iter().rev()).find_map(|i| match i {
+            Item::Assistant { id: Some(id), .. } => Some(id.clone()),
+            _ => None,
+        });
+        return Some(match action {
+            "copy" => {
+                ui.copied = Some((id.to_owned(), std::time::Instant::now()));
+                vec![]
+            }
+            "rewind-to" if !s.working() => {
+                ui.restore_prompt = Some(text.clone());
+                vec![Intent::RewindTo {
+                    session,
+                    request: request.clone(),
+                    at: before,
+                }]
+            }
+            "fork-from" if before.is_some() => {
+                ui.waiting_fork = true;
+                ui.restore_prompt = Some(text.clone());
+                vec![Intent::Fork {
+                    session,
+                    at: before,
+                }]
+            }
+            _ => vec![],
+        });
+    }
     let Some(Item::Assistant {
         text, id: message, ..
     }) = store.session(session).and_then(|s| s.items.get(at))
@@ -3421,7 +3478,7 @@ pub fn copied_text(store: &Store, id: &str) -> Option<String> {
     let (session, at) = id.strip_prefix("copy:")?.split_once(':')?;
     let session = store.session(session.parse().ok()?)?;
     match session.items.get(at.parse::<usize>().ok()?)? {
-        Item::Assistant { text, .. } => Some(text.clone()),
+        Item::Assistant { text, .. } | Item::User { text, .. } => Some(text.clone()),
         _ => None,
     }
 }

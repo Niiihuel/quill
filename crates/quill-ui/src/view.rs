@@ -2286,10 +2286,9 @@ fn transcript(
         return scroll;
     }
     // Away from the end, Desktop floats a round "↓" over the conversation: 36 px,
-    // 20 px over the composer (3.6556.2 `cf854d0e8` `size-9`, `ca2ef848d` `bottom-5`). Desktop
-    // blurs what scrolls under its translucent fill, which limn does not: here a halo of the
-    // page's color fades the text out around it instead, so no line runs through it. The
-    // arrow is centered by hand, as `tool_surface` does.
+    // 20 px over the composer (3.6556.2 `cf854d0e8` `size-9`, `ca2ef848d` `bottom-5`), on the
+    // page's fill with its edge and no halo, at the person's word. The arrow is centered by
+    // hand, as `tool_surface` does.
     let arrow = Element::icon(icons::of(icons::ARROW_DOWN))
         .foreground(look::palette().text)
         .size(Some(16.0), Some(16.0))
@@ -2307,13 +2306,7 @@ fn transcript(
         .background(look::theme().background)
         .border(look::card_border(), 1.0)
         .radius(18.0)
-        .size(Some(36.0), Some(36.0))
-        .shadow(
-            look::theme().background,
-            limn::Point::new(0.0, 0.0),
-            16.0,
-            12.0,
-        );
+        .size(Some(36.0), Some(36.0));
     let float = Element::column(vec![
         Element::spacer().flex(1.0),
         Element::row(vec![
@@ -2467,6 +2460,12 @@ fn entries<'a>(
                         }
                         parts.push(reply_actions(session, at, id.is_some(), *when, ui));
                         Element::column(parts).gap(4.0).hover_region()
+                    }
+                    // Under the person's words, theirs: the time, copy, rewind and fork.
+                    Item::User { at: when, .. } if main => {
+                        Element::column(vec![element, user_actions(list, session, at, *when, ui)])
+                            .gap(4.0)
+                            .hover_region()
                     }
                     _ => element,
                 };
@@ -2834,6 +2833,71 @@ fn reply_actions(
     }
     let row = Element::row(row).size(None, Some(24.0));
     if reading || copied {
+        row
+    } else {
+        row.reveal_on_hover(format!("{copy}:reveal"))
+    }
+}
+
+/// The row under the person's message while the pointer is on it, as Desktop's (3.6556.2
+/// `c96d752d0` `kA`, the person's capture of 2026-10-27): when it was sent, copy, "Rewind to
+/// here" (not while the agent works) and "Fork from here", which both go on from the
+/// agent's message before it; the first message has nothing to fork from.
+fn user_actions(
+    list: &[Item],
+    session: &Session,
+    at: usize,
+    when: Option<u64>,
+    ui: &Ui,
+) -> Element {
+    let id = |action: &str| format!("{action}:{}:{at}", session.id);
+    let button = |action: &str, icon: &'static str, label: &str| {
+        tool_surface(
+            &id(action),
+            icons::of(icon),
+            label,
+            24.0,
+            None,
+            look::tool_hover(),
+            None,
+        )
+    };
+    let copy = id("copy");
+    let copied =
+        (ui.copied.as_ref()).is_some_and(|(c, since)| *c == copy && since.elapsed() < COPIED_FOR);
+    let mut row = vec![Element::spacer().flex(1.0)];
+    if let Some(when) = when {
+        row.push(muted(ago(when)).font_size(SMALL).centered_y());
+        row.push(hgap(5.0));
+    }
+    row.push(if copied {
+        button("copy", icons::CHECK, "Copied")
+    } else {
+        button("copy", icons::COPY, "Copy message")
+    });
+    row.push(if session.working() {
+        let mark = Element::row(vec![Element::icon(icons::of(icons::REWIND))
+            .foreground(look::muted())
+            .size(Some(16.0), Some(16.0))
+            .centered()
+            .flex(1.0)])
+        .size(Some(24.0), Some(24.0));
+        limn::Tooltip::new(
+            Element::panel(mark),
+            id("rewind-off"),
+            "Rewind is unavailable while the agent is working",
+            look::palette(),
+        )
+        .render()
+    } else {
+        button("rewind-to", icons::REWIND, "Rewind to here")
+    });
+    let earlier = (list[..at].iter()).any(|i| matches!(i, Item::Assistant { id: Some(_), .. }));
+    if earlier {
+        row.push(button("fork-from", icons::FORK, "Fork from here"));
+    }
+    let row = Element::row(row).size(None, Some(24.0));
+    if copied {
         row
     } else {
         row.reveal_on_hover(format!("{copy}:reveal"))

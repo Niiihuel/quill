@@ -137,6 +137,7 @@ mod tests {
                     session: 1,
                     request: "r".into(),
                     text: "hi".into(),
+                    at: None,
                 },
             )
             .unwrap();

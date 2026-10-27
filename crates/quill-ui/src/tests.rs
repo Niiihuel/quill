@@ -21,6 +21,7 @@ fn store_with_session() -> (Store, Ui) {
         session: 1,
         request: "r1".into(),
         text: "Fix the bug".into(),
+        at: None,
     });
     let mut ui = Ui::new("/work".into());
     ui.selected = Some(1);
@@ -1195,6 +1196,69 @@ fn a_fork_starts_with_its_parents_conversation_and_opens() {
 }
 
 #[test]
+fn a_message_rewinds_and_forks_from_the_reply_before_it() {
+    let (mut store, mut ui) = store_with_session();
+    store.apply(Event::Status {
+        session: 1,
+        status: SessionStatus::Idle,
+    });
+    agent(
+        &mut store,
+        AgentEvent::Text {
+            text: "Done".into(),
+            parent: None,
+            id: Some("m1".into()),
+            at: Some(0),
+        },
+    );
+    store.apply(Event::Queued {
+        session: 1,
+        request: "r2".into(),
+        text: "And now?".into(),
+        at: Some(0),
+    });
+    assert_eq!(copied_text(&store, "copy:1:2").as_deref(), Some("And now?"));
+    // The first message has no reply before it to fork from; it rewinds to the start.
+    assert_eq!(click(&store, &mut ui, "fork-from:1:0"), vec![]);
+    assert_eq!(
+        click(&store, &mut ui, "rewind-to:1:0"),
+        vec![Intent::RewindTo {
+            session: 1,
+            request: "r1".into(),
+            at: None
+        }]
+    );
+    assert_eq!(
+        click(&store, &mut ui, "fork-from:1:2"),
+        vec![Intent::Fork {
+            session: 1,
+            at: Some("m1".into())
+        }]
+    );
+    assert_eq!(
+        click(&store, &mut ui, "rewind-to:1:2"),
+        vec![Intent::RewindTo {
+            session: 1,
+            request: "r2".into(),
+            at: Some("m1".into())
+        }]
+    );
+    assert_eq!(ui.restore_prompt.as_deref(), Some("And now?"));
+    store.apply(Event::RewoundTo {
+        session: 1,
+        request: "r2".into(),
+        at: Some("m1".into()),
+    });
+    assert_eq!(store.session(1).unwrap().items.len(), 2);
+    // Not while the agent works.
+    store.apply(Event::Status {
+        session: 1,
+        status: SessionStatus::Running,
+    });
+    assert_eq!(click(&store, &mut ui, "rewind-to:1:0"), vec![]);
+}
+
+#[test]
 fn a_reply_copies_forks_from_itself_and_reads_aloud() {
     let (mut store, mut ui) = store_with_session();
     for (text, id) in [("First", "m1"), ("Second", "m2")] {
@@ -2138,6 +2202,7 @@ fn a_passed_on_message_says_so_on_both_sides_and_new_work_is_marked() {
         session: 2,
         request: "q".into(),
         text: "Monday".into(),
+        at: None,
     });
     assert!(matches!(
         store.session(2).unwrap().items.as_slice(),

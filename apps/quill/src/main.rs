@@ -955,6 +955,10 @@ impl eframe::App for App {
                     !matches!(r, TerminalRequest::Close(_) | TerminalRequest::Move { .. })
                 });
         }
+        // A message rewound or forked from goes back in the box, as Desktop's does.
+        if let Some(prompt) = self.ui.restore_prompt.take() {
+            self.set_prompt(prompt);
+        }
         // What the Files pane asked for: a control to focus, and words to copy.
         if let Some(id) = self.ui.files_focus.take() {
             self.tree.focus(&id);

@@ -105,6 +105,8 @@ pub const CLOUD: &str = icon!(
 /// Reload: a circle's arc and its arrowhead, at the set's scale.
 pub const RELOAD: &str =
     icon!("<path d='M16.25 10a6.25 6.25 0 1 1-1.83-4.42M16.25 3.25v3.5h-3.5'/>");
+/// Rewind: Reload's arc turned back, as Desktop's "Rewind to here".
+pub const REWIND: &str = icon!("<path d='M3.75 10a6.25 6.25 0 1 0 1.83-4.42M3.75 3.25v3.5h3.5'/>");
 pub const GLOBE: &str = icon!(
     "<circle cx='10' cy='10' r='7.5'/><path d='M2.5 10h15M10 2.5c2.1 2.1 3 4.6 3 7.5s-.9 5.4-3 7.5c-2.1-2.1-3-4.6-3-7.5s.9-5.4 3-7.5z'/>"
 );
@@ -218,6 +220,7 @@ pub const ALL: &[(&str, &str)] = &[
     ("folder_open", FOLDER_OPEN),
     ("file", FILE),
     ("laptop", LAPTOP),
+    ("rewind", REWIND),
     ("briefcase", BRIEFCASE),
     ("hand", HAND),
     ("scroll", SCROLL),

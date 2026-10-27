@@ -529,6 +529,13 @@ impl Router {
                 self.sink.clone(),
             );
             actor.spec.resume = restored.resume;
+            if let Some(at) = restored.rewound {
+                if at.is_none() {
+                    actor.spec.resume = None;
+                }
+                actor.spec.fork = actor.spec.resume.is_some();
+                actor.spec.resume_at = at.filter(|_| actor.spec.fork);
+            }
             actor.spec.allow_unsafe = allow_unsafe;
             actor.env = self
                 .bridge
@@ -785,6 +792,11 @@ impl Router {
                 Input::Command(AgentCommand::McpToggle { name, enabled }),
             ),
             Intent::Rewind { session, request } => (session, Input::Rewind(request)),
+            Intent::RewindTo {
+                session,
+                request,
+                at,
+            } => (session, Input::RewindTo(request, at)),
             Intent::Rename { session, title } => {
                 self.titles.insert(session, title.clone());
                 (self.sink)(Event::Renamed { session, title });
@@ -1397,6 +1409,9 @@ struct Restored {
     forked: Option<(SessionId, Option<String>)>,
     /// Its browser's tabs when quill last ran.
     browser_tabs: Vec<String>,
+    /// Taken back to the agent's message (`Some(None)`: to the start) and not written to
+    /// since: the next launch goes on from there.
+    rewound: Option<Option<String>>,
 }
 
 impl Restored {
@@ -1415,8 +1430,11 @@ impl Restored {
         let mut before = HashMap::new();
         let (mut parent, mut title, mut proposals, mut forked) = (None, None, vec![], None);
         let mut browser_tabs = vec![];
+        let mut rewound = None;
         for event in events {
             match event {
+                Event::RewoundTo { at, .. } => rewound = Some(at.clone()),
+                Event::Queued { .. } => rewound = None,
                 Event::Linked {
                     parent: p,
                     side: false,
@@ -1453,6 +1471,7 @@ impl Restored {
             proposals,
             forked,
             browser_tabs,
+            rewound,
         })
     }
 }
@@ -1463,6 +1482,7 @@ enum Input {
     /// What sessions it started said: sent as one message that begins a turn.
     Report(Vec<quill_model::Report>),
     Rewind(RequestId),
+    RewindTo(RequestId, Option<String>),
     Command(AgentCommand),
     Line {
         generation: u64,
@@ -1582,6 +1602,10 @@ impl Actor {
                 session: self.id,
                 request: request.clone(),
                 text: text.clone(),
+                at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_secs()),
             },
         });
         self.write(AgentCommand::Prompt {
@@ -1669,6 +1693,32 @@ impl Actor {
         }
     }
 
+    /// Take the conversation back to before `request`: the agent ends, and the next message
+    /// starts it again from its message `at` in a conversation of its own, the old one kept
+    /// whole, or afresh without one, as Desktop's "Rewind to here" resumes at a message and
+    /// forks (, docs/engine.md). Never while it works.
+    async fn rewind_to(&mut self, request: RequestId, at: Option<String>) {
+        if self.busy {
+            return;
+        }
+        if let Some((mut child, _)) = self.process.take() {
+            let _ = child.kill().await;
+        }
+        // What the old process still says is not this conversation's.
+        self.generation += 1;
+        if at.is_none() {
+            self.spec.resume = None;
+        }
+        self.spec.fork = self.spec.resume.is_some();
+        self.spec.resume_at = at.clone().filter(|_| self.spec.fork);
+        (self.sink)(Event::RewoundTo {
+            session: self.id,
+            request,
+            at,
+        });
+        self.status(SessionStatus::Idle);
+    }
+
     fn status(&self, status: SessionStatus) {
         (self.sink)(Event::Status {
             session: self.id,
@@ -1690,6 +1740,7 @@ impl Actor {
                     self.prompt(text, Some(reports)).await
                 }
                 Input::Rewind(request) => self.rewind(request).await,
+                Input::RewindTo(request, at) => self.rewind_to(request, at).await,
                 Input::Command(command) => {
                     let decided = match &command {
                         AgentCommand::Decide { id, decision } => Some(Event::Decided {

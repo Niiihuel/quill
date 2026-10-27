@@ -241,6 +241,14 @@ pub enum Intent {
         session: SessionId,
         request: RequestId,
     },
+    /// Desktop's "Rewind to here": take the conversation back to before the person's
+    /// message `request`, the agent going on from its message `at`. Answered by
+    /// `Event::RewoundTo`.
+    RewindTo {
+        session: SessionId,
+        request: RequestId,
+        at: Option<String>,
+    },
     /// The person's own name for the session, in place of the one its first message gave.
     Rename {
         session: SessionId,
@@ -590,6 +598,9 @@ pub enum Event {
         session: SessionId,
         request: RequestId,
         text: String,
+        /// When it was sent, in seconds since 1970; older logs lack it.
+        #[serde(default)]
+        at: Option<u64>,
     },
     /// Something the agent said, tied to the request it answers when known.
     Agent {
@@ -622,6 +633,14 @@ pub enum Event {
         session: SessionId,
         permission: String,
         decision: Decision,
+    },
+    /// The conversation taken back to before the person's message `request`: it and what
+    /// followed are gone, and the agent goes on from its message `at` (from the start
+    /// without one). The files stay as they are.
+    RewoundTo {
+        session: SessionId,
+        request: RequestId,
+        at: Option<String>,
     },
     /// The session's files were put back as they were before `request`.
     Rewound {
@@ -766,6 +785,7 @@ impl Event {
             | Event::Agent { session, .. }
             | Event::Changes { session, .. }
             | Event::Rewound { session, .. }
+            | Event::RewoundTo { session, .. }
             | Event::Decided { session, .. }
             | Event::WorkingTree { session, .. }
             | Event::Environment { session, .. }
