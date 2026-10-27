@@ -35,6 +35,21 @@ pub struct SessionSpec {
     pub resume_at: Option<String>,
     /// The person allowed the agent's modes that skip every approval.
     pub allow_unsafe: bool,
+    /// The person's values for the adapter's own options ([`AgentAdapter::options`]), by key.
+    #[serde(default)]
+    pub options: std::collections::BTreeMap<String, String>,
+}
+
+/// One of an agent's own settings, as its adapter declares it, which quill's Settings shows on
+/// the agent's page and hands back in [`SessionSpec::options`]: a switch (`"true"` or
+/// `"false"`) without choices, else one of `choices`, each with how to say it.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AgentOption {
+    pub key: String,
+    pub label: String,
+    pub description: String,
+    pub choices: Choices,
+    pub default: String,
 }
 
 /// What a task has used: its tokens, its tool calls and how long it has run.
@@ -644,6 +659,10 @@ pub trait AgentAdapter: Send {
         vec![]
     }
     fn server_scopes(&self) -> Choices {
+        vec![]
+    }
+    /// The agent's own settings, shown on its page in Settings.
+    fn options(&self) -> Vec<AgentOption> {
         vec![]
     }
     /// Where a plugin can be installed and what a skill can be, with how to say each: see

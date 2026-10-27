@@ -298,6 +298,10 @@ impl AgentAdapter for Claude {
         if let Some(model) = &spec.model {
             args.extend(["--model".into(), model.clone()]);
         }
+        // The page's own options, as Claude Code settings for this session (`--settings`).
+        if let Some(settings) = option_settings(spec) {
+            args.extend(["--settings".into(), settings.to_string()]);
+        }
         if let Some(id) = &spec.resume {
             args.push(format!("--resume={id}"));
             if spec.fork {
@@ -418,6 +422,47 @@ impl AgentAdapter for Claude {
         ]
         .map(|(a, b)| (a.to_owned(), b.to_owned()))
         .into()
+    }
+
+    // Desktop's local Claude Code options (3.6556.2 registry `cc7db14f1`, rows `c8b630735`)
+    // that the CLI itself takes: its output style and its sandbox.
+    fn options(&self) -> Vec<quill_agent::AgentOption> {
+        let option =
+            |key: &str, label: &str, description: &str, choices: &[(&str, &str)], default: &str| {
+                quill_agent::AgentOption {
+                    key: key.into(),
+                    label: label.into(),
+                    description: description.into(),
+                    choices: choices
+                        .iter()
+                        .map(|(a, b)| ((*a).into(), (*b).into()))
+                        .collect(),
+                    default: default.into(),
+                }
+            };
+        vec![
+            option(
+                OUTPUT_STYLE,
+                "Output style",
+                "How Claude structures its responses. Applies to new sessions.",
+                &[("", "Default"), ("Explanatory", "Explanatory"), ("Learning", "Learning")],
+                "",
+            ),
+            option(
+                SANDBOX,
+                "Local sandbox",
+                "Runs commands from Claude Code in an isolated sandbox. Applies to new sessions.",
+                &[],
+                "false",
+            ),
+            option(
+                STRICT_SANDBOX,
+                "Strict sandbox mode",
+                "Blocks commands that can't run inside the sandbox instead of asking to run them outside it. Applies to new sessions.",
+                &[],
+                "false",
+            ),
+        ]
     }
 
     fn extension_words(&self) -> (quill_agent::Choices, quill_agent::Choices) {
@@ -1091,6 +1136,29 @@ fn ready(body: &Value, ultracode: bool) -> AgentEvent {
         },
         mode: body["current_permission_mode"].as_str().map(str::to_owned),
     }
+}
+
+/// The keys of [`Claude`]'s own options.
+const OUTPUT_STYLE: &str = "output_style";
+const SANDBOX: &str = "sandbox";
+const STRICT_SANDBOX: &str = "strict_sandbox";
+
+/// The session's options as Claude Code settings: `outputStyle`, and `sandbox.enabled` with
+/// `allowUnsandboxedCommands` off when strict. `None` when none is set.
+fn option_settings(spec: &SessionSpec) -> Option<Value> {
+    let on = |key: &str| spec.options.get(key).is_some_and(|v| v == "true");
+    let mut settings = serde_json::Map::new();
+    if let Some(style) = spec.options.get(OUTPUT_STYLE).filter(|s| !s.is_empty()) {
+        settings.insert("outputStyle".into(), json!(style));
+    }
+    if on(SANDBOX) || on(STRICT_SANDBOX) {
+        let mut sandbox = json!({ "enabled": true });
+        if on(STRICT_SANDBOX) {
+            sandbox["allowUnsandboxedCommands"] = json!(false);
+        }
+        settings.insert("sandbox".into(), sandbox);
+    }
+    (!settings.is_empty()).then_some(Value::Object(settings))
 }
 
 /// One line of `claude mcp list`: its name before the first ": " (a name may hold colons,

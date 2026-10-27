@@ -1248,6 +1248,62 @@ fn a_custom_connector_is_an_address_or_a_command_with_its_settings() {
 }
 
 #[test]
+fn inactive_sessions_are_the_ones_quiet_for_the_days_chosen() {
+    let (mut store, _) = store_with_session();
+    store.apply(Event::Status {
+        session: 1,
+        status: SessionStatus::Idle,
+    });
+    store.apply(Event::Queued {
+        session: 1,
+        request: "r2".into(),
+        text: "later".into(),
+        at: Some(10 * 86_400),
+    });
+    assert!(crate::inactive(&store, 0, 100 * 86_400).is_empty());
+    assert_eq!(crate::inactive(&store, 7, 20 * 86_400), [1]);
+    assert!(crate::inactive(&store, 30, 20 * 86_400).is_empty());
+    store.apply(Event::Pinned {
+        session: 1,
+        pinned: true,
+    });
+    assert!(crate::inactive(&store, 7, 20 * 86_400).is_empty());
+}
+
+#[test]
+fn an_adapters_switch_flips_and_its_list_chooses() {
+    let (store, mut ui) = store_with_session();
+    let option = |key: &str, choices: &[(&str, &str)], default: &str| quill_model::AgentOption {
+        key: key.into(),
+        label: key.into(),
+        description: String::new(),
+        choices: choices
+            .iter()
+            .map(|(a, b)| ((*a).into(), (*b).into()))
+            .collect(),
+        default: default.into(),
+    };
+    ui.agents = vec![quill_model::AgentInfo {
+        id: "claude".into(),
+        name: "Claude Code".into(),
+        tested: vec![],
+        options: vec![
+            option("sandbox", &[], "false"),
+            option("style", &[("", "Default"), ("x", "X")], ""),
+        ],
+    }];
+    click(&store, &mut ui, view::SETTINGS_OPEN);
+    let saved = |intents: Vec<Intent>| match intents.as_slice() {
+        [Intent::SaveSettings(s)] => s.agent("claude").options,
+        other => panic!("{other:?}"),
+    };
+    let flipped = saved(click(&store, &mut ui, "set:agent:claude:opt.sandbox"));
+    assert_eq!(flipped.get("sandbox").map(String::as_str), Some("true"));
+    let chosen = saved(click(&store, &mut ui, "set:agent:claude:opt.style=x"));
+    assert_eq!(chosen.get("style").map(String::as_str), Some("x"));
+}
+
+#[test]
 fn each_session_keeps_its_model_and_effort() {
     let (mut store, mut ui) = store_with_session();
     store.apply(Event::SessionCreated {
@@ -1779,6 +1835,7 @@ fn the_sidebars_customize_and_the_persons_menu_open_settings() {
             id: "claude".into(),
             name: "Claude Code".into(),
             tested: vec![],
+            options: vec![],
         }],
     });
     ui.cwd = "/work".into();
@@ -1810,6 +1867,7 @@ fn customize_lists_and_changes_an_agents_plugins_marketplaces_and_skills() {
             id: "claude".into(),
             name: "Claude Code".into(),
             tested: vec![],
+            options: vec![],
         }],
     });
     // A project folder: plugins install for it, and skills' states are kept there.
@@ -2497,6 +2555,7 @@ fn settings_save_through_the_engine_and_shape_what_comes_next() {
                 id: "claude".into(),
                 name: "Claude Code".into(),
                 tested: vec!["2.1.310".into()],
+                options: vec![],
             }],
         });
     };

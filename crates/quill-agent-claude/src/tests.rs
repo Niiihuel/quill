@@ -325,6 +325,36 @@ fn skills_and_plugins_are_read_as_the_cli_lists_them() {
 }
 
 #[test]
+fn the_pages_options_reach_the_cli_as_its_own_settings() {
+    let claude = Claude::new();
+    let keys: Vec<_> = claude.options().into_iter().map(|o| o.key).collect();
+    assert_eq!(keys, ["output_style", "sandbox", "strict_sandbox"]);
+    let settings = |pairs: &[(&str, &str)]| {
+        let spec = SessionSpec {
+            options: pairs
+                .iter()
+                .map(|(k, v)| ((*k).into(), (*v).into()))
+                .collect(),
+            ..SessionSpec::default()
+        };
+        let args = claude.launch(&spec).args;
+        args.iter()
+            .position(|a| a == "--settings")
+            .map(|at| args[at + 1].clone())
+    };
+    assert_eq!(settings(&[]), None);
+    assert_eq!(settings(&[("output_style", "")]), None);
+    assert_eq!(
+        settings(&[("output_style", "Learning"), ("sandbox", "true")]).as_deref(),
+        Some(r#"{"outputStyle":"Learning","sandbox":{"enabled":true}}"#)
+    );
+    assert_eq!(
+        settings(&[("strict_sandbox", "true")]).as_deref(),
+        Some(r#"{"sandbox":{"allowUnsandboxedCommands":false,"enabled":true}}"#)
+    );
+}
+
+#[test]
 fn mcp_servers_are_listed_added_and_removed_with_the_clis_own_commands() {
     let claude = Claude::new();
     let listed = claude.servers(

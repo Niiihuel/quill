@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 static DARK: AtomicBool = AtomicBool::new(false);
 /// The conversation's text size and column, as Settings chose them; read every frame.
 static CHAT: AtomicU32 = AtomicU32::new(14);
-static WIDE: AtomicBool = AtomicBool::new(false);
+static WIDTH: AtomicU32 = AtomicU32::new(770);
 
 /// The conversation's words at Settings' "Transcript text size", as Desktop sizes them.
 pub fn set_text_size(size: quill_model::TextSize) {
@@ -27,18 +27,21 @@ pub fn chat() -> f32 {
     CHAT.load(Ordering::Relaxed) as f32
 }
 
-/// Settings' "Transcript width": Narrow is Desktop's column; Wide is inferred.
-pub fn set_wide(wide: bool) {
-    WIDE.store(wide, Ordering::Relaxed);
+/// Settings' "Transcript width", as Desktop's `--max-content-width` (3.6556.2): its 48rem
+/// column with room for the scrollbar, 960 and 1280.
+pub fn set_width(width: quill_model::Width) {
+    use quill_model::Width::*;
+    let px = match width {
+        Narrow => 770,
+        Medium => 960,
+        Wide => 1280,
+    };
+    WIDTH.store(px, Ordering::Relaxed);
 }
 
 /// The transcript and composer column, at most.
 pub fn column() -> f32 {
-    if WIDE.load(Ordering::Relaxed) {
-        960.0
-    } else {
-        770.0
-    }
+    WIDTH.load(Ordering::Relaxed) as f32
 }
 
 /// Draw dark from now on, or light again; the tooltips follow at once.

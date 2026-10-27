@@ -60,6 +60,8 @@ struct App {
     /// command each runs a link with, by scheme.
     editors: Arc<Mutex<Option<Vec<editors::Found>>>>,
     handlers: HashMap<String, Vec<String>>,
+    /// When Settings' "Archive inactive sessions" was last looked at.
+    archive_checked: Option<std::time::Instant>,
 }
 
 impl App {
@@ -669,6 +671,27 @@ impl eframe::App for App {
         self.ui.tick(&self.store);
         let due = self.ui.due();
         self.dispatch(due);
+        // Inactive sessions are put away every ten minutes, as Settings asks; not before it
+        // asks, which may come a moment after start.
+        if self.ui.settings.archive_after_days > 0
+            && self
+                .archive_checked
+                .is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(600))
+        {
+            self.archive_checked = Some(std::time::Instant::now());
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            let days = self.ui.settings.archive_after_days;
+            let archive = quill_ui::inactive(&self.store, days, now)
+                .into_iter()
+                .map(|session| quill_model::Intent::Archive {
+                    session,
+                    archived: true,
+                })
+                .collect();
+            self.dispatch(archive);
+        }
         self.tree
             .set_root(quill_ui::view(&self.store, &self.ui, window));
         self.tree.layout(window);
@@ -857,6 +880,9 @@ impl eframe::App for App {
                 if let Some(url) = id.strip_prefix(quill_ui::view::LINK_COPY) {
                     ctx.copy_text(url.to_owned());
                 }
+                // A page whose link opens on the computer, as Settings asks.
+                let web_out = quill_ui::view::link_url(id)
+                    .filter(|url| url.starts_with("http") && !self.ui.settings.links_in_browser);
                 let elsewhere = quill_ui::view::link_url(id)
                     .filter(|url| {
                         url.contains("://")
@@ -866,7 +892,11 @@ impl eframe::App for App {
                     .or_else(|| {
                         quill_ui::view::link_url(id).filter(|url| url.starts_with("mailto:"))
                     });
-                if let Some(url) = id.strip_prefix(quill_ui::view::LINK_EXTERNAL).or(elsewhere) {
+                if let Some(url) = id
+                    .strip_prefix(quill_ui::view::LINK_EXTERNAL)
+                    .or(elsewhere)
+                    .or(web_out)
+                {
                     open_external(url);
                 }
                 if let Some(code) = id.strip_prefix(quill_ui::view::COPY_CODE) {
@@ -1385,6 +1415,7 @@ fn main() -> eframe::Result {
                 browser_shown: None,
                 address: None,
                 fonts_attached: false,
+                archive_checked: None,
             }))
         }),
     );

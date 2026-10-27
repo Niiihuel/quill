@@ -1867,7 +1867,7 @@ impl Ui {
         }
         if let Event::Settings { settings, agents } = event {
             look::set_text_size(settings.text_size);
-            look::set_wide(settings.wide);
+            look::set_width(settings.width);
             self.settings = settings.clone();
             self.agents = agents.clone();
             if self.selected.is_none() {
@@ -2180,6 +2180,20 @@ fn update_action(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Int
             ui.marketplace_field = value.clone();
             let agent = id.strip_prefix(view::EXT_MKT_FIELD).unwrap_or_default();
             clicked(store, ui, &format!("ext:mkt-add:{agent}"))
+        }
+        UiAction::InputChanged { id, value }
+            if id.starts_with("set:agent:") && id.ends_with(":env") =>
+        {
+            let Some(agent) = id
+                .strip_prefix("set:agent:")
+                .and_then(|r| r.strip_suffix(":env"))
+            else {
+                return vec![];
+            };
+            let mut settings = ui.settings.clone();
+            settings.agents.entry(agent.to_owned()).or_default().env =
+                value.lines().map(str::to_owned).collect();
+            vec![Intent::SaveSettings(settings)]
         }
         UiAction::InputChanged { id, value } if id.starts_with("set:agent:") => {
             let Some(agent) = id
@@ -2779,7 +2793,13 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         let Some(session) = ui.selected.and_then(|s| store.session(s)) else {
             return vec![];
         };
-        if url.starts_with("http://") || url.starts_with("https://") {
+        let web = url.starts_with("http://") || url.starts_with("https://");
+        // Settings' "Open links in built-in browser" off: the host opens a clicked page on the
+        // computer; the menu's "Open in Browser" still opens it here.
+        if web && !ui.settings.links_in_browser && view::link_url(id).is_some() {
+            return vec![];
+        }
+        if web {
             ui.open_pane(Pane::Browser);
             let op = if session.browser.tabs.is_empty() {
                 BrowserOp::Open {
@@ -3798,11 +3818,18 @@ fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
             ("text_size", "small") => settings.text_size = TextSize::Small,
             ("text_size", "medium") => settings.text_size = TextSize::Medium,
             ("text_size", "large") => settings.text_size = TextSize::Large,
-            ("width", value) => settings.wide = value == "wide",
+            ("width", value) => {
+                settings.width = match value {
+                    "wide" => quill_model::Width::Wide,
+                    "medium" => quill_model::Width::Medium,
+                    _ => quill_model::Width::Narrow,
+                }
+            }
             ("motion", "system") => settings.motion = Motion::System,
             ("motion", "reduced") => settings.motion = Motion::Reduced,
             ("motion", "full") => settings.motion = Motion::Full,
             ("pr_kind", value) => settings.pr_draft = value == "draft",
+            ("archive", days) => settings.archive_after_days = days.parse().unwrap_or(0),
             ("browser_site_remove", site) => settings.browser_sites.retain(|s| s != site),
             ("browser_program", program) => {
                 settings.browser_program = (!program.is_empty()).then(|| program.to_owned())
@@ -3820,7 +3847,12 @@ fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
                     }
                     "effort" => entry.effort = value,
                     "mode" => entry.mode = value,
-                    _ => return None,
+                    _ => {
+                        let key = field.strip_prefix("opt.")?;
+                        entry
+                            .options
+                            .insert(key.to_owned(), value.unwrap_or_default());
+                    }
                 }
             }
         }
@@ -3831,6 +3863,7 @@ fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
         "attention" => settings.attention = !settings.attention,
         "login" => settings.open_at_login = !settings.open_at_login,
         "browser_native" => settings.browser_native = !settings.browser_native,
+        "links_in_browser" => settings.links_in_browser = !settings.links_in_browser,
         other => match other
             .strip_prefix("agent:")
             .and_then(|r| r.strip_suffix(":unsafe"))
@@ -3838,6 +3871,16 @@ fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
             Some(agent) => {
                 let entry = settings.agents.entry(agent.to_owned()).or_default();
                 entry.allow_unsafe = !entry.allow_unsafe;
+            }
+            // An adapter's switch flips; its list opens, below.
+            None if agent_switch(ui, other).is_some() => {
+                let (agent, key, default) = agent_switch(ui, other)?;
+                let entry = settings.agents.entry(agent).or_default();
+                let on = entry
+                    .options
+                    .get(&key)
+                    .map_or(default == "true", |v| v == "true");
+                entry.options.insert(key, (!on).to_string());
             }
             // A select's trigger opens its list, or closes it.
             None => {
@@ -3848,6 +3891,41 @@ fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
         },
     }
     Some(vec![Intent::SaveSettings(settings)])
+}
+
+/// The sessions with nothing new for `days` days at `now` (seconds since 1970), which
+/// Settings' "Archive inactive sessions" puts away: never a pinned one, one at work, or one
+/// whose messages carry no time.
+pub fn inactive(store: &Store, days: u32, now: u64) -> Vec<SessionId> {
+    if days == 0 {
+        return vec![];
+    }
+    let limit = now.saturating_sub(u64::from(days) * 86_400);
+    (store.sessions.iter())
+        .filter(|s| !s.archived && !s.pinned && !s.working())
+        .filter(|s| {
+            let last = (s.items.iter())
+                .filter_map(|i| match i {
+                    Item::User { at, .. } | Item::Assistant { at, .. } => *at,
+                    _ => None,
+                })
+                .max();
+            last.is_some_and(|last| last < limit)
+        })
+        .map(|s| s.id)
+        .collect()
+}
+
+/// `agent:{agent}:opt.{key}` when it names an adapter's switch: the agent, the key and its
+/// default.
+fn agent_switch(ui: &Ui, name: &str) -> Option<(String, String, String)> {
+    let (agent, key) = name.strip_prefix("agent:")?.split_once(":opt.")?;
+    let option = (ui.agents.iter())
+        .find(|a| a.id == agent)?
+        .options
+        .iter()
+        .find(|o| o.key == key && o.choices.is_empty())?;
+    Some((agent.to_owned(), key.to_owned(), option.default.clone()))
 }
 
 /// The actions under a reply [3.6556.2/c96d752d0 `KA`]: copy, fork from it, and read it

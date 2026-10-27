@@ -7594,8 +7594,12 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
                         setting_select(
                             ui,
                             "width",
-                            &choices(&[("narrow", "Narrow"), ("wide", "Wide")]),
-                            if s.wide { "wide" } else { "narrow" },
+                            &choices(&[("narrow", "Narrow"), ("medium", "Medium"), ("wide", "Wide")]),
+                            match s.width {
+                                quill_model::Width::Narrow => "narrow",
+                                quill_model::Width::Medium => "medium",
+                                quill_model::Width::Wide => "wide",
+                            },
                             palette,
                         ),
                     ),
@@ -7630,6 +7634,18 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
                             "Draw attention",
                             "Ask the desktop to flag quill when a session finishes or needs you while quill isn't in front.",
                             setting_switch("attention", s.attention, palette),
+                        ),
+                        // Desktop's own words and choices (3.6556.2 registry `cc7db14f1`).
+                        setting(
+                            "Archive inactive sessions",
+                            "Automatically archive sessions after a period of no activity. Pinned sessions stay.",
+                            setting_select(
+                                ui,
+                                "archive",
+                                &choices(&[("0", "Never"), ("1", "After 1 day"), ("7", "After 7 days"), ("30", "After 30 days")]),
+                                &s.archive_after_days.to_string(),
+                                palette,
+                            ),
                         ),
                     ],
                 ),
@@ -7700,6 +7716,12 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
                         "Pages draw in quill's window as they would in Chromium's, with no delay. \
                          From quill's next start.",
                         setting_switch("browser_native", s.browser_native, palette),
+                    ),
+                    // Desktop's "Open links in built-in browser" (3.6556.2 `c71860c77`).
+                    setting(
+                        "Open links in built-in browser",
+                        "A link in a conversation opens in the session's browser. Off, it opens in this computer's default browser.",
+                        setting_switch("links_in_browser", s.links_in_browser, palette),
                     ),
                 ],
             ),
@@ -8892,6 +8914,37 @@ fn agent_page(
         }
     };
     groups.push(("New sessions".to_owned(), defaults));
+    // What the agent's adapter declares as its own, then the environment its sessions get.
+    let mut own: Vec<Setting> = (agent.options.iter())
+        .map(|option| {
+            let value = chosen
+                .options
+                .get(&option.key)
+                .cloned()
+                .unwrap_or_else(|| option.default.clone());
+            let name = format!("agent:{mine}:opt.{}", option.key);
+            let control = if option.choices.is_empty() {
+                setting_switch(&name, value == "true", palette)
+            } else {
+                setting_select(ui, &name, &option.choices, &value, palette)
+            };
+            setting(&option.label, &option.description, control)
+        })
+        .collect();
+    own.push(setting(
+        "Environment variables",
+        "KEY=value, one a line. Every new session of this agent starts with them.",
+        Element::text_area(
+            format!("set:agent:{mine}:env"),
+            chosen.env.join("\n"),
+            "KEY=value",
+        )
+        .size(Some(260.0), Some(72.0))
+        .background(look::palette().raised)
+        .border(look::settings_field_edge(), 1.0)
+        .radius(8.0),
+    ));
+    groups.push(("Sessions".to_owned(), own));
     SettingsPage {
         key: format!("agent:{mine}"),
         title: agent.name.clone(),

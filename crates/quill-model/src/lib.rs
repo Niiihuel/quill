@@ -4,10 +4,10 @@
 use std::path::PathBuf;
 
 pub use quill_agent::{
-    AgentCapabilities, AgentEvent, ConfiguredServer, ContextCategory, ContextKind, ContextUsage,
-    Decision, ExtensionOp, Extensions, FileChange, Marketplace, McpServer, McpSource, McpStatus,
-    McpTool, ModelInfo, NewServer, PlanLimits, Plugin, PluginOffer, Skill, Suggestion, TaskUsage,
-    ToolContent, Usage, UsageWindow,
+    AgentCapabilities, AgentEvent, AgentOption, ConfiguredServer, ContextCategory, ContextKind,
+    ContextUsage, Decision, ExtensionOp, Extensions, FileChange, Marketplace, McpServer, McpSource,
+    McpStatus, McpTool, ModelInfo, NewServer, PlanLimits, Plugin, PluginOffer, Skill, Suggestion,
+    TaskUsage, ToolContent, Usage, UsageWindow,
 };
 
 /// quill's own id of a session.
@@ -85,8 +85,15 @@ pub struct Settings {
     pub theme: Theme,
     /// The size of the conversation's words.
     pub text_size: TextSize,
-    /// The conversation in a wider column.
+    /// How wide the conversation and the message box get, Desktop's "Transcript width".
+    pub width: Width,
+    /// The old "wide", read once into `width` (Medium, which it was).
+    #[serde(skip_serializing)]
     pub wide: bool,
+    /// A link of the conversation opens in the session's browser; off, in the computer's own.
+    pub links_in_browser: bool,
+    /// Sessions with nothing new for this many days are archived; 0 never.
+    pub archive_after_days: u32,
     pub motion: Motion,
     /// Keep the computer from idle sleep while an agent works.
     pub keep_awake: bool,
@@ -118,7 +125,10 @@ impl Default for Settings {
         Self {
             theme: Theme::System,
             text_size: TextSize::Medium,
+            width: Width::Narrow,
             wide: false,
+            links_in_browser: true,
+            archive_after_days: 0,
             motion: Motion::System,
             // Desktop keeps the computer awake by default and does not flash the app icon
             //; quill has no notifications yet, so drawing attention is
@@ -154,6 +164,21 @@ pub struct AgentSettings {
     pub mode: Option<String>,
     /// Offer the agent's modes that skip every approval.
     pub allow_unsafe: bool,
+    /// The adapter's own options as chosen, by key; one not chosen takes its default.
+    pub options: std::collections::BTreeMap<String, String>,
+    /// `KEY=value`s every session of the agent starts with, as Desktop's "Environment
+    /// variables".
+    pub env: Vec<String>,
+}
+
+/// Desktop's "Transcript width": its 48rem, 960 px and 1280 px columns.
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Width {
+    #[default]
+    Narrow,
+    Medium,
+    Wide,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -190,6 +215,9 @@ pub struct AgentInfo {
     pub id: String,
     pub name: String,
     pub tested: Vec<String>,
+    /// Its own settings, as its adapter declares them.
+    #[serde(default)]
+    pub options: Vec<AgentOption>,
 }
 
 /// What the UI asks of the engine.

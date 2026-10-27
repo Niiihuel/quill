@@ -371,6 +371,7 @@ impl Router {
                 id: a.id().to_owned(),
                 name: a.name().to_owned(),
                 tested: a.tested().iter().map(|v| (*v).to_owned()).collect(),
+                options: a.options(),
             })
             .collect();
         (self.ui)(Event::Settings {
@@ -570,7 +571,7 @@ impl Router {
             };
             let (tx, rx) = unbounded_channel();
             let program = self.program(&restored.new.agent);
-            let allow_unsafe = self.settings.agent(&restored.new.agent).allow_unsafe;
+            let chosen = self.settings.agent(&restored.new.agent);
             let mut actor = Actor::new(
                 session,
                 restored.new,
@@ -587,12 +588,14 @@ impl Router {
                 actor.spec.fork = actor.spec.resume.is_some();
                 actor.spec.resume_at = at.filter(|_| actor.spec.fork);
             }
-            actor.spec.allow_unsafe = allow_unsafe;
+            actor.spec.allow_unsafe = chosen.allow_unsafe;
+            actor.spec.options = chosen.options.clone();
             actor.env = self
                 .bridge
                 .as_ref()
                 .map(|b| b.env(session))
                 .unwrap_or_default();
+            actor.env.extend(env_pairs(&chosen.env));
             // A fork that has said nothing yet still continues where it was forked from.
             if let (None, Some((from, at))) = (&actor.spec.resume, restored.forked) {
                 let mut ids = self.agent_ids.lock().unwrap();
@@ -667,10 +670,12 @@ impl Router {
         });
         let (tx, rx) = unbounded_channel();
         let program = self.program(&new.agent);
-        let allow_unsafe = self.settings.agent(&new.agent).allow_unsafe;
+        let chosen = self.settings.agent(&new.agent);
         let mut actor = Actor::new(id, new, adapter, program, tx.clone(), self.sink.clone());
-        actor.spec.allow_unsafe = allow_unsafe;
+        actor.spec.allow_unsafe = chosen.allow_unsafe;
+        actor.spec.options = chosen.options.clone();
         actor.env = self.bridge.as_ref().map(|b| b.env(id)).unwrap_or_default();
+        actor.env.extend(env_pairs(&chosen.env));
         actor.shadow_root = self.config.snapshots.clone();
         actor.route = Some(self.internal.clone());
         if let Some((from, at)) = fork_of {
@@ -1671,6 +1676,7 @@ impl Actor {
             fork: false,
             resume_at: None,
             allow_unsafe: false,
+            options: Default::default(),
         };
         Self {
             id,
@@ -2067,10 +2073,26 @@ impl Actor {
 /// The message that tells a session what the sessions it started said, in quill's words for
 /// what Desktop sends (3.6556.2 `<side-sessions-event>`).
 /// The settings kept at `path`; the defaults when there is none or it does not read.
+/// Settings' "Environment variables", `KEY=value` a line, as a process's pairs; a line
+/// without a name is let go.
+fn env_pairs(lines: &[String]) -> Vec<(String, String)> {
+    (lines.iter())
+        .filter_map(|line| line.split_once('='))
+        .map(|(key, value)| (key.trim().to_owned(), value.to_owned()))
+        .filter(|(key, _)| !key.is_empty() && !key.contains(char::is_whitespace))
+        .collect()
+}
+
 fn read_settings(path: Option<&std::path::Path>) -> quill_model::Settings {
-    path.and_then(|p| std::fs::read(p).ok())
+    let mut settings: quill_model::Settings = path
+        .and_then(|p| std::fs::read(p).ok())
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // The old "wide" column was 960 px, Desktop's Medium.
+    if std::mem::take(&mut settings.wide) && settings.width == quill_model::Width::Narrow {
+        settings.width = quill_model::Width::Medium;
+    }
+    settings
 }
 
 /// Keep `settings` at `path`, whole or not at all: written beside it, then moved over it.
@@ -2327,7 +2349,7 @@ mod tests {
         let path = dir.join("settings.json");
         assert_eq!(read_settings(Some(&path)), quill_model::Settings::default());
         let mut settings = quill_model::Settings {
-            wide: true,
+            width: quill_model::Width::Wide,
             ..Default::default()
         };
         settings.agents.insert(
@@ -2339,8 +2361,8 @@ mod tests {
         );
         write_settings(Some(&path), &settings).unwrap();
         assert_eq!(read_settings(Some(&path)), settings);
-        std::fs::write(&path, r#"{"wide": true, "someday": 1}"#).unwrap();
-        assert!(read_settings(Some(&path)).wide);
+        std::fs::write(&path, r#"{"width": "wide", "someday": 1}"#).unwrap();
+        assert_eq!(read_settings(Some(&path)).width, quill_model::Width::Wide);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -2383,6 +2405,31 @@ mod tests {
             at: None,
         });
         assert_eq!(Restored::from(&sent).unwrap().rewound, None);
+    }
+
+    #[test]
+    fn the_old_wide_column_reads_as_medium_and_env_lines_as_pairs() {
+        let path = std::env::temp_dir().join(format!("quill-wide-{}.json", std::process::id()));
+        std::fs::write(&path, r#"{"wide": true}"#).unwrap();
+        let settings = read_settings(Some(&path));
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            (settings.width, settings.wide),
+            (quill_model::Width::Medium, false)
+        );
+        let lines = [
+            "A=1".to_owned(),
+            "B = two".into(),
+            "no pair".into(),
+            "=x".into(),
+        ];
+        assert_eq!(
+            env_pairs(&lines),
+            [
+                ("A".to_owned(), "1".to_owned()),
+                ("B".into(), " two".into())
+            ]
+        );
     }
 
     #[test]
