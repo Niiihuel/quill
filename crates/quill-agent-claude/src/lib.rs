@@ -620,10 +620,27 @@ impl AgentAdapter for Claude {
                 request,
                 text,
                 priority,
+                images,
             } => {
+                // The images come first, then the text, as Desktop sends them.
+                let mut content: Vec<Value> = images
+                    .iter()
+                    .map(|image| {
+                        use base64::Engine;
+                        json!({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": image.media_type,
+                                "data": base64::engine::general_purpose::STANDARD.encode(&image.data),
+                            },
+                        })
+                    })
+                    .collect();
+                content.push(json!({ "type": "text", "text": text }));
                 let mut msg = json!({
                     "type": "user", "uuid": request, "session_id": "", "parent_tool_use_id": null,
-                    "message": { "role": "user", "content": [{ "type": "text", "text": text }] },
+                    "message": { "role": "user", "content": content },
                 });
                 if let Some(priority) = priority {
                     msg["priority"] = json!(priority);

@@ -10,3 +10,5 @@ publish = false
 [dependencies]
 quill-agent = { path = "../quill-agent" }
 serde_json.workspace = true
+# The images of a prompt, base64-encoded in the user message (as quill-browser does).
+base64 = "0.22"

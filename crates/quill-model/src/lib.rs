@@ -318,6 +318,10 @@ pub enum Intent {
         /// is told which session each is, while the stored text stays as typed.
         #[serde(default)]
         mentions: Vec<(SessionId, String)>,
+        /// Image files the message attaches (pasted ones saved under quill's data folder,
+        /// or picked and dropped ones where they are); the engine reads and sizes them.
+        #[serde(default)]
+        images: Vec<PathBuf>,
     },
     Decide {
         session: SessionId,
@@ -776,6 +780,14 @@ pub enum Event {
         /// When it was sent, in seconds since 1970; older logs lack it.
         #[serde(default)]
         at: Option<u64>,
+        /// The image files it attached, as sent (before any resizing).
+        #[serde(default)]
+        images: Vec<PathBuf>,
+    },
+    /// Something the person should know about a message, not stored: an image left out.
+    Notice {
+        session: SessionId,
+        text: String,
     },
     /// Something the agent said, tied to the request it answers when known.
     Agent {
@@ -1002,6 +1014,7 @@ impl Event {
             Event::SessionCreated { session, .. }
             | Event::Status { session, .. }
             | Event::Queued { session, .. }
+            | Event::Notice { session, .. }
             | Event::Agent { session, .. }
             | Event::Changes { session, .. }
             | Event::Rewound { session, .. }

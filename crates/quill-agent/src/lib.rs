@@ -543,6 +543,14 @@ pub enum Decision {
     Answer(Value),
 }
 
+/// An image a prompt carries, already sized for the agent (vendor-neutral: each adapter
+/// writes it in its own protocol).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PromptImage {
+    pub media_type: String,
+    pub data: Vec<u8>,
+}
+
 /// Something quill asks of the agent.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum AgentCommand {
@@ -551,6 +559,8 @@ pub enum AgentCommand {
         request: String,
         text: String,
         priority: Option<String>,
+        #[serde(default)]
+        images: Vec<PromptImage>,
     },
     Interrupt,
     Decide {

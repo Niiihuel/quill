@@ -2,6 +2,7 @@
 //! plugins and skills; docs/engine.md §11.4).
 
 use super::*;
+use quill_agent::PromptImage;
 use std::path::Path;
 
 /// Feed a fixture through a fresh adapter: lines quill sent become the same commands
@@ -987,4 +988,46 @@ fn the_browser_server_lists_its_tools_and_its_calls_never_ask() {
     assert!(allowed.events.is_empty());
     let reply: Value = serde_json::from_str(&allowed.replies[0]).unwrap();
     assert_eq!(reply["response"]["response"]["behavior"], "allow");
+}
+
+#[test]
+fn a_prompt_with_an_image_sends_the_image_before_the_text() {
+    let mut claude = Claude::new();
+    let image = PromptImage {
+        media_type: "image/png".into(),
+        data: b"\x89PNG".to_vec(),
+    };
+    let line = &claude.encode(AgentCommand::Prompt {
+        request: "r1".into(),
+        text: "look".into(),
+        priority: None,
+        images: vec![image],
+    })[0];
+    let msg: Value = serde_json::from_str(line).unwrap();
+    assert_eq!(
+        msg["message"]["content"],
+        json!([
+            {
+                "type": "image",
+                "source": { "type": "base64", "media_type": "image/png", "data": "iVBORw==" },
+            },
+            { "type": "text", "text": "look" },
+        ])
+    );
+}
+
+#[test]
+fn a_prompt_without_images_keeps_one_text_block() {
+    let mut claude = Claude::new();
+    let line = &claude.encode(AgentCommand::Prompt {
+        request: "r1".into(),
+        text: "look".into(),
+        priority: None,
+        images: vec![],
+    })[0];
+    let msg: Value = serde_json::from_str(line).unwrap();
+    assert_eq!(
+        msg["message"]["content"],
+        json!([{ "type": "text", "text": "look" }])
+    );
 }

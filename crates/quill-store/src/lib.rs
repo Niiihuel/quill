@@ -158,6 +158,7 @@ mod tests {
                     request: "r".into(),
                     text: "hi".into(),
                     at: None,
+                    images: vec![],
                 },
             )
             .unwrap();
@@ -249,6 +250,7 @@ mod tests {
                         request: "r".into(),
                         text: format!("hi {session}"),
                         at: None,
+                        images: vec![],
                     },
                 )
                 .unwrap();

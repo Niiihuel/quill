@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 
 mod bridge;
+mod images;
 mod registry;
 mod servers;
 
@@ -814,7 +815,7 @@ impl Router {
             }
             _ => proposal.prompt.clone(),
         };
-        self.tell(child, Input::Send(brief, vec![]));
+        self.tell(child, Input::Send(brief, vec![], vec![]));
         Some(child)
     }
 
@@ -898,7 +899,8 @@ impl Router {
                 session,
                 text,
                 mentions,
-            } => (session, Input::Send(text, mentions)),
+                images,
+            } => (session, Input::Send(text, mentions, images)),
             Intent::Decide {
                 session,
                 permission,
@@ -1275,7 +1277,7 @@ impl Router {
                     )
                     .await;
                 if let Some(side) = side {
-                    self.tell(side, Input::Send(text, vec![]));
+                    self.tell(side, Input::Send(text, vec![], vec![]));
                 }
                 return;
             }
@@ -1342,7 +1344,10 @@ impl Router {
                 None => return,
             },
             ProposalAnswer::Here => {
-                self.tell(session, Input::Send(proposal.prompt.clone(), vec![]));
+                self.tell(
+                    session,
+                    Input::Send(proposal.prompt.clone(), vec![], vec![]),
+                );
                 ProposalOutcome::Kept
             }
             ProposalAnswer::Dismiss => ProposalOutcome::Dismissed,
@@ -1690,7 +1695,7 @@ impl Router {
                     session: child,
                     from: session,
                 });
-                self.tell(child, Input::Send(message, vec![]));
+                self.tell(child, Input::Send(message, vec![], vec![]));
                 (format!("Passed on to \u{201c}{name}\u{201d}."), false)
             }
             other => (format!("quill has no tool named {other}."), true),
@@ -1794,8 +1799,8 @@ impl Restored {
 
 /// What reaches a session's actor: the UI's wishes and its process's output.
 enum Input {
-    /// The message and the other sessions it names ([`mention_note`]).
-    Send(String, Vec<(SessionId, String)>),
+    /// The message, the other sessions it names ([`mention_note`]) and its image files.
+    Send(String, Vec<(SessionId, String)>, Vec<PathBuf>),
     /// What sessions it started said: sent as one message that begins a turn.
     Report(Vec<quill_model::Report>),
     Rewind(RequestId),
@@ -1903,6 +1908,7 @@ impl Actor {
         text: String,
         reports: Option<Vec<quill_model::Report>>,
         mentions: &[(SessionId, String)],
+        images: Vec<PathBuf>,
     ) {
         if let Err(error) = self.ensure_running().await {
             self.status(SessionStatus::Failed(error));
@@ -1935,14 +1941,30 @@ impl Actor {
                     .duration_since(std::time::UNIX_EPOCH)
                     .ok()
                     .map(|d| d.as_secs()),
+                images: images.clone(),
             },
         });
+        // Read and sized off the actor's thread, after the message is stored as sent.
+        let (images, notices) = if images.is_empty() {
+            (vec![], vec![])
+        } else {
+            tokio::task::spawn_blocking(move || images::attach(&images))
+                .await
+                .unwrap_or_default()
+        };
+        for notice in notices {
+            (self.sink)(Event::Notice {
+                session: self.id,
+                text: notice.to_owned(),
+            });
+        }
         // The agent gets the note too; the stored message stays as the person wrote it.
         let text = format!("{text}{}", mention_note(mentions));
         self.write(AgentCommand::Prompt {
             request,
             text,
             priority: None,
+            images,
         })
         .await;
         self.busy = true;
@@ -2091,10 +2113,12 @@ impl Actor {
                     stopped = Some(done);
                     break;
                 }
-                Input::Send(text, mentions) => self.prompt(text, None, &mentions).await,
+                Input::Send(text, mentions, images) => {
+                    self.prompt(text, None, &mentions, images).await
+                }
                 Input::Report(reports) => {
                     let text = report_text(&reports);
-                    self.prompt(text, Some(reports), &[]).await
+                    self.prompt(text, Some(reports), &[], vec![]).await
                 }
                 Input::Rewind(request) => self.rewind(request).await,
                 Input::RewindTo(request, at) => self.rewind_to(request, at).await,
@@ -2887,6 +2911,7 @@ mod tests {
             request: "r3".into(),
             text: "again".into(),
             at: None,
+            images: vec![],
         });
         assert_eq!(Restored::from(&sent).unwrap().rewound, None);
     }
@@ -3066,6 +3091,7 @@ mod tests {
                 request: n.to_string(),
                 text: body,
                 at: None,
+                images: vec![],
             },
             _ => Event::Agent {
                 session: 2,

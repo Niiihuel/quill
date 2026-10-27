@@ -20,6 +20,8 @@ quill-files = { path = "../quill-files" }
 serde_json.workspace = true
 # Processes, pipes, one actor per session, and the $BROWSER bridge's unix socket.
 tokio = { version = "1", features = ["rt-multi-thread", "process", "io-util", "sync", "macros", "time", "net"] }
+# Sizing the images a message attaches: decode, resize, and JPEG (PNG, JPEG, GIF, WebP only).
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 # Request ids, as the agent receives them for each prompt.
 uuid = { version = "1", features = ["v4"] }
 # Stopping a dev server's whole process group (kill with a negative pid).

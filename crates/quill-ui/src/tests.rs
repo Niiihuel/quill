@@ -22,6 +22,7 @@ fn store_with_session() -> (Store, Ui) {
         request: "r1".into(),
         text: "Fix the bug".into(),
         at: None,
+        images: vec![],
     });
     let mut ui = Ui::new("/work".into());
     ui.selected = Some(1);
@@ -224,6 +225,7 @@ fn the_first_message_creates_a_session_then_sends_it() {
                 session: 7,
                 text: "hi".into(),
                 mentions: vec![],
+                images: vec![],
             },
             Intent::WorkingTree { session: 7 }
         ]
@@ -1344,6 +1346,7 @@ fn inactive_sessions_are_the_ones_quiet_for_the_days_chosen() {
         request: "r2".into(),
         text: "later".into(),
         at: Some(10 * 86_400),
+        images: vec![],
     });
     assert!(crate::inactive(&store, 0, 100 * 86_400).is_empty());
     assert_eq!(crate::inactive(&store, 7, 20 * 86_400), [1]);
@@ -1553,6 +1556,7 @@ fn a_message_rewinds_and_forks_from_the_reply_before_it() {
         request: "r2".into(),
         text: "And now?".into(),
         at: Some(0),
+        images: vec![],
     });
     assert_eq!(copied_text(&store, "copy:1:2").as_deref(), Some("And now?"));
     // The first message has no reply before it to fork from; it rewinds to the start.
@@ -1616,6 +1620,7 @@ fn a_rewind_is_undone_until_the_next_message() {
         request: "r2".into(),
         text: "And now?".into(),
         at: Some(0),
+        images: vec![],
     });
     agent(
         &mut store,
@@ -1656,6 +1661,7 @@ fn a_rewind_is_undone_until_the_next_message() {
         request: "r3".into(),
         text: "Instead".into(),
         at: Some(0),
+        images: vec![],
     });
     assert!(store.session(1).unwrap().rewound.is_empty());
     assert_eq!(click(&store, &mut ui, "rewind:undo"), vec![]);
@@ -2611,6 +2617,7 @@ fn a_passed_on_message_says_so_on_both_sides_and_new_work_is_marked() {
         request: "q".into(),
         text: "Monday".into(),
         at: None,
+        images: vec![],
     });
     assert!(matches!(
         store.session(2).unwrap().items.as_slice(),
@@ -3700,6 +3707,7 @@ fn named(store: &mut Store, session: u64, title: &str, cwd: &str) {
         request: format!("r{session}"),
         text: "hi".into(),
         at: None,
+        images: vec![],
     });
 }
 
@@ -3926,6 +3934,7 @@ fn a_sent_session_mention_goes_to_the_engine_numbered_and_not_into_the_text() {
             session: 1,
             text: typed.into(),
             mentions: vec![(3, "Billing".to_owned()), (2, "Login page".to_owned())],
+            images: vec![],
         }]
     );
     assert!(ui.mentioned_sessions.is_empty());

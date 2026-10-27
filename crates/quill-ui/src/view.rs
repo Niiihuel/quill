@@ -3404,6 +3404,7 @@ fn item(
     palette: ComponentPalette,
 ) -> Element {
     match item {
+        Item::Notice { text } => muted(text.clone()),
         // Above a message another session passed on, as Desktop's "Message forwarded from
         // project chat"; the name opens that session.
         Item::Forwarded { from } => Element::row(vec![

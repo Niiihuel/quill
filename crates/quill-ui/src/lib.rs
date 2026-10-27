@@ -65,6 +65,8 @@ pub enum Item {
         cost: Option<f64>,
         error: Option<String>,
     },
+    /// Something quill left out of a message, shown where the message is.
+    Notice { text: String },
     /// What one request changed in the folder, and whether it was rewound since.
     Changes {
         request: RequestId,
@@ -299,6 +301,7 @@ impl Store {
                 request,
                 text,
                 at,
+                ..
             } => {
                 if let Some(s) = self.session_mut(session) {
                     if s.title.is_empty() {
@@ -312,6 +315,11 @@ impl Store {
                     }
                     s.rewound.clear();
                     s.items.push(Item::User { request, text, at });
+                }
+            }
+            Event::Notice { session, text } => {
+                if let Some(s) = self.session_mut(session) {
+                    s.items.push(Item::Notice { text });
                 }
             }
             Event::Agent {
@@ -1232,6 +1240,7 @@ fn session_clicked(store: &Store, ui: &mut Ui, id: &str) -> Option<Vec<Intent>> 
                 session: s.id,
                 text: pr_request(ui.settings.pr_draft, ui.settings.branch_prefix()),
                 mentions: vec![],
+                images: vec![],
             }],
             _ => vec![],
         });
@@ -2138,6 +2147,7 @@ impl Ui {
                         session: *session,
                         text,
                         mentions,
+                        images: vec![],
                     },
                     Intent::WorkingTree { session: *session },
                 ];
@@ -2411,6 +2421,7 @@ fn update_action(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Int
                     session,
                     text,
                     mentions: vec![],
+                    images: vec![],
                 }],
                 _ => vec![],
             }
@@ -2449,6 +2460,7 @@ fn update_action(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Int
                     session,
                     text,
                     mentions,
+                    images: vec![],
                 }],
                 None => {
                     ui.waiting = Some((text, mentions));

@@ -75,6 +75,48 @@ fn until(rx: &Receiver<Event>, mut done: impl FnMut(&Event) -> bool) -> Vec<Even
 }
 
 #[test]
+fn a_message_keeps_its_images_and_a_text_file_among_them_is_left_out() {
+    let (engine, rx) = engine();
+    let dir = workdir("simple");
+    engine.send(Intent::NewSession(NewSession {
+        agent: "claude".into(),
+        cwd: dir.clone(),
+        model: None,
+        effort: None,
+        mode: None,
+    }));
+    let picture = dir.join("picture.png");
+    image::RgbImage::new(4, 4).save(&picture).unwrap();
+    let notes = dir.join("notes.txt");
+    std::fs::write(&notes, "words").unwrap();
+    engine.send(Intent::Send {
+        session: 1,
+        text: "look".into(),
+        mentions: vec![],
+        images: vec![picture.clone(), notes.clone()],
+    });
+    let events = until(&rx, |e| {
+        matches!(
+            e,
+            Event::Agent {
+                event: AgentEvent::TurnFinished { .. },
+                ..
+            }
+        )
+    });
+    let queued = events.iter().find_map(|e| match e {
+        Event::Queued { images, .. } => Some(images.clone()),
+        _ => None,
+    });
+    assert_eq!(queued, Some(vec![picture, notes]));
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::Notice { text, .. }
+            if text == "Only PNG, JPEG, GIF, and WebP images are supported."
+    )));
+}
+
+#[test]
 fn sessions_stream_turns_and_wait_for_decisions() {
     let (engine, rx) = engine();
 
@@ -83,6 +125,7 @@ fn sessions_stream_turns_and_wait_for_decisions() {
         session: 1,
         text: "Reply with exactly the word: ok".into(),
         mentions: vec![],
+        images: vec![],
     });
     let events = until(&rx, |e| {
         matches!(
@@ -131,6 +174,7 @@ fn sessions_stream_turns_and_wait_for_decisions() {
         session: 2,
         text: "Use the Bash tool to run exactly: touch denied.txt".into(),
         mentions: vec![],
+        images: vec![],
     });
     let events = until(&rx, |e| {
         matches!(
@@ -218,6 +262,7 @@ fn a_kept_session_comes_back_and_continues() {
         session: 1,
         text: "Reply with exactly the word: ok".into(),
         mentions: vec![],
+        images: vec![],
     });
     until(&rx, |e| {
         matches!(
@@ -266,6 +311,7 @@ fn a_kept_session_comes_back_and_continues() {
         session: 1,
         text: "again".into(),
         mentions: vec![],
+        images: vec![],
     });
     until(&rx, |e| {
         matches!(
@@ -308,6 +354,7 @@ fn a_request_is_attributed_and_its_undo_puts_files_back() {
         session: 1,
         text: "Create rewind.txt containing the line one.".into(),
         mentions: vec![],
+        images: vec![],
     });
 
     let events = until(&rx, |e| matches!(e, Event::Changes { .. }));
@@ -361,6 +408,7 @@ fn a_name_and_a_pin_are_kept_and_a_deleted_session_is_gone() {
         session: 1,
         text: "Reply with exactly the word: ok".into(),
         mentions: vec![],
+        images: vec![],
     });
     until(&rx, |e| {
         matches!(
@@ -409,6 +457,7 @@ fn a_name_and_a_pin_are_kept_and_a_deleted_session_is_gone() {
         session: 2,
         text: "again".into(),
         mentions: vec![],
+        images: vec![],
     });
     until(&rx, |e| {
         matches!(
@@ -443,6 +492,7 @@ fn a_name_and_a_pin_are_kept_and_a_deleted_session_is_gone() {
         session: 1,
         text: "again".into(),
         mentions: vec![],
+        images: vec![],
     });
     engine.send(Intent::Delete { session: 1 });
     until(&rx, |e| matches!(e, Event::Deleted { session: 1 }));
@@ -472,6 +522,7 @@ fn a_proposed_task_starts_a_linked_session_that_reports_back() {
         session: 1,
         text: "Propose a README task".into(),
         mentions: vec![],
+        images: vec![],
     });
     // The agent's start_session call becomes a proposal; nothing runs yet.
     let events = until(&rx, |e| matches!(e, Event::Proposed { session: 1, .. }));
@@ -531,6 +582,7 @@ fn a_side_question_forks_the_session_beside_it() {
         session: 1,
         text: "Reply with exactly the word: ok".into(),
         mentions: vec![],
+        images: vec![],
     });
     until(&rx, |e| {
         matches!(
