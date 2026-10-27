@@ -6491,15 +6491,17 @@ fn effort_menu(store: &Store, ui: &Ui) -> Element {
         .clip_children()
         .size(Some(width), Some(24.0));
     // Held, the thumb grows a little, as Desktop's does.
+    // 21 wide on a 20 px travel: half a pixel over each end, so at a fractional scale the
+    // track's last column does not show beside it.
     let thumb = at_x(
         thumb_x,
-        20.0,
+        21.0,
         28.0,
         Element::spacer()
             .background(limn::Color::WHITE)
             .border(look::slider_thumb_edge(), 1.0)
             .radius(6.0)
-            .size(Some(20.0), Some(24.0))
+            .size(Some(21.0), Some(24.0))
             .animate_scale_about(
                 "effort:thumb",
                 if ui.effort_dragging { 1.12 } else { 1.0 },
