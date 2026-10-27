@@ -685,9 +685,6 @@ fn terminal_pane(
     Element::column(vec![header, body.flex(1.0)]).size(Some(width), Some(height))
 }
 
-/// The session's browser [notes, docs/browser.md]: its tabs over a toolbar of back,
-/// forward, reload and the address, then the page itself, which takes the pointer and the
-/// keys while it has the focus. Desktop's texts, less the agent's name.
 /// The Files pane, as Desktop's file tile [2.9939.4 `cccc2cf0a` `Ig`]: the tree's toggle and
 /// the open files' tabs over the tree and the file on screen. Narrower than the two side by
 /// side, the tree takes the pane while it shows, as Desktop's does over its tabs.
@@ -710,15 +707,25 @@ fn files_pane(ui: &Ui, width: f32, height: f32, palette: ComponentPalette) -> El
         None,
     );
     let tools = pane_tools(Pane::Files, ui, palette);
-    let room = width - 12.0 - 32.0 - tools.len() as f32 * 32.0 - 16.0;
+    // What pane_header leaves the tabs: its 12 and 4 at the ends, its 8 between children,
+    // the tools' 28, and the toggle with its 6.
+    let n = tools.len() as f32;
+    let room = (width - 16.0 - (3.0 + n) * 8.0 - n * 28.0 - 24.0 - 6.0).max(0.0);
+    let count = pane.tabs.len().max(1) as f32;
+    let each = ((room - (count - 1.0) * 4.0) / count).clamp(64.0, 180.0);
     let tabs: Vec<Element> = (pane.tabs.iter().enumerate())
-        .map(|(i, d)| file_tab(i, d, pane.active == Some(i), palette))
+        .map(|(i, d)| {
+            let name = d.path.rsplit('/').next().unwrap_or_default().to_owned();
+            let active = pane.active == Some(i);
+            let (tab, close) = (format!("doc:tab:{i}"), format!("doc:close:{i}"));
+            pane_tab(tab, close, "Close file", name, active, each, palette)
+        })
         .collect();
     let lead = Element::row(vec![
         toggle.centered_y(),
         Element::row(tabs)
-            .gap(2.0)
-            .size(Some(room.max(0.0)), Some(look::PANE_HEADER))
+            .gap(4.0)
+            .size(Some(room), Some(look::PANE_HEADER))
             .clip_children(),
     ])
     .gap(6.0);
@@ -767,54 +774,39 @@ fn files_pane(ui: &Ui, width: f32, height: f32, palette: ComponentPalette) -> El
     Element::column(vec![header, body]).size(Some(width), Some(height))
 }
 
-/// A file's tab, as Desktop's [2.9939.4 `cf550b864`]: 24 px, its name up to 140 px, the
-/// close always there, the one on screen on the selected fill.
-fn file_tab(
-    at: usize,
-    document: &crate::Document,
+/// A pane's tab, the browser's and the open files' alike: its name and close on a 28 px pill
+/// `width` wide, the one on screen on the active fill.
+fn pane_tab(
+    id: String,
+    close: String,
+    close_label: &str,
+    name: String,
     active: bool,
+    width: f32,
     palette: ComponentPalette,
 ) -> Element {
-    let name = document
-        .path
-        .rsplit('/')
-        .next()
-        .unwrap_or_default()
-        .to_owned();
-    let label = Element::truncated_text(name)
-        .font_family(FontFamily::Sans)
-        .font_size(BODY)
-        .foreground(if active {
-            look::palette().text
-        } else {
-            look::muted()
-        })
-        .max_width(140.0)
-        .centered_y();
-    let hover = ComponentPalette {
-        hover: look::row_hover(),
-        ..palette
-    };
-    let tab = hover.interactive_surface(Element::clickable(
-        format!("doc:tab:{at}"),
-        Element::row(vec![hgap(8.0), label, hgap(2.0)]).size(None, Some(24.0)),
-    ));
-    let close = icon_tool(
-        &format!("doc:close:{at}"),
-        icons::of(icons::CLOSE),
-        "Close file",
-        20.0,
-        palette,
-    );
-    let tab = Element::row(vec![tab, close, hgap(2.0)])
-        .size(None, Some(24.0))
-        .radius(6.0)
-        .centered_y();
-    if active {
-        tab.background(look::selected())
+    let pill = Element::row(vec![
+        hgap(8.0),
+        Element::truncated_text(name.clone())
+            .font_family(FontFamily::Sans)
+            .font_size(SMALL)
+            .foreground(look::palette().text)
+            .max_width(width - 40.0)
+            .centered_y(),
+        Element::spacer().flex(1.0),
+        icon_tool(&close, icons::of(icons::CLOSE), close_label, 20.0, palette),
+    ])
+    .gap(4.0)
+    .size(Some(width), Some(28.0))
+    .radius(8.0);
+    let pill = if active {
+        pill.background(look::active())
     } else {
-        tab
-    }
+        pill
+    };
+    Element::clickable(id, pill)
+        .accessibility_label(format!("Tab {name}"))
+        .centered_y()
 }
 
 /// The file on screen, as Desktop's: its path, folders muted leading to the tree and its name
@@ -888,7 +880,11 @@ fn file_view(
     }
     tools.push(tool(files::COPY, icons::COPY, "Copy file contents"));
     let crumbs = crumbs
-        .width((width - tools.len() as f32 * 32.0 - 120.0).max(80.0))
+        // The row's 8 and 6 at the ends and 4 between, the tools 24 but Cancel and Save.
+        .width(
+            (width - 26.0 - tools.len() as f32 * 28.0 - if document.dirty { 110.0 } else { 0.0 })
+                .max(80.0),
+        )
         .height(BAR - 1.0)
         .render();
     let mut row = vec![hgap(8.0), crumbs.centered_y(), Element::spacer().flex(1.0)];
@@ -968,6 +964,9 @@ fn files_dialogs(pane: &crate::files::FilesPane, base: Element) -> Element {
     )
 }
 
+/// The session's browser [notes, docs/browser.md]: its tabs over a toolbar of back,
+/// forward, reload and the address, then the page itself, which takes the pointer and the
+/// keys while it has the focus. Desktop's texts, less the agent's name.
 fn browser_pane(
     session: Option<&Session>,
     ui: &Ui,
@@ -992,34 +991,15 @@ fn browser_pane(
             } else {
                 tab.url.clone()
             };
-            let pill = Element::row(vec![
-                hgap(8.0),
-                Element::truncated_text(name)
-                    .font_family(FontFamily::Sans)
-                    .font_size(SMALL)
-                    .foreground(look::palette().text)
-                    .max_width(each - 40.0)
-                    .centered_y(),
-                Element::spacer().flex(1.0),
-                icon_tool(
-                    &format!("browser:close:{}", tab.id),
-                    icons::of(icons::CLOSE),
-                    "Close tab",
-                    20.0,
-                    palette,
-                ),
-            ])
-            .gap(4.0)
-            .size(Some(each), Some(28.0))
-            .radius(8.0);
-            let pill = if Some(tab.id) == browser.active {
-                pill.background(look::active())
-            } else {
-                pill
-            };
-            Element::clickable(format!("browser:tab:{}", tab.id), pill)
-                .accessibility_label(format!("Tab {}", tab.title))
-                .centered_y()
+            pane_tab(
+                format!("browser:tab:{}", tab.id),
+                format!("browser:close:{}", tab.id),
+                "Close tab",
+                name,
+                Some(tab.id) == browser.active,
+                each,
+                palette,
+            )
         })
         .collect();
     strip.push(icon_tool(
