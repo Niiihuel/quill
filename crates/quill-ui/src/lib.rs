@@ -12,7 +12,7 @@ pub use view::{menu_digit, view};
 
 use quill_model::{
     AgentCapabilities, AgentEvent, BrowserOp, Decision, Event, FileEffect, Intent, NewSession,
-    ProposalAnswer, RequestId, SessionId, SessionStatus, Suggestion,
+    ProposalAnswer, RequestId, SessionId, SessionStatus, Settings, Suggestion, TranscriptView,
 };
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -135,6 +135,8 @@ pub struct Session {
     pub helpers: std::collections::HashMap<String, Vec<Item>>,
     /// Kept at the top of the sidebar, under "Pinned".
     pub pinned: bool,
+    /// The transcript view the person chose for it; `None` follows the default.
+    pub view: Option<TranscriptView>,
     /// The repository its folder is in, as the engine last read it.
     pub repo: Option<quill_model::Repo>,
     /// Out of the sidebar; the search still finds it.
@@ -253,6 +255,7 @@ impl Store {
                 tasks: vec![],
                 helpers: Default::default(),
                 pinned: false,
+                view: None,
                 repo: None,
                 archived: false,
                 pull_request: None,
@@ -384,6 +387,11 @@ impl Store {
             Event::Pinned { session, pinned } => {
                 if let Some(s) = self.session_mut(session) {
                     s.pinned = pinned;
+                }
+            }
+            Event::ViewChosen { session, view } => {
+                if let Some(s) = self.session_mut(session) {
+                    s.view = view;
                 }
             }
             Event::PullRequest { session, url } => {
@@ -1189,6 +1197,38 @@ fn session_clicked(store: &Store, ui: &mut Ui, id: &str) -> Option<Vec<Intent>> 
         ui.open_menu = None;
         ui.selected = Some(s);
         ui.title_edit = store.session(s).map(|s| s.title.clone());
+    } else if id == view::TRANSCRIPT_VIEW_CYCLE {
+        let s = ui.selected.and_then(|s| store.session(s))?;
+        let view = next_view(s, &ui.settings);
+        return Some(vec![Intent::ChooseView {
+            session: s.id,
+            view: Some(view),
+        }]);
+    } else if let Some(rest) = id.strip_prefix("view:") {
+        let (s, view) = rest.split_once(':')?;
+        let view = match view {
+            "normal" => TranscriptView::Normal,
+            "thinking" => TranscriptView::Thinking,
+            "verbose" => TranscriptView::Verbose,
+            _ => return None,
+        };
+        return Some(vec![Intent::ChooseView {
+            session: s.parse().ok()?,
+            view: Some(view),
+        }]);
+    } else if let Some(s) = session("view-default:") {
+        // The session's view becomes the default, and the session follows it again.
+        let view = current_view(store.session(s)?, &ui.settings);
+        return Some(vec![
+            Intent::SaveSettings(Settings {
+                transcript_view: view,
+                ..ui.settings.clone()
+            }),
+            Intent::ChooseView {
+                session: s,
+                view: None,
+            },
+        ]);
     } else if let Some(s) = session("pin:") {
         ui.row_menu = None;
         let pinned = !store.session(s).is_some_and(|s| s.pinned);
@@ -3842,7 +3882,7 @@ pub enum McpPhase {
 /// setting, which the engine keeps before the UI shows it. `None` when `id` is none of
 /// them. A select reports its trigger, `set:{name}`, then a choice, `set:{name}={value}`.
 fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
-    use quill_model::{InterfaceFont, Motion, TextSize, Theme};
+    use quill_model::{InterfaceFont, Motion, TextSize, Theme, TranscriptView};
     if id == view::ACCOUNT_MENU {
         ui.account_menu = !ui.account_menu;
         return Some(vec![]);
@@ -3913,6 +3953,9 @@ fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
             ("text_size", "small") => settings.text_size = TextSize::Small,
             ("text_size", "medium") => settings.text_size = TextSize::Medium,
             ("text_size", "large") => settings.text_size = TextSize::Large,
+            ("transcript_view", "normal") => settings.transcript_view = TranscriptView::Normal,
+            ("transcript_view", "thinking") => settings.transcript_view = TranscriptView::Thinking,
+            ("transcript_view", "verbose") => settings.transcript_view = TranscriptView::Verbose,
             ("width", value) => {
                 settings.width = match value {
                     "wide" => quill_model::Width::Wide,
@@ -4072,6 +4115,13 @@ fn message_clicked(store: &Store, ui: &mut Ui, id: &str) -> Option<Vec<Intent>> 
             _ => vec![],
         });
     }
+    // A thinking block copies as a quote and has no other action.
+    if let Some(Item::Thinking { .. }) = store.session(session).and_then(|s| s.items.get(at)) {
+        if action == "copy" {
+            ui.copied = Some((id.to_owned(), std::time::Instant::now()));
+        }
+        return Some(vec![]);
+    }
     let Some(Item::Assistant {
         text, id: message, ..
     }) = store.session(session).and_then(|s| s.items.get(at))
@@ -4109,12 +4159,68 @@ fn message_clicked(store: &Store, ui: &mut Ui, id: &str) -> Option<Vec<Intent>> 
     })
 }
 
-/// The words of the reply a "copy:{session}:{item}" button stands for.
+/// The words of the reply a "copy:{session}:{item}" button stands for; a thinking block's
+/// as a quote.
 pub fn copied_text(store: &Store, id: &str) -> Option<String> {
     let (session, at) = id.strip_prefix("copy:")?.split_once(':')?;
     let session = store.session(session.parse().ok()?)?;
     match session.items.get(at.parse::<usize>().ok()?)? {
         Item::Assistant { text, .. } | Item::User { text, .. } => Some(text.clone()),
+        Item::Thinking { text, .. } => Some(
+            text.lines()
+                .map(|line| format!("> {line}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
         _ => None,
     }
+}
+
+/// Whether a session offers Thinking: its agent can show what the model thought, and the
+/// session has thought or has not answered yet (Desktop 3.6556.2 `y2`).
+pub fn thinking_offered(session: &Session, thinking_text: bool) -> bool {
+    let items = &session.items;
+    thinking_text
+        && (items.iter().any(|i| matches!(i, Item::Thinking { .. }))
+            || !items.iter().any(|i| matches!(i, Item::Assistant { .. })))
+}
+
+/// The view a session's transcript is drawn in: its own choice or the default, and Thinking
+/// where it is not offered is Normal.
+pub fn view_of(session: &Session, settings: &Settings, thinking_text: bool) -> TranscriptView {
+    match session.view.unwrap_or(settings.transcript_view) {
+        TranscriptView::Thinking if !thinking_offered(session, thinking_text) => {
+            TranscriptView::Normal
+        }
+        view => view,
+    }
+}
+
+/// `view_of` for the session's own agent.
+pub fn current_view(session: &Session, settings: &Settings) -> TranscriptView {
+    let thinking = session
+        .capabilities
+        .as_ref()
+        .is_some_and(|c| c.thinking_text);
+    view_of(session, settings, thinking)
+}
+
+/// The view Ctrl+O goes to after the session's: Normal, Thinking, Verbose, and back, without
+/// Thinking where it is not offered.
+fn next_view(session: &Session, settings: &Settings) -> TranscriptView {
+    let thinking = session
+        .capabilities
+        .as_ref()
+        .is_some_and(|c| c.thinking_text);
+    let views: Vec<TranscriptView> = [
+        TranscriptView::Normal,
+        TranscriptView::Thinking,
+        TranscriptView::Verbose,
+    ]
+    .into_iter()
+    .filter(|v| *v != TranscriptView::Thinking || thinking_offered(session, thinking))
+    .collect();
+    let now = current_view(session, settings);
+    let at = views.iter().position(|v| *v == now).unwrap_or(0);
+    views[(at + 1) % views.len()]
 }

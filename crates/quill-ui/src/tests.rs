@@ -1,6 +1,6 @@
 use super::*;
 use limn::{UiAction, UiTree};
-use quill_model::{AgentEvent, Usage};
+use quill_model::{AgentEvent, TranscriptView, Usage};
 
 fn tab(title: &str, busy: bool) -> TerminalTab {
     TerminalTab {
@@ -3183,4 +3183,228 @@ fn the_pr_request_names_the_branch_prefix() {
         ..quill_model::Settings::default()
     };
     assert!(pr_request(true, settings.branch_prefix()).contains("`team/`"));
+}
+
+/// Whether the agent can show what its model thought, as its `Ready` says.
+fn thinking_agent(store: &mut Store, thinking_text: bool) {
+    agent(
+        store,
+        AgentEvent::Ready {
+            version: "2.1.310".into(),
+            capabilities: quill_model::AgentCapabilities {
+                thinking_text,
+                ..Default::default()
+            },
+            mode: None,
+        },
+    );
+}
+
+#[test]
+fn the_view_is_the_sessions_choice_then_the_default_and_thinking_falls_back() {
+    use quill_model::{Settings, TranscriptView::*};
+    let (mut store, _ui) = store_with_session();
+    thinking_agent(&mut store, true);
+    let settings = Settings {
+        transcript_view: Thinking,
+        ..Settings::default()
+    };
+    let shown =
+        |store: &Store, settings: &Settings| view_of(store.session(1).unwrap(), settings, true);
+    assert_eq!(shown(&store, &Settings::default()), Normal);
+    assert_eq!(shown(&store, &settings), Thinking);
+    store.apply(Event::ViewChosen {
+        session: 1,
+        view: Some(Verbose),
+    });
+    assert_eq!(shown(&store, &settings), Verbose);
+    store.apply(Event::ViewChosen {
+        session: 1,
+        view: None,
+    });
+    assert_eq!(shown(&store, &settings), Thinking);
+
+    // An agent that cannot show its thinking leaves Thinking to Normal.
+    let (mut plain, _ui) = store_with_session();
+    thinking_agent(&mut plain, false);
+    assert_eq!(view_of(plain.session(1).unwrap(), &settings, false), Normal);
+    // So does a session that has its answer and no thinking in it.
+    agent(
+        &mut store,
+        AgentEvent::Text {
+            text: "Hello".into(),
+            parent: None,
+            id: None,
+            at: None,
+        },
+    );
+    store.apply(Event::ViewChosen {
+        session: 1,
+        view: None,
+    });
+    assert_eq!(shown(&store, &settings), Normal);
+}
+
+#[test]
+fn thinking_is_drawn_in_thinking_and_verbose_and_copied_as_a_quote() {
+    let (mut store, ui) = store_with_session();
+    thinking_agent(&mut store, true);
+    for text in ["Numbers ", "divide"] {
+        agent(
+            &mut store,
+            AgentEvent::ThinkingDelta {
+                text: text.into(),
+                parent: None,
+            },
+        );
+    }
+    agent(
+        &mut store,
+        AgentEvent::ThinkingText {
+            text: "Numbers divide".into(),
+            parent: None,
+        },
+    );
+    agent(
+        &mut store,
+        AgentEvent::Text {
+            text: "Hello".into(),
+            parent: None,
+            id: None,
+            at: None,
+        },
+    );
+    let window = limn::Size::new(1408.0, 844.0);
+    let drawn = |store: &Store, ui: &Ui, words: &str| {
+        let frame = UiTree::new(view(store, ui, window)).layout(window);
+        frame.commands.iter().any(|command| {
+            matches!(command, limn::DrawCommand::Text { text, .. } if text.contains(words))
+        })
+    };
+    assert!(!drawn(&store, &ui, "Numbers divide"));
+    store.apply(Event::ViewChosen {
+        session: 1,
+        view: Some(TranscriptView::Thinking),
+    });
+    assert!(drawn(&store, &ui, "Numbers divide"));
+    assert!(drawn(&store, &ui, "Thought process"));
+    store.apply(Event::ViewChosen {
+        session: 1,
+        view: Some(TranscriptView::Verbose),
+    });
+    assert!(drawn(&store, &ui, "Numbers divide"));
+    assert_eq!(
+        copied_text(&store, "copy:1:1").as_deref(),
+        Some("> Numbers divide")
+    );
+}
+
+#[test]
+fn verbose_opens_a_tools_output_that_normal_keeps_folded() {
+    let (mut store, mut ui) = store_with_session();
+    tool(
+        &mut store,
+        "c1",
+        "Bash",
+        serde_json::json!({"command": "echo hi"}),
+        None,
+    );
+    result(&mut store, "c1", "verbose-output");
+    let window = limn::Size::new(1408.0, 844.0);
+    let drawn = |store: &Store, ui: &Ui| {
+        let frame = UiTree::new(view(store, ui, window)).layout(window);
+        frame.commands.iter().any(|command| {
+            matches!(command, limn::DrawCommand::Text { text, .. } if text.contains("verbose-output"))
+        })
+    };
+    assert!(!drawn(&store, &ui));
+    store.apply(Event::ViewChosen {
+        session: 1,
+        view: Some(TranscriptView::Verbose),
+    });
+    assert!(drawn(&store, &ui));
+    // Normal keeps the group's and the row's own toggles.
+    store.apply(Event::ViewChosen {
+        session: 1,
+        view: Some(TranscriptView::Normal),
+    });
+    assert!(!drawn(&store, &ui));
+    click(&store, &mut ui, "steps:c1");
+    assert!(!drawn(&store, &ui));
+    click(&store, &mut ui, "tool:c1");
+    assert!(drawn(&store, &ui));
+}
+
+#[test]
+fn ctrl_o_cycles_the_view_and_skips_thinking_when_the_agent_lacks_it() {
+    let (mut store, mut ui) = store_with_session();
+    thinking_agent(&mut store, true);
+    for (from, to) in [
+        (None, Some(TranscriptView::Thinking)),
+        (
+            Some(TranscriptView::Thinking),
+            Some(TranscriptView::Verbose),
+        ),
+        (Some(TranscriptView::Verbose), Some(TranscriptView::Normal)),
+    ] {
+        store.apply(Event::ViewChosen {
+            session: 1,
+            view: from,
+        });
+        assert_eq!(
+            click(&store, &mut ui, view::TRANSCRIPT_VIEW_CYCLE),
+            vec![Intent::ChooseView {
+                session: 1,
+                view: to
+            }]
+        );
+    }
+
+    let (mut plain, mut ui) = store_with_session();
+    thinking_agent(&mut plain, false);
+    assert_eq!(
+        click(&plain, &mut ui, view::TRANSCRIPT_VIEW_CYCLE),
+        vec![Intent::ChooseView {
+            session: 1,
+            view: Some(TranscriptView::Verbose)
+        }]
+    );
+}
+
+#[test]
+fn the_session_menu_chooses_a_view_and_makes_it_the_default() {
+    use quill_model::Settings;
+    let (mut store, mut ui) = store_with_session();
+    thinking_agent(&mut store, true);
+    assert_eq!(
+        click(&store, &mut ui, "view:1:verbose"),
+        vec![Intent::ChooseView {
+            session: 1,
+            view: Some(TranscriptView::Verbose)
+        }]
+    );
+    store.apply(Event::ViewChosen {
+        session: 1,
+        view: Some(TranscriptView::Verbose),
+    });
+    assert_eq!(
+        click(&store, &mut ui, "view-default:1"),
+        vec![
+            Intent::SaveSettings(Settings {
+                transcript_view: TranscriptView::Verbose,
+                ..Settings::default()
+            }),
+            Intent::ChooseView {
+                session: 1,
+                view: None
+            },
+        ]
+    );
+    // The Settings page changes the default the same way.
+    click(&store, &mut ui, view::SETTINGS_OPEN);
+    let saved = click(&store, &mut ui, "set:transcript_view=thinking");
+    assert!(matches!(
+        saved.as_slice(),
+        [Intent::SaveSettings(s)] if s.transcript_view == TranscriptView::Thinking
+    ));
 }

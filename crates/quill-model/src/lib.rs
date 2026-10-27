@@ -85,6 +85,9 @@ pub struct Settings {
     pub theme: Theme,
     /// The size of the conversation's words.
     pub text_size: TextSize,
+    /// The view sessions open in, Desktop's "Default transcript view"; a session's own choice
+    /// wins (`Session::view`).
+    pub transcript_view: TranscriptView,
     /// How wide the conversation and the message box get, Desktop's "Transcript width".
     pub width: Width,
     /// The font of the whole interface (Desktop's `interfaceFont`); see `InterfaceFont`.
@@ -142,6 +145,7 @@ impl Default for Settings {
         Self {
             theme: Theme::System,
             text_size: TextSize::Medium,
+            transcript_view: TranscriptView::Normal,
             width: Width::Narrow,
             interface_font: InterfaceFont::System,
             code_font: String::new(),
@@ -241,6 +245,17 @@ pub enum TextSize {
     #[default]
     Medium,
     Large,
+}
+
+/// What the transcript shows: Normal the answers and the work, Thinking the model's words
+/// too, Verbose also every collapsible open [Desktop's transcript views, docs/ui.md].
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TranscriptView {
+    #[default]
+    Normal,
+    Thinking,
+    Verbose,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -360,6 +375,11 @@ pub enum Intent {
     Pin {
         session: SessionId,
         pinned: bool,
+    },
+    /// The transcript view the session is drawn in, or `None` to follow the default again.
+    ChooseView {
+        session: SessionId,
+        view: Option<TranscriptView>,
     },
     /// Remove these finished tasks from the session's list.
     ClearTasks {
@@ -788,6 +808,11 @@ pub enum Event {
         session: SessionId,
         pinned: bool,
     },
+    /// The session's transcript view, as chosen; `None` follows the default.
+    ViewChosen {
+        session: SessionId,
+        view: Option<TranscriptView>,
+    },
     /// The person cleared these finished tasks from the session's list.
     TasksCleared {
         session: SessionId,
@@ -951,6 +976,7 @@ impl Event {
             | Event::Environment { session, .. }
             | Event::Renamed { session, .. }
             | Event::Pinned { session, .. }
+            | Event::ViewChosen { session, .. }
             | Event::TasksCleared { session, .. }
             | Event::Deleted { session }
             | Event::Archived { session, .. }

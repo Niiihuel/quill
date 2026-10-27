@@ -819,6 +819,20 @@ impl eframe::App for App {
                 });
                 continue;
             }
+            // Ctrl+O cycles the transcript view, as Desktop's keymap does (docs/ui.md §2.12).
+            if matches!(
+                &event,
+                limn::UiEvent::Key {
+                    key: limn::Key::O,
+                    ctrl: true,
+                    shift: false
+                }
+            ) {
+                actions.push(limn::UiAction::Clicked {
+                    id: quill_ui::view::TRANSCRIPT_VIEW_CYCLE.into(),
+                });
+                continue;
+            }
             // Ctrl+B hides the sidebar and Ctrl+K opens the search, as Desktop's tooltips say;
             // neither reaches past a dialog.
             let dialog = self.ui.deleting.is_some() || self.ui.terminal.closing.is_some();

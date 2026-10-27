@@ -14,7 +14,7 @@ use quill_components::pieces::{
 use quill_components::settings::{
     self, choices, setting, setting_button, setting_switch, Setting, SettingsPage,
 };
-use quill_model::{ChangeKind, FileEffect, SessionStatus};
+use quill_model::{ChangeKind, FileEffect, SessionStatus, TranscriptView};
 use serde_json::Value;
 use std::time::Instant;
 
@@ -93,6 +93,8 @@ pub const SEARCH: &str = "search";
 pub const SEARCH_FIELD: &str = "search:field";
 pub const SEARCH_CLOSE: &str = "search:close";
 pub const SEARCH_NEW: &str = "search:new";
+/// Ctrl+O: the selected session's transcript view goes to the next one.
+pub const TRANSCRIPT_VIEW_CYCLE: &str = "transcript-view:cycle";
 /// The chevron beside the session's title and the menu it opens.
 pub const TITLE_MENU: &str = "title-menu";
 /// The field the title turns into while the person renames the session.
@@ -1593,6 +1595,53 @@ fn archive_and_delete(session: &Session) -> [limn::DropdownMenuEntry; 2] {
     ]
 }
 
+/// The "Transcript view ›" submenu of a session's menus, and "Make … the default" once the
+/// session's view differs from the default (docs/ui.md "Vistas del transcript").
+fn transcript_view_entries(session: &Session, ui: &Ui) -> Vec<limn::DropdownMenuEntry> {
+    let thinking = session
+        .capabilities
+        .as_ref()
+        .is_some_and(|c| c.thinking_text);
+    let thinking = crate::thinking_offered(session, thinking);
+    let current = crate::current_view(session, &ui.settings);
+    let mut views: Vec<limn::DropdownMenuEntry> = [
+        (TranscriptView::Normal, "normal", "Normal"),
+        (TranscriptView::Thinking, "thinking", "Thinking"),
+        (TranscriptView::Verbose, "verbose", "Verbose"),
+    ]
+    .into_iter()
+    .filter(|(view, ..)| *view != TranscriptView::Thinking || thinking)
+    .map(|(view, key, label)| {
+        limn::DropdownMenuItem::new(format!("view:{}:{key}", session.id), label)
+            .radio(view == current)
+            .into()
+    })
+    .collect();
+    // Inside the submenu, after its views, as Desktop's (`cc43287c9` `GW`).
+    if current != ui.settings.transcript_view {
+        let label = match current {
+            TranscriptView::Normal => "Normal",
+            TranscriptView::Thinking => "Thinking",
+            TranscriptView::Verbose => "Verbose",
+        };
+        views.extend([
+            limn::DropdownMenuEntry::Separator,
+            limn::DropdownMenuItem::new(
+                format!("view-default:{}", session.id),
+                format!("Make {label} the default"),
+            )
+            .into(),
+        ]);
+    }
+    vec![
+        limn::DropdownMenuItem::new(format!("view-menu:{}", session.id), "Transcript view")
+            .submenu(views)
+            // Wider than the session's menu, for "Make Thinking the default".
+            .submenu_width(250.0)
+            .into(),
+    ]
+}
+
 /// A menu row with Desktop's one-letter shortcut.
 fn lettered(id: String, label: &str, key: &str) -> limn::DropdownMenuItem {
     limn::DropdownMenuItem::new(id, label).shortcut(key)
@@ -1640,6 +1689,8 @@ fn top_bar(session: Option<&Session>, ui: &Ui, main: f32, beside: f32) -> Elemen
                 lettered(format!("fork:{}", s.id), "Fork", "F").into(),
                 limn::DropdownMenuEntry::Separator,
             ]);
+            entries.extend(transcript_view_entries(s, ui));
+            entries.push(limn::DropdownMenuEntry::Separator);
             entries.extend(archive_and_delete(s));
             // Centered, the title stays clear of the tools at either end: the sidebar's
             // toggle, and the toggles that sit over the conversation when nothing is beside it.
@@ -2240,6 +2291,8 @@ fn session_row(session: &Session, depth: usize, ui: &Ui, palette: ComponentPalet
         lettered(format!("fork:{}", session.id), "Fork", "F").into(),
         limn::DropdownMenuEntry::Separator,
     ];
+    entries.extend(transcript_view_entries(session, ui));
+    entries.push(limn::DropdownMenuEntry::Separator);
     entries.extend(archive_and_delete(session));
     let dots = menu(
         dots,
@@ -2548,9 +2601,10 @@ fn entries<'a>(
 ) -> (Vec<Element>, Option<Step<'a>>) {
     let mut items: Vec<Element> = vec![];
     let mut steps: Vec<Step> = vec![];
+    let transcript = crate::current_view(session, &ui.settings);
     let flush = |steps: &mut Vec<Step>, items: &mut Vec<Element>| {
         if !steps.is_empty() {
-            items.push(step_group(steps, ui, column, palette));
+            items.push(step_group(steps, ui, transcript, column, palette));
             steps.clear();
         }
     };
@@ -2568,6 +2622,13 @@ fn entries<'a>(
             items.push(new_divider(column));
         }
         match item {
+            // Thinking and Verbose show the model's words in their place, which splits the group.
+            Item::Thinking { text: thought, .. }
+                if transcript != TranscriptView::Normal && !thought.trim().is_empty() =>
+            {
+                flush(&mut steps, &mut items);
+                items.push(thinking_block(session, at, thought, main, ui, column));
+            }
             Item::Tool { name, .. } if is_task_tool(name) => {}
             Item::Tool {
                 call,
@@ -3233,7 +3294,8 @@ fn status_line(
         {
             let step = running?;
             let key = format!("tool:{}", step.call);
-            let open = ui.expanded.iter().any(|c| c == step.call);
+            let view = crate::current_view(session, &ui.settings);
+            let open = is_open(view, ui, step.call);
             let (verb, object) = step_label(step, false);
             let mut line = vec![dots(), muted(verb).font_size(chat()).centered_y()];
             if !object.is_empty() {
@@ -3242,7 +3304,7 @@ fn status_line(
             let since = session.step_since.map_or(0, |t| t.elapsed().as_secs());
             line.push(muted(elapsed(since)).font_size(chat()).centered_y());
             line.push(caret(open));
-            let line = Element::clickable(key, Element::row(line).gap(8.0));
+            let line = fold(view, key, Element::row(line).gap(8.0));
             if !open {
                 return Some(line);
             }
@@ -3444,7 +3506,14 @@ fn item(
             request,
             files,
             rewound,
-        } => changes_card(request, files, *rewound, ui, column),
+        } => changes_card(
+            request,
+            files,
+            *rewound,
+            ui,
+            crate::current_view(session, &ui.settings),
+            column,
+        ),
         Item::Proposals { tasks } => proposals_card(store, tasks, palette),
         Item::Reports { request, reports } => {
             reports_block(store, request, reports, session, ui, column)
@@ -4115,9 +4184,15 @@ pub fn line_diff(before: &str, after: &str) -> Vec<limn::CodeDiffLine> {
 
 /// A run of steps as Desktop shows it: one muted line with the files' added and
 /// removed lines, which unfolds into a card with a row per step; a row unfolds what it did.
-fn step_group(steps: &[Step], ui: &Ui, column: f32, palette: ComponentPalette) -> Element {
+fn step_group(
+    steps: &[Step],
+    ui: &Ui,
+    view: TranscriptView,
+    column: f32,
+    palette: ComponentPalette,
+) -> Element {
     let key = format!("steps:{}", steps[0].call);
-    let open = ui.expanded.contains(&key);
+    let open = is_open(view, ui, &key);
     let running = steps.iter().any(|s| s.running);
     let stopped = !running
         && steps
@@ -4173,7 +4248,11 @@ fn step_group(steps: &[Step], ui: &Ui, column: f32, palette: ComponentPalette) -
         );
     }
     head.push(caret(open));
-    let head = Element::clickable(key, Element::row(head).gap(8.0).size(None, Some(24.0)));
+    let head = fold(
+        view,
+        key,
+        Element::row(head).gap(8.0).size(None, Some(24.0)),
+    );
     if !open {
         return head;
     }
@@ -4182,7 +4261,7 @@ fn step_group(steps: &[Step], ui: &Ui, column: f32, palette: ComponentPalette) -
         if i > 0 {
             rows.push(hline(column, look::card_border()));
         }
-        rows.push(step_row(step, ui, column, palette));
+        rows.push(step_row(step, ui, view, column, palette));
     }
     let card = Element::panel(Element::column(rows))
         .background(palette.surface)
@@ -4190,6 +4269,63 @@ fn step_group(steps: &[Step], ui: &Ui, column: f32, palette: ComponentPalette) -
         .radius(8.0)
         .size(Some(column), None);
     Element::column(vec![head, card]).gap(8.0)
+}
+
+/// Whether a collapsible is open: Verbose holds every one open, else the person's toggle
+/// (Desktop's `Sp()`, docs/ui.md "Vistas del transcript").
+fn is_open(view: TranscriptView, ui: &Ui, key: &str) -> bool {
+    view == TranscriptView::Verbose || ui.expanded.iter().any(|k| k == key)
+}
+
+/// A collapsible's header: a click folds it, unless Verbose holds it open and it does nothing.
+fn fold(view: TranscriptView, key: String, header: Element) -> Element {
+    if view == TranscriptView::Verbose {
+        header
+    } else {
+        Element::clickable(key, header)
+    }
+}
+
+/// A thinking block, shown in Thinking and Verbose: the model's words, muted, under "Thought
+/// process", with a copy button that copies them as a quote. Only the transcript's own items
+/// have a place to copy from.
+fn thinking_block(
+    session: &Session,
+    at: usize,
+    thought: &str,
+    main: bool,
+    ui: &Ui,
+    column: f32,
+) -> Element {
+    let label = muted("Thought process").font_size(SMALL).centered_y();
+    let mut head = vec![label];
+    if main {
+        let copy = format!("copy:{}:{at}", session.id);
+        let copied = ui
+            .copied
+            .as_ref()
+            .is_some_and(|(id, since)| *id == copy && since.elapsed() < COPIED_FOR);
+        let button = tool_surface(
+            &copy,
+            icons::of(if copied { icons::CHECK } else { icons::COPY }),
+            if copied { "Copied" } else { "Copy" },
+            24.0,
+            None,
+            look::tool_hover(),
+            None,
+        );
+        head.push(if copied {
+            button
+        } else {
+            button.reveal_on_hover(format!("{copy}:reveal"))
+        });
+    }
+    let words = muted(thought.trim_end())
+        .font_size(chat())
+        .max_width(column);
+    Element::column(vec![Element::row(head).gap(8.0), words])
+        .gap(4.0)
+        .hover_region()
 }
 
 /// The small triangle after a group or a step: right while folded, down while open.
@@ -4208,9 +4344,15 @@ fn caret(open: bool) -> Element {
 /// One step in its group's card: "Read saludo.py", "Edited saludo.py +1 −1",
 /// "Ran saludo.py to verify output", each opening what it did. A helper agent's row has no
 /// caret: it opens the agent's own pane.
-fn step_row(step: &Step, ui: &Ui, column: f32, palette: ComponentPalette) -> Element {
+fn step_row(
+    step: &Step,
+    ui: &Ui,
+    view: TranscriptView,
+    column: f32,
+    palette: ComponentPalette,
+) -> Element {
     let agent = matches!(step.name, "Agent" | "Task");
-    let open = !agent && ui.expanded.iter().any(|c| c == step.call);
+    let open = !agent && is_open(view, ui, step.call);
     let done = !step.running && step.result.is_some_and(|r| !r.stopped);
     let (verb, object) = step_label(step, done);
     let mut line = vec![hgap(10.0), muted(verb).centered_y()];
@@ -4246,10 +4388,14 @@ fn step_row(step: &Step, ui: &Ui, column: f32, palette: ComponentPalette) -> Ele
     } else {
         format!("tool:{}", step.call)
     };
-    let row = row_palette.interactive_surface(Element::clickable(
-        id,
-        Element::row(line).gap(6.0).size(Some(column), Some(31.0)),
-    ));
+    let line = Element::row(line).gap(6.0).size(Some(column), Some(31.0));
+    // A helper's row opens its own pane, which Verbose leaves as it is.
+    let line = if agent {
+        Element::clickable(id, line)
+    } else {
+        fold(view, id, line)
+    };
+    let row = row_palette.interactive_surface(line);
     if !open {
         return row;
     }
@@ -6009,6 +6155,7 @@ fn changes_card(
     files: &[FileEffect],
     rewound: bool,
     ui: &Ui,
+    transcript: TranscriptView,
     column: f32,
 ) -> Element {
     let (added, removed) = files
@@ -6096,7 +6243,7 @@ fn changes_card(
         let label = format!("Edited {} files", files.len());
         rows.push(opens(view.clone(), row(icons::DIFF, label, None, end)));
         let more = format!("changes:{request}:more");
-        let all = ui.expanded.contains(&more);
+        let all = is_open(transcript, ui, &more);
         let shown = if all { files.len() } else { files.len().min(3) };
         for file in &files[..shown] {
             let folder = file.path.rsplit_once('/').map(|(dir, _)| dir.to_owned());
@@ -6113,7 +6260,11 @@ fn changes_card(
             };
             let line = Element::row(vec![hgap(26.0), muted(label).font_size(SMALL).centered_y()])
                 .size(None, Some(28.0));
-            rows.push(opens(more, line));
+            rows.push(if transcript == TranscriptView::Verbose {
+                line
+            } else {
+                opens(more, line)
+            });
         }
     }
     Element::column(rows)
@@ -7414,7 +7565,8 @@ fn reports_block(
         .enumerate()
         .map(|(at, report)| {
             let key = format!("report:{request}:{at}");
-            let open = ui.expanded.contains(&key);
+            let view = crate::current_view(session, &ui.settings);
+            let open = is_open(view, ui, &key);
             let lead = if working {
                 Element::shimmer_text(
                     format!("report-shimmer:{request}:{at}"),
@@ -7430,7 +7582,7 @@ fn reports_block(
             let line = Element::row(vec![
                 lead.centered_y(),
                 session_chip(store, report.from).centered_y(),
-                Element::clickable(key.clone(), caret(open)).centered_y(),
+                fold(view, key.clone(), caret(open)).centered_y(),
             ])
             .gap(8.0);
             if !open {
@@ -7553,7 +7705,7 @@ fn setting_select(
 /// pages for its account, its cloud and its own features are not here: quill has none of
 /// them (docs/ui.md §2.11).
 fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<SettingsPage> {
-    use quill_model::{InterfaceFont, Motion, TextSize, Theme};
+    use quill_model::{InterfaceFont, Motion, TextSize, Theme, TranscriptView};
     let s = &ui.settings;
     let theme = settings::theme_control(match s.theme {
         Theme::System => "system",
@@ -7568,6 +7720,11 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
         TextSize::Small => "small",
         TextSize::Medium => "medium",
         TextSize::Large => "large",
+    };
+    let transcript_view = match s.transcript_view {
+        TranscriptView::Normal => "normal",
+        TranscriptView::Thinking => "thinking",
+        TranscriptView::Verbose => "verbose",
     };
     let motion = match s.motion {
         Motion::System => "system",
@@ -7619,6 +7776,21 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
                                 quill_model::Width::Medium => "medium",
                                 quill_model::Width::Wide => "wide",
                             },
+                            palette,
+                        ),
+                    ),
+                    setting(
+                        "Default transcript view",
+                        "The view sessions open in. Picking a view from a session's Transcript view menu changes only that session.",
+                        setting_select(
+                            ui,
+                            "transcript_view",
+                            &choices(&[
+                                ("normal", "Normal"),
+                                ("thinking", "Thinking"),
+                                ("verbose", "Verbose"),
+                            ]),
+                            transcript_view,
                             palette,
                         ),
                     ),

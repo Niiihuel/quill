@@ -31,6 +31,7 @@ When they are all merged, point `Cargo.toml` back at `../lienzo` and drop the br
 | [#138](https://github.com/Niiihuel/limn/pull/138) | `feat/menu-picture` | the installed editors' own icons in quill's "Open in" menu | open |
 | — | `feat/menu-switch` | switch items in menus (`DropdownMenuItem::switch`): the composer's Connectors, each with its switch | local, not pushed |
 | — | `feat/menu-switch-ink` | a menu switch that is on takes the menu's `check_ink`; builds on `feat/menu-switch` and `feat/desktop-menus` | local, not pushed |
+| — | `feat/submenu-width` | a submenu with its own width (`DropdownMenuItem::submenu_width`): the session menu's "Transcript view" | local, not pushed |
 | — | `feat/surface-image` | the browser's native frames handed to egui as they are (`SurfaceFrame::from_image`) | local, not pushed |
 | — | `feat/surface-texture` | the browser's GPU frames drawn from a texture quill registered with egui-wgpu (`present_surface_texture`) | local, not pushed |
 | — | `feat/surface-paint` | the page presented beneath the window: quill paints the browser's surface itself, a transparent hole (`present_surface_paint`) | local, not pushed |

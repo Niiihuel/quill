@@ -970,6 +970,10 @@ impl Router {
                 (self.sink)(Event::Pinned { session, pinned });
                 return;
             }
+            Intent::ChooseView { session, view } => {
+                (self.sink)(Event::ViewChosen { session, view });
+                return;
+            }
             Intent::ClearTasks { session, tasks } => {
                 (self.sink)(Event::TasksCleared { session, tasks });
                 return;
