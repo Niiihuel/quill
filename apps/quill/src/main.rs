@@ -882,7 +882,7 @@ impl eframe::App for App {
                 }
                 // A page whose link opens on the computer, as Settings asks.
                 let web_out = quill_ui::view::link_url(id)
-                    .filter(|url| url.starts_with("http") && !self.ui.settings.links_in_browser);
+                    .filter(|url| quill_ui::opens_outside(&self.ui.settings, url));
                 let elsewhere = quill_ui::view::link_url(id)
                     .filter(|url| {
                         url.contains("://")

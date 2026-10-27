@@ -105,6 +105,9 @@ pub struct Settings {
     pub attention: bool,
     /// A pull request opens as a draft unless the person picks otherwise.
     pub pr_draft: bool,
+    /// Open a pull request's link in the computer's default browser even while links open in
+    /// the built-in one (Desktop's "Open pull requests in browser"); off is inferred.
+    pub prs_in_browser: bool,
     /// Start quill when the person logs in.
     pub open_at_login: bool,
     /// Sites the agents may use in the built-in browser without asking; local addresses
@@ -140,6 +143,7 @@ impl Default for Settings {
             keep_awake_on_battery: true,
             attention: true,
             pr_draft: false,
+            prs_in_browser: false,
             open_at_login: false,
             browser_sites: vec![],
             browser_program: None,

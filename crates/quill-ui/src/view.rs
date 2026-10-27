@@ -7652,17 +7652,25 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
                 ),
                 (
                     "Pull requests".into(),
-                    vec![setting(
-                        "Pull request kind",
-                        "What the branch bar's button opens. Picking a kind in its menu changes this too.",
-                        setting_select(
-                            ui,
-                            "pr_kind",
-                            &choices(&[("ready", "Ready for review"), ("draft", "Draft")]),
-                            if s.pr_draft { "draft" } else { "ready" },
-                            palette,
+                    vec![
+                        setting(
+                            "Pull request kind",
+                            "What the branch bar's button opens. Picking a kind in its menu changes this too.",
+                            setting_select(
+                                ui,
+                                "pr_kind",
+                                &choices(&[("ready", "Ready for review"), ("draft", "Draft")]),
+                                if s.pr_draft { "draft" } else { "ready" },
+                                palette,
+                            ),
                         ),
-                    )],
+                        // Desktop's "Open pull requests in browser".
+                        setting(
+                            "Open pull requests in browser",
+                            "Open pull request links in your default browser instead of the built-in browser.",
+                            setting_switch("prs_in_browser", s.prs_in_browser, palette),
+                        ),
+                    ],
                 ),
             ],
         },

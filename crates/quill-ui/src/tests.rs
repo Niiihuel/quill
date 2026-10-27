@@ -283,6 +283,35 @@ fn a_rewritten_line_marks_only_what_changed() {
 }
 
 #[test]
+fn pull_request_links_can_open_on_the_computer_alone() {
+    use quill_model::Settings;
+    let mut settings = Settings::default();
+    let pr = "https://github.com/o/r/pull/12";
+    assert!(!opens_outside(&settings, pr));
+    settings.prs_in_browser = true;
+    for url in [
+        pr,
+        "https://github.com/o/r/pull/12/files",
+        "https://github.com/o/r/pull/12?tab=files",
+        "https://gitlab.com/g/p/-/merge_requests/7",
+    ] {
+        assert!(opens_outside(&settings, url), "{url}");
+    }
+    for url in [
+        "https://github.com/o/r/pulls",
+        "https://example.com/pull/abc",
+        "https://example.com/docs",
+        "mailto:someone@example.com",
+        "file:///tmp/pull/1",
+    ] {
+        assert!(!opens_outside(&settings, url), "{url}");
+    }
+    settings.links_in_browser = false;
+    assert!(opens_outside(&settings, "https://example.com/docs"));
+    assert!(!opens_outside(&settings, "mailto:someone@example.com"));
+}
+
+#[test]
 fn the_terminal_toggles_and_takes_a_third_beside_the_conversation() {
     let store = Store::default();
     let mut ui = Ui::new("/tmp".into());
@@ -2585,6 +2614,11 @@ fn settings_save_through_the_engine_and_shape_what_comes_next() {
         panic!("{saved:?}");
     };
     assert!(!settings.keep_awake_on_battery && ui.settings.keep_awake_on_battery);
+    let saved = click(&store, &mut ui, "set:prs_in_browser");
+    let [Intent::SaveSettings(settings)] = saved.as_slice() else {
+        panic!("{saved:?}");
+    };
+    assert!(settings.prs_in_browser && !ui.settings.prs_in_browser);
     // Not kept, it says so over the page until the next change.
     ui.applied(&Event::SettingsNotSaved {
         error: "read-only file system".into(),

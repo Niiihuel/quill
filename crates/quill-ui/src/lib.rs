@@ -1033,6 +1033,27 @@ pub enum Allow {
     Always,
 }
 
+/// Whether a link opens on the computer rather than in quill's browser: any web link while
+/// "Open links in built-in browser" is off, and a pull request's while "Open pull requests in
+/// browser" is on. The UI and the host both ask this, so they cannot disagree.
+pub fn opens_outside(settings: &quill_model::Settings, url: &str) -> bool {
+    (url.starts_with("http://") || url.starts_with("https://"))
+        && (!settings.links_in_browser || (settings.prs_in_browser && pull_request(url)))
+}
+
+/// A link to a pull request (`/pull/12`, `/merge_requests/7`), with or without what follows it.
+fn pull_request(url: &str) -> bool {
+    let url = url.split(['?', '#']).next().unwrap_or(url);
+    let Some(path) = url.splitn(4, '/').nth(3) else {
+        return false;
+    };
+    path.split('/').collect::<Vec<_>>().windows(2).any(|pair| {
+        matches!(pair[0], "pull" | "merge_requests")
+            && !pair[1].is_empty()
+            && pair[1].bytes().all(|b| b.is_ascii_digit())
+    })
+}
+
 /// What the branch bar asks of the agent to open a pull request: commit what is left, push,
 /// open it with `gh`, as a draft when that kind was chosen, and give its address. Desktop
 /// sends its own request of the same steps [3.6556.2/c06cf64bb]; these words are quill's.
@@ -2795,9 +2816,10 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
             return vec![];
         };
         let web = url.starts_with("http://") || url.starts_with("https://");
-        // Settings' "Open links in built-in browser" off: the host opens a clicked page on the
-        // computer; the menu's "Open in Browser" still opens it here.
-        if web && !ui.settings.links_in_browser && view::link_url(id).is_some() {
+        // Settings' "Open links in built-in browser" off, or a pull request with "Open pull
+        // requests in browser" on: the host opens a clicked page on the computer; the menu's
+        // "Open in Browser" still opens it here.
+        if view::link_url(id).is_some() && opens_outside(&ui.settings, url) {
             return vec![];
         }
         if web {
@@ -3873,6 +3895,7 @@ fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
         "login" => settings.open_at_login = !settings.open_at_login,
         "browser_native" => settings.browser_native = !settings.browser_native,
         "links_in_browser" => settings.links_in_browser = !settings.links_in_browser,
+        "prs_in_browser" => settings.prs_in_browser = !settings.prs_in_browser,
         other => match other
             .strip_prefix("agent:")
             .and_then(|r| r.strip_suffix(":unsafe"))
