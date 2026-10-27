@@ -4,9 +4,8 @@
 //! `/name ` for the agent or runs the existing action.
 
 use crate::{view, Session, Store, Ui};
-use limn::{
-    Component, ComponentPalette, Element, Key, SuggestionItem, SuggestionList, UiAction, UiEvent,
-};
+use limn::{Component, Element, Key, SuggestionItem, SuggestionList, UiAction, UiEvent};
+use quill_components::look;
 use quill_model::Intent;
 use std::ops::Range;
 
@@ -206,13 +205,7 @@ pub(crate) fn open(store: &Store, ui: &Ui) -> Option<(usize, Vec<Row>)> {
 /// The composer `anchor` with the palette above it while it is open. Rows and width are
 /// Desktop's: compact, about 320 px as the person's capture (its CSS allows 240–512), in the
 /// composer's text size.
-pub fn list(
-    store: &Store,
-    ui: &Ui,
-    anchor: Element,
-    width: f32,
-    palette: ComponentPalette,
-) -> Element {
+pub fn list(store: &Store, ui: &Ui, anchor: Element, width: f32) -> Element {
     let Some((_, rows)) = open(store, ui) else {
         return anchor;
     };
@@ -225,7 +218,7 @@ pub fn list(
         selected,
         true,
         "slash:dismiss",
-        palette,
+        look::suggestion_palette(),
     )
     .compact(true)
     .sizing(quill_components::pieces::menu_sizing(320.0))

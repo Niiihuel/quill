@@ -4,7 +4,8 @@
 //! file, and `@[title] ` for a session, which the next task reads (not yet sent).
 
 use crate::{view, Session, Store, Ui};
-use limn::{Component, ComponentPalette, Element, Key, SuggestionItem, SuggestionList, UiEvent};
+use limn::{Component, Element, Key, SuggestionItem, SuggestionList, UiEvent};
+use quill_components::look;
 use quill_components::{icons, tree};
 use quill_model::{Event, Intent, SessionId};
 use std::ops::Range;
@@ -206,15 +207,9 @@ pub(crate) fn heard(ui: &mut Ui, event: &Event) {
     }
 }
 
-/// The list over `anchor` while it is open: rows as the "/" palette's, 420 wide as Desktop's
-/// mention popup (`Qj`).
-pub fn list(
-    store: &Store,
-    ui: &Ui,
-    anchor: Element,
-    width: f32,
-    palette: ComponentPalette,
-) -> Element {
+/// The list over `anchor` while it is open: rows as the "/" palette's, 560 wide with each
+/// session's folder after its title, as Desktop's mention popup (the person's capture; `Qj`).
+pub fn list(store: &Store, ui: &Ui, anchor: Element, width: f32) -> Element {
     let Some((_, rows)) = open(store, ui) else {
         return anchor;
     };
@@ -227,11 +222,12 @@ pub fn list(
         selected,
         true,
         "mention:dismiss",
-        palette,
+        look::suggestion_palette(),
     )
     .compact(true)
-    .sizing(quill_components::pieces::menu_sizing(420.0))
-    .max_width(420.0)
+    .inline_details(true)
+    .sizing(quill_components::pieces::menu_sizing(560.0))
+    .max_width(560.0)
     .width(width)
     .placement(limn::PopoverPlacement::TopStart)
     .render()

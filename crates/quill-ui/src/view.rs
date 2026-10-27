@@ -4982,8 +4982,8 @@ fn composer(
     .context(composer_footer(store, session, ui, palette))
     .attachments(composer_images(ui, palette))
     .render();
-    let box_ = crate::slash::list(store, ui, box_, column, palette);
-    let box_ = crate::mention::list(store, ui, box_, column, palette);
+    let box_ = crate::slash::list(store, ui, box_, column);
+    let box_ = crate::mention::list(store, ui, box_, column);
     if let Some(session) = session {
         return match branch_bar(session, ui, column, palette) {
             Some(bar) => Element::column(vec![bar, box_]).gap(8.0),

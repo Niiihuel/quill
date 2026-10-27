@@ -288,6 +288,20 @@ pub fn menu_palette() -> limn::ComponentPalette {
     }
 }
 
+/// The composer's "/" and "@" lists, as Desktop's: a menu's surfaces, and the selected row's
+/// description on its darker box (`#2C2C2C`, the person's capture of 3.6556.2; light: the
+/// menu's raised, inferred).
+pub fn suggestion_palette() -> limn::ComponentPalette {
+    let palette = menu_palette();
+    if is_dark() {
+        return limn::ComponentPalette {
+            raised: hex(0x2c2c2c),
+            ..palette
+        };
+    }
+    palette
+}
+
 /// The composer's editor sits on the card without a fill of its own, as Desktop's does
 ///; limn fills both the card and the editor with `selected`, so here it is the
 /// card's: white, or the dark composer's #303030.
