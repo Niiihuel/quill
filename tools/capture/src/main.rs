@@ -114,7 +114,7 @@ fn scenario(name: &str) -> Option<Scenario> {
         _ => return None,
     };
     let flags: &[&str] = match name {
-        "think" => &["--effort", "high"],
+        "think" => &["--effort", "high", "--thinking-display", "summarized"],
         _ => &[],
     };
     // The CLI offers its task tools (TaskCreate, TaskUpdate…) only with these set.

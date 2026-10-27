@@ -276,6 +276,8 @@ impl AgentAdapter for Claude {
             "--permission-prompt-tool",
             "stdio",
             "--include-partial-messages",
+            "--thinking-display",
+            "summarized",
             "--setting-sources=user,project,local",
         ]
         .map(String::from)
@@ -863,6 +865,13 @@ impl AgentAdapter for Claude {
                 // Thinking shows as it starts; the finished block carries nothing quill shows.
                 if msg["event"]["content_block"]["type"] == "thinking" {
                     decoded.events.push(AgentEvent::Thinking { parent });
+                } else if msg["event"]["delta"]["type"] == "thinking_delta" {
+                    let text = text(&msg["event"]["delta"]["thinking"]);
+                    if !text.is_empty() {
+                        decoded
+                            .events
+                            .push(AgentEvent::ThinkingDelta { text, parent });
+                    }
                 } else if msg["event"]["delta"]["type"] == "text_delta" {
                     let text = text(&msg["event"]["delta"]["text"]);
                     decoded.events.push(AgentEvent::TextDelta { text, parent });
@@ -894,6 +903,15 @@ impl AgentAdapter for Claude {
                             id: msg["uuid"].as_str().map(String::from),
                             at: None,
                         }),
+                        Some("thinking") => {
+                            let thinking = text(&block["thinking"]).trim().to_owned();
+                            if !thinking.is_empty() {
+                                decoded.events.push(AgentEvent::ThinkingText {
+                                    text: thinking,
+                                    parent: parent.clone(),
+                                });
+                            }
+                        }
                         Some("tool_use") => {
                             let call = text(&block["id"]);
                             let name = text(&block["name"]);
@@ -1124,6 +1142,7 @@ fn ready(body: &Value, ultracode: bool) -> AgentEvent {
             rewind: true,
             tool_hooks: true,
             mcp: true,
+            thinking_text: true,
             plan: body["account"]["subscriptionType"]
                 .as_str()
                 .map(str::to_owned),

@@ -96,6 +96,9 @@ pub struct AgentCapabilities {
     /// and off ([`AgentCommand::McpStatus`]).
     #[serde(default)]
     pub mcp: bool,
+    /// The agent can show what its model thought.
+    #[serde(default)]
+    pub thinking_text: bool,
 }
 
 /// One MCP server a session's agent loaded, as the agent reports it.
@@ -400,6 +403,16 @@ pub enum AgentEvent {
         at: Option<u64>,
     },
     Thinking {
+        parent: Option<String>,
+    },
+    /// A piece of what the model thinks, as it streams.
+    ThinkingDelta {
+        text: String,
+        parent: Option<String>,
+    },
+    /// What the model thought, whole, as its message ends.
+    ThinkingText {
+        text: String,
         parent: Option<String>,
     },
     /// The tokens the running turn has used so far, its helpers' included.

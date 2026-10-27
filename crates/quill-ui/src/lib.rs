@@ -34,6 +34,8 @@ pub enum Item {
         /// When it came, in seconds since 1970.
         at: Option<u64>,
     },
+    /// What the model thought, shown only by the Thinking and Verbose views (not yet).
+    Thinking { text: String, streaming: bool },
     Tool {
         call: String,
         name: String,
@@ -661,6 +663,30 @@ fn agent_event(s: &mut Session, event: AgentEvent) {
                 streaming: false,
                 id,
                 at,
+            }),
+        },
+        // Subagents' thinking stays out of the main transcript for now.
+        AgentEvent::ThinkingDelta { text, parent: None } => match s.items.last_mut() {
+            Some(Item::Thinking {
+                text: shown,
+                streaming: true,
+            }) => shown.push_str(&text),
+            _ => s.items.push(Item::Thinking {
+                text,
+                streaming: true,
+            }),
+        },
+        AgentEvent::ThinkingText { text, parent: None } => match s.items.last_mut() {
+            Some(Item::Thinking {
+                text: shown,
+                streaming,
+            }) if *streaming => {
+                *shown = text;
+                *streaming = false;
+            }
+            _ => s.items.push(Item::Thinking {
+                text,
+                streaming: false,
             }),
         },
         AgentEvent::ToolUse {

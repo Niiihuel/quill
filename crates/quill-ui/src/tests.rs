@@ -37,6 +37,61 @@ fn agent(store: &mut Store, event: AgentEvent) {
 }
 
 #[test]
+fn thinking_is_kept_whole_before_the_answer_and_not_drawn() {
+    let (mut store, ui) = store_with_session();
+    for text in ["Numbers ", "divide"] {
+        agent(
+            &mut store,
+            AgentEvent::ThinkingDelta {
+                text: text.into(),
+                parent: None,
+            },
+        );
+    }
+    agent(
+        &mut store,
+        AgentEvent::ThinkingText {
+            text: "Numbers divide".into(),
+            parent: None,
+        },
+    );
+    agent(
+        &mut store,
+        AgentEvent::Text {
+            text: "Hello".into(),
+            parent: None,
+            id: None,
+            at: None,
+        },
+    );
+    let items = &store.session(1).unwrap().items;
+    assert_eq!(
+        items[1..],
+        [
+            Item::Thinking {
+                text: "Numbers divide".into(),
+                streaming: false,
+            },
+            Item::Assistant {
+                text: "Hello".into(),
+                streaming: false,
+                id: None,
+                at: None,
+            },
+        ]
+    );
+    let window = limn::Size::new(1408.0, 844.0);
+    let frame = UiTree::new(view(&store, &ui, window)).layout(window);
+    let drawn = |words: &str| {
+        frame.commands.iter().any(|command| {
+            matches!(command, limn::DrawCommand::Text { text, .. } if text.contains(words))
+        })
+    };
+    assert!(drawn("Hello"));
+    assert!(!drawn("Numbers divide"));
+}
+
+#[test]
 fn streamed_text_becomes_one_message() {
     let (mut store, _) = store_with_session();
     agent(

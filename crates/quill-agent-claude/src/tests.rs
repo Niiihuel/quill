@@ -805,6 +805,43 @@ fn a_turn_counts_its_tokens_as_it_goes() {
 }
 
 #[test]
+fn thinking_streams_and_ends_whole_before_the_answer() {
+    let (_, events, _) = replay_at("2.1.311", "think");
+    let streamed: String = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ThinkingDelta { text, parent: None } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    let whole = events
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::ThinkingText { text, parent: None } => Some(text.as_str()),
+            _ => None,
+        })
+        .expect("no ThinkingText");
+    assert!(
+        whole.contains("391") && whole.contains("prime"),
+        "{whole:?}"
+    );
+    // The streamed pieces keep the whitespace the final text trims.
+    assert!(streamed.starts_with(whole), "{streamed:?} vs {whole:?}");
+}
+
+#[test]
+fn thinking_text_is_asked_for_at_launch() {
+    let plan = Claude::new().launch(&SessionSpec {
+        cwd: "/work".into(),
+        ..Default::default()
+    });
+    assert!(plan
+        .args
+        .windows(2)
+        .any(|w| w == ["--thinking-display", "summarized"]));
+}
+
+#[test]
 fn quills_own_tools_are_served_in_process_and_never_ask() {
     let (mut claude, events, replies) = replay("sessions");
     // The handshake and the tool list are answered by the adapter itself.

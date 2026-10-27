@@ -37,3 +37,9 @@ Changes go through the CLI too, each printing one `--json` result line last:
 <name>`, and `edit-skill-overrides --json` with `{name, state, handles?}` on stdin, which
 writes `skillOverrides` into the folder's `.claude/settings.local.json`. A plugin's result is
 `{command, outcome: ok|failed|…, pluginId, scope, message, …}`.
+
+`think.jsonl`: `quill-capture think --model sonnet --settings project,local` with
+`--thinking-display summarized` (2.1.311, 2026-10-27). One question with a thinking block: the
+`thinking_delta`s stream its text, and the final `assistant` message carries it whole, trimmed
+of the trailing blank lines by quill. Anonymised: the home folder reads `/home/user` and the
+account `user@example.com`.

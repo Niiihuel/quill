@@ -63,6 +63,7 @@ impl Store {
                 event,
                 AgentEvent::TextDelta { .. }
                     | AgentEvent::Thinking { .. }
+                    | AgentEvent::ThinkingDelta { .. }
                     | AgentEvent::Tokens { .. }
                     | AgentEvent::Running { .. }
                     | AgentEvent::Reply { .. }

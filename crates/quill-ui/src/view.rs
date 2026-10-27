@@ -2628,7 +2628,8 @@ fn entries<'a>(
             }
             Item::Permission {
                 decided: Some(_), ..
-            } => {}
+            }
+            | Item::Thinking { .. } => {}
             other => {
                 // A step that waits on this permission runs under its card
                 //.
@@ -3438,7 +3439,7 @@ fn item(
             ok: false, error, ..
         } => text(error.clone().unwrap_or_else(|| "The turn failed".into()))
             .foreground(look::removed()),
-        Item::TurnEnd { .. } => Element::spacer().size(None, Some(0.0)),
+        Item::TurnEnd { .. } | Item::Thinking { .. } => Element::spacer().size(None, Some(0.0)),
         Item::Changes {
             request,
             files,
