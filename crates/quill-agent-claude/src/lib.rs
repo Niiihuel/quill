@@ -400,6 +400,26 @@ impl AgentAdapter for Claude {
     }
 
     // Desktop's install menu (2.9939.4 `caeab6b9d`), and the CLI's own /skills states.
+    // `claude mcp list` prints no JSON (2.1.311): a line a server, "name: target - ✔ Connected",
+    // after checking each one's health.
+    fn servers_query(&self) -> Option<Vec<String>> {
+        Some(vec!["mcp".into(), "list".into()])
+    }
+
+    fn servers(&self, stdout: &str) -> Vec<quill_agent::ConfiguredServer> {
+        stdout.lines().filter_map(configured_server).collect()
+    }
+
+    fn server_scopes(&self) -> quill_agent::Choices {
+        [
+            ("local", "This project, for me"),
+            ("project", "This project, shared"),
+            ("user", "All my projects"),
+        ]
+        .map(|(a, b)| (a.to_owned(), b.to_owned()))
+        .into()
+    }
+
     fn extension_words(&self) -> (quill_agent::Choices, quill_agent::Choices) {
         let pairs = |list: &[(&str, &str)]| {
             (list.iter())
@@ -475,6 +495,34 @@ impl AgentAdapter for Claude {
             ExtensionOp::RemoveMarketplace(name) => {
                 run(&["plugin", "marketplace", "remove", name, "--json"], 60)
             }
+            // `claude mcp add [--transport http] [-s scope] [-e K=V]… [-H "N: v"]… name
+            // target [-- args…]` (2.1.311 `mcp add --help`): options before the name.
+            ExtensionOp::AddServer(server) => {
+                let mut args: Vec<String> = vec!["mcp".into(), "add".into()];
+                if server.remote {
+                    args.extend(["--transport".into(), "http".into()]);
+                }
+                if let Some(scope) = &server.scope {
+                    args.extend(["--scope".into(), scope.clone()]);
+                }
+                for pair in &server.env {
+                    args.extend(["-e".into(), pair.clone()]);
+                }
+                for header in server.headers.iter().filter(|_| server.remote) {
+                    args.extend(["-H".into(), header.clone()]);
+                }
+                args.extend([server.name.clone(), server.target.clone()]);
+                if !server.args.is_empty() {
+                    args.push("--".into());
+                    args.extend(server.args.iter().cloned());
+                }
+                ProgramRun {
+                    args,
+                    stdin: None,
+                    timeout: 30,
+                }
+            }
+            ExtensionOp::RemoveServer(name) => run(&["mcp", "remove", name], 30),
             // The CLI writes it into the folder's local settings (`skillOverrides`).
             ExtensionOp::SkillState { skill, state } => {
                 let mut edit = skill.key.clone();
@@ -1043,6 +1091,42 @@ fn ready(body: &Value, ultracode: bool) -> AgentEvent {
         },
         mode: body["current_permission_mode"].as_str().map(str::to_owned),
     }
+}
+
+/// One line of `claude mcp list`: its name before the first ": " (a name may hold colons,
+/// "plugin:vercel:vercel"), its target before the last " - ", and how it stands after it;
+/// where it comes from by its name, as the CLI names plugins' and claude.ai's.
+fn configured_server(line: &str) -> Option<quill_agent::ConfiguredServer> {
+    use quill_agent::{McpSource, McpStatus};
+    let (name, rest) = line.split_once(": ")?;
+    let (target, state) = rest.rsplit_once(" - ")?;
+    let status = if state.contains("Connected") {
+        McpStatus::Connected
+    } else if state.contains("authentication") {
+        McpStatus::NeedsAuth
+    } else if state.contains("Pending") {
+        McpStatus::Pending
+    } else if state.contains("isabled") {
+        McpStatus::Disabled
+    } else {
+        McpStatus::Failed
+    };
+    let source = if name.starts_with("plugin:") {
+        McpSource::Plugin
+    } else if name.starts_with("claude.ai ") {
+        McpSource::Account
+    } else {
+        McpSource::Other
+    };
+    let target = target
+        .trim_end_matches(" (HTTP)")
+        .trim_end_matches(" (SSE)");
+    Some(quill_agent::ConfiguredServer {
+        name: name.trim().to_owned(),
+        target: target.trim().to_owned(),
+        status,
+        source,
+    })
 }
 
 /// The rows of `get_skills_dialog` (CLI 2.1.311): a skill whose state is `off` is listed and

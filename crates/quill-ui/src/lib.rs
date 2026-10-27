@@ -508,7 +508,9 @@ impl Store {
             | Event::Settings { .. }
             | Event::Storage { .. }
             | Event::SettingsNotSaved { .. }
-            | Event::Extensions { .. } => {}
+            | Event::Extensions { .. }
+            | Event::Servers { .. }
+            | Event::ServersFound { .. } => {}
         }
     }
 }
@@ -970,6 +972,8 @@ pub struct Ui {
     pub settings_error: Option<String>,
     /// Each agent's plugins and skills, as the engine last read them, by agent id.
     pub extensions: std::collections::HashMap<String, Extensions>,
+    /// Customize › Connectors.
+    pub connectors: Connectors,
     /// What Customize asks before removing, while it asks.
     pub removing: Option<Removing>,
     /// The marketplace being typed in Customize › Plugins.
@@ -1551,6 +1555,7 @@ impl Ui {
             storage: None,
             settings_error: None,
             extensions: std::collections::HashMap::new(),
+            connectors: Connectors::default(),
             removing: None,
             marketplace_field: String::new(),
             customize_query: String::new(),
@@ -1600,6 +1605,30 @@ impl Ui {
     }
 
     /// Ask for every agent's plugins and skills, for Customize's folder.
+    /// Customize › Connectors opened: each agent's MCP servers listed again, and the registry
+    /// asked once for its first page.
+    fn ask_servers(&mut self) -> Vec<Intent> {
+        let folder = customize_folder(self);
+        let mut intents = vec![];
+        for agent in &self.agents {
+            self.connectors
+                .listed
+                .entry(agent.id.clone())
+                .or_default()
+                .working = true;
+            intents.push(Intent::Servers {
+                agent: agent.id.clone(),
+                folder: folder.clone(),
+            });
+        }
+        if self.connectors.found.is_none() {
+            intents.push(Intent::FindServers {
+                query: self.connectors.query.clone(),
+            });
+        }
+        intents
+    }
+
     fn ask_extensions(&mut self) -> Vec<Intent> {
         let folder = customize_folder(self);
         for agent in &self.agents {
@@ -1854,6 +1883,33 @@ impl Ui {
             self.settings_error = Some(error.clone());
             return vec![];
         }
+        if let Event::Servers {
+            agent,
+            servers,
+            scopes,
+            error,
+            ..
+        } = event
+        {
+            let listed = self.connectors.listed.entry(agent.clone()).or_default();
+            listed.servers = Some(servers.clone());
+            listed.scopes = scopes.clone();
+            listed.error = error.clone();
+            listed.working = false;
+            return vec![];
+        }
+        // Only for the words in the search now: an answer to older ones is let go.
+        if let Event::ServersFound {
+            query,
+            offers,
+            error,
+        } = event
+        {
+            if *query == self.connectors.query {
+                self.connectors.found = Some((query.clone(), offers.clone(), error.clone()));
+            }
+            return vec![];
+        }
         if let Event::Extensions {
             agent,
             folder,
@@ -2086,6 +2142,25 @@ fn update_action(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Int
         }
         UiAction::InputChanged { id, value } if id == view::SETTINGS_SEARCH => {
             ui.settings_query = value.clone();
+            vec![]
+        }
+        // Connectors' search asks the MCP registry for each word typed.
+        UiAction::InputChanged { id, value } if id == view::SRV_SEARCH => {
+            ui.connectors.query = value.trim().to_owned();
+            vec![Intent::FindServers {
+                query: ui.connectors.query.clone(),
+            }]
+        }
+        UiAction::InputChanged { id, value } if id.starts_with(view::SRV_FIELD) => {
+            if let Some(adding) = ui.connectors.adding.as_mut() {
+                let field = match &id[view::SRV_FIELD.len()..] {
+                    "name" => &mut adding.name,
+                    "target" => &mut adding.target,
+                    "env" => &mut adding.env,
+                    _ => &mut adding.headers,
+                };
+                *field = value.clone();
+            }
             vec![]
         }
         UiAction::InputChanged { id, value } if id == view::CZ_SEARCH => {
@@ -3076,6 +3151,73 @@ pub struct Extensions {
     pub done: Option<String>,
 }
 
+/// Customize › Connectors: Yours or Discover, each agent's MCP servers as last listed, what
+/// the MCP registry found for the words searched, and the server being added.
+#[derive(Default)]
+pub struct Connectors {
+    pub discover: bool,
+    pub listed: std::collections::HashMap<String, ServersListed>,
+    pub query: String,
+    pub found: Option<(String, Vec<quill_model::ServerOffer>, Option<String>)>,
+    pub adding: Option<AddServer>,
+}
+
+/// An agent's MCP servers: `None` until listed, where one can be added, why the last list or
+/// change failed, and whether a change is under way.
+#[derive(Default)]
+pub struct ServersListed {
+    pub servers: Option<Vec<quill_model::ConfiguredServer>>,
+    pub scopes: Vec<(String, String)>,
+    pub error: Option<String>,
+    pub working: bool,
+}
+
+/// "Add custom connector" as typed: for which agent, its name, its address or command line,
+/// its `KEY=value` and `Name: value` lines, and where it goes.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AddServer {
+    pub agent: String,
+    pub name: String,
+    pub target: String,
+    pub env: String,
+    pub headers: String,
+    pub scope: Option<String>,
+}
+
+impl AddServer {
+    /// What the agent is asked to add: an address is reached over HTTP, anything else is a
+    /// command and its arguments, split at spaces.
+    pub fn server(&self) -> Option<quill_model::NewServer> {
+        let name = self.name.trim();
+        let mut words = self.target.split_whitespace();
+        let first = words.next()?;
+        let remote = first.starts_with("https://") || first.starts_with("http://");
+        let lines = |text: &str, mark: char| -> Vec<String> {
+            (text.lines().map(str::trim))
+                .filter(|l| l.contains(mark))
+                .map(str::to_owned)
+                .collect()
+        };
+        (!name.is_empty()).then(|| quill_model::NewServer {
+            name: name.to_owned(),
+            target: first.to_owned(),
+            args: if remote {
+                vec![]
+            } else {
+                words.map(str::to_owned).collect()
+            },
+            remote,
+            scope: self.scope.clone(),
+            env: lines(&self.env, '='),
+            headers: if remote {
+                lines(&self.headers, ':')
+            } else {
+                vec![]
+            },
+        })
+    }
+}
+
 /// What Customize asks before it removes: a plugin, or a marketplace with its plugins.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Removing {
@@ -3358,7 +3500,11 @@ fn plus_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
             ui.mcp = Some(McpDialog::new(session));
             Some(vec![Intent::McpStatus { session }])
         }
-        view::CONNECTORS_BROWSE => Some(page(ui, view::SETTINGS_CONNECTORS)),
+        view::CONNECTORS_BROWSE => {
+            page(ui, view::SETTINGS_CONNECTORS);
+            ui.connectors.discover = true;
+            Some(ui.ask_servers())
+        }
         view::PLUGINS_MANAGE => Some(page(ui, view::SETTINGS_PLUGINS)),
         view::PLUGINS_BROWSE => {
             let intents = page(ui, view::SETTINGS_PLUGINS);
@@ -3368,6 +3514,65 @@ fn plus_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
         }
         _ => None,
     }
+}
+
+/// Customize › Connectors' clicks: its tabs; "Add custom connector", empty or from an offer of
+/// the registry; where the server goes; adding it; and a server's menu and removal. `None`
+/// when `id` is none of them.
+fn connectors_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
+    let folder = customize_folder(ui);
+    let rest = id.strip_prefix("srv:")?;
+    let c = &mut ui.connectors;
+    match rest.split_once(':').unwrap_or((rest, "")) {
+        ("tab", tab) => c.discover = tab == "discover",
+        ("add", agent) => {
+            c.adding = Some(AddServer {
+                agent: agent.to_owned(),
+                ..AddServer::default()
+            })
+        }
+        ("offer", at) => {
+            let (_, offers, _) = c.found.as_ref()?;
+            let offer = offers.get(at.parse::<usize>().ok()?)?.clone();
+            let agent = ui.agents.first()?.id.clone();
+            // The registry's name's last part, as a server's own name.
+            let name = offer.name.rsplit(['/', '.']).next().unwrap_or(&offer.name);
+            let mut target = vec![offer.target.clone()];
+            target.extend(offer.args.iter().cloned());
+            ui.connectors.adding = Some(AddServer {
+                agent,
+                name: name.to_owned(),
+                target: target.join(" "),
+                env: offer.env.join("\n"),
+                headers: offer.headers.join("\n"),
+                scope: None,
+            });
+        }
+        ("scope", scope) => c.adding.as_mut()?.scope = Some(scope.to_owned()),
+        ("cancel", _) => c.adding = None,
+        ("save", _) => {
+            let adding = c.adding.take()?;
+            let server = adding.server()?;
+            c.listed.entry(adding.agent.clone()).or_default().working = true;
+            return Some(vec![Intent::ExtensionOp {
+                agent: adding.agent,
+                folder,
+                op: quill_model::ExtensionOp::AddServer(server),
+            }]);
+        }
+        ("remove", rest) => {
+            let (agent, name) = rest.split_once(':')?;
+            ui.settings_menu = None;
+            c.listed.entry(agent.to_owned()).or_default().working = true;
+            return Some(vec![Intent::ExtensionOp {
+                agent: agent.to_owned(),
+                folder,
+                op: quill_model::ExtensionOp::RemoveServer(name.to_owned()),
+            }]);
+        }
+        _ => return None,
+    }
+    Some(vec![])
 }
 
 /// How often the open MCP dialog asks for its servers again (inferred: Desktop polls them,
@@ -3556,9 +3761,12 @@ fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
     if let Some(page) = id.strip_prefix("settings:page:") {
         ui.settings_page = Some(page.to_owned());
         ui.settings_query.clear();
-        // Customize's pages read each agent's plugins and skills afresh.
+        // Customize's pages read each agent's plugins and skills, or servers, afresh.
         if [view::SETTINGS_PLUGINS, view::SETTINGS_SKILLS].contains(&page) {
             return Some(ui.ask_extensions());
+        }
+        if page == view::SETTINGS_CONNECTORS {
+            return Some(ui.ask_servers());
         }
         return Some(vec![]);
     }
@@ -3566,6 +3774,9 @@ fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
         return Some(intents);
     }
     if let Some(intents) = extensions_clicked(ui, id) {
+        return Some(intents);
+    }
+    if let Some(intents) = connectors_clicked(ui, id) {
         return Some(intents);
     }
     let rest = id.strip_prefix("set:")?;

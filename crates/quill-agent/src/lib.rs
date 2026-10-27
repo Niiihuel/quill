@@ -211,6 +211,33 @@ pub enum ExtensionOp {
         skill: Skill,
         state: String,
     },
+    /// An MCP server added to the agent, or one of its own taken away, by name.
+    AddServer(NewServer),
+    RemoveServer(String),
+}
+
+/// An MCP server the agent is set up with, as its own list says: its name, where it runs (a
+/// command or an address), how it stands, and where it came from.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ConfiguredServer {
+    pub name: String,
+    pub target: String,
+    pub status: McpStatus,
+    pub source: McpSource,
+}
+
+/// An MCP server to add: by an address (`remote`) or a command and its arguments, where
+/// `scope` says (the agent's default without one), with its environment's `KEY=value`s and,
+/// for an address, its `Name: value` headers.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct NewServer {
+    pub name: String,
+    pub target: String,
+    pub args: Vec<String>,
+    pub remote: bool,
+    pub scope: Option<String>,
+    pub env: Vec<String>,
+    pub headers: Vec<String>,
 }
 
 /// What to run for an [`ExtensionOp`]: the program's arguments and what goes to its stdin.
@@ -606,6 +633,17 @@ pub trait AgentAdapter: Send {
         None
     }
     fn marketplaces(&self, _stdout: &str) -> Vec<Marketplace> {
+        vec![]
+    }
+    /// The arguments that list the MCP servers the agent is set up with, read by
+    /// [`servers`](Self::servers), and where one can be added, with how to say each.
+    fn servers_query(&self) -> Option<Vec<String>> {
+        None
+    }
+    fn servers(&self, _stdout: &str) -> Vec<ConfiguredServer> {
+        vec![]
+    }
+    fn server_scopes(&self) -> Choices {
         vec![]
     }
     /// Where a plugin can be installed and what a skill can be, with how to say each: see

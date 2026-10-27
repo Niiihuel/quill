@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 
 mod bridge;
+mod registry;
 mod servers;
 
 pub use quill_browser::{native, Frame, Frames, Native, Pixels, Present};
@@ -391,6 +392,56 @@ impl Router {
     /// outside any session, after making a change first when asked; its running sessions
     /// then load their plugins or skills again, as Desktop's do (2.9939.4 `zC`). Answered by
     /// `Event::Extensions`.
+    /// An agent's MCP servers for `folder`, as its own program lists them; answered by
+    /// `Event::Servers`.
+    fn servers(&self, agent: String, folder: PathBuf) {
+        self.server_op(agent, folder, None)
+    }
+
+    /// Add or take away one of an agent's MCP servers, then list them again; the failure, if
+    /// any, goes with the list.
+    fn server_op(
+        &self,
+        agent: String,
+        folder: PathBuf,
+        op: impl Into<Option<quill_model::ExtensionOp>>,
+    ) {
+        let Some(adapter) = adapter(&agent) else {
+            return;
+        };
+        let op = op.into();
+        let program = (self.program(&agent))
+            .unwrap_or_else(|| adapter.launch(&SessionSpec::default()).program);
+        let ui = self.ui.clone();
+        tokio::spawn(async move {
+            let mut error = None;
+            if let Some(run) = op.as_ref().and_then(|op| adapter.extension_op(op)) {
+                if let Err(e) = run_program(&program, &run, &folder).await {
+                    error = Some(e);
+                }
+            }
+            let mut servers = vec![];
+            if let Some(args) = adapter.servers_query() {
+                let run = quill_agent::ProgramRun {
+                    args,
+                    stdin: None,
+                    timeout: 90,
+                };
+                match run_program(&program, &run, &folder).await {
+                    Ok(out) => servers = adapter.servers(&out),
+                    Err(e) => drop(error.get_or_insert(e)),
+                }
+            }
+            ui(Event::Servers {
+                agent,
+                folder,
+                servers,
+                scopes: adapter.server_scopes(),
+                error,
+            });
+        });
+    }
+
     fn extensions(&self, agent: String, folder: PathBuf, op: Option<quill_model::ExtensionOp>) {
         let Some(adapter) = adapter(&agent) else {
             return;
@@ -1011,8 +1062,51 @@ impl Router {
                 self.extensions(agent, folder, None);
                 return;
             }
+            Intent::Servers { agent, folder } => {
+                self.servers(agent, folder);
+                return;
+            }
+            // The registry, asked with the computer's own `curl` (Linux, macOS, Windows 10 on).
+            Intent::FindServers { query } => {
+                let ui = self.ui.clone();
+                tokio::spawn(async move {
+                    let run = quill_agent::ProgramRun {
+                        args: vec![
+                            "-sSfL".into(),
+                            "--max-time".into(),
+                            "20".into(),
+                            registry::url(&query),
+                        ],
+                        stdin: None,
+                        timeout: 25,
+                    };
+                    let home = std::env::temp_dir();
+                    let found = run_program("curl", &run, &home)
+                        .await
+                        .and_then(|body| registry::offers(&body));
+                    let (offers, error) = match found {
+                        Ok(offers) => (offers, None),
+                        Err(error) => (vec![], Some(error)),
+                    };
+                    ui(Event::ServersFound {
+                        query,
+                        offers,
+                        error,
+                    });
+                });
+                return;
+            }
             Intent::ExtensionOp { agent, folder, op } => {
-                self.extensions(agent, folder, Some(op));
+                let server = matches!(
+                    op,
+                    quill_model::ExtensionOp::AddServer(_)
+                        | quill_model::ExtensionOp::RemoveServer(_)
+                );
+                if server {
+                    self.server_op(agent, folder, op);
+                } else {
+                    self.extensions(agent, folder, Some(op));
+                }
                 return;
             }
             Intent::MeasureStorage => {

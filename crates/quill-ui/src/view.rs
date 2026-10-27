@@ -119,6 +119,10 @@ pub const ACCOUNT_MENU: &str = "account:menu";
 pub const SETTINGS_SKILLS: &str = "skills";
 pub const SETTINGS_PLUGINS: &str = "plugins";
 pub const SETTINGS_CONNECTORS: &str = "connectors";
+/// Connectors' search of the MCP registry, and "Add custom connector"'s fields
+/// (`{SRV_FIELD}name`, `target`, `env`, `headers`).
+pub const SRV_SEARCH: &str = "srv-search";
+pub const SRV_FIELD: &str = "srv-field:";
 /// Customize's question before removing, and the marketplace's field (`{id}{agent}`).
 pub const EXT_REMOVE_YES: &str = "ext-remove:yes";
 pub const EXT_REMOVE_NO: &str = "ext-remove:no";
@@ -541,6 +545,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     let root = mcp_dialog(store, ui, root, window, palette);
     let root = directory_dialog(ui, root, window, palette);
     let root = marketplace_dialog(ui, root, palette);
+    let root = server_dialog(ui, root, palette);
     let root = removing_dialog(ui, root);
     // Desktop's own wording for both closes (Ion `cccc2cf0a`,) and for a delete
     //, less its vendor's servers: quill forgets only its own record.
@@ -7758,6 +7763,12 @@ fn customize_pages() -> Vec<SettingsPage> {
             icon: icons::PLUG,
             groups: vec![],
         },
+        SettingsPage {
+            key: SETTINGS_CONNECTORS.into(),
+            title: "Connectors".into(),
+            icon: icons::CONNECTORS,
+            groups: vec![],
+        },
     ]
 }
 
@@ -7770,7 +7781,287 @@ fn customize_own(ui: &Ui, window: Size) -> Vec<(String, Element)> {
     vec![
         (SETTINGS_SKILLS.into(), skills_page(ui, window)),
         (SETTINGS_PLUGINS.into(), plugins_page(ui, window)),
+        (SETTINGS_CONNECTORS.into(), connectors_page(ui, window)),
     ]
+}
+
+/// Customize's Yours | Discover, as Desktop's tabs beside a page's title (3.6556.2
+/// `cd08e92dc`): the one shown on the tab's fill.
+fn customize_tabs(tabs: &[(&str, &str, bool)]) -> Element {
+    let tab = |id: &str, label: &str, on: bool| {
+        let row = Element::row(vec![
+            hgap(10.0),
+            text(label).font_size(BODY).centered_y(),
+            hgap(10.0),
+        ])
+        .size(None, Some(28.0));
+        let tab = Element::clickable(id, row).radius(8.0);
+        if on {
+            tab.background(look::customize_tab())
+                .border(look::customize_tab_edge(), 1.0)
+        } else {
+            tab.hover_background(look::tool_hover())
+        }
+    };
+    Element::row(
+        tabs.iter()
+            .map(|(id, label, on)| tab(id, label, *on))
+            .collect(),
+    )
+    .gap(4.0)
+}
+
+/// Customize › Connectors, the MCP servers agents work with. Yours: each agent's own, as its
+/// program lists them, each but a plugin's or an account's removable. Discover: the public MCP
+/// registry, any server added through "Add custom connector" filled in from it. Desktop's own
+/// lists claude.ai's directory, which a program on this computer cannot reach.
+fn connectors_page(ui: &Ui, window: Size) -> Element {
+    use quill_components::customize;
+    use quill_model::{McpSource, McpStatus};
+    let width = settings::own_page_width(window);
+    let c = &ui.connectors;
+    let first = ui.agents.first().map_or(String::new(), |a| a.id.clone());
+    let tabs = customize_tabs(&[
+        ("srv:tab:yours", "Yours", !c.discover),
+        ("srv:tab:discover", "Discover", c.discover),
+    ]);
+    let mut tools = vec![];
+    if c.discover {
+        tools.push(customize::search(
+            SRV_SEARCH,
+            &c.query,
+            "Search the MCP registry",
+        ));
+    }
+    tools.push(customize::button(
+        &format!("srv:add:{first}"),
+        "Add",
+        Some(icons::ADD),
+        false,
+        true,
+    ));
+    let header = customize::header("Connectors", vec![tabs], tools, width);
+    let mut column = vec![header, Element::spacer().size(None, Some(13.0))];
+    let failed = |words: String| text(words).font_size(BODY).foreground(look::failed());
+    if !c.discover {
+        for agent in &ui.agents {
+            let listed = c.listed.get(&agent.id);
+            let Some(servers) = listed.and_then(|l| l.servers.as_ref()) else {
+                column.push(customize::loading(
+                    "srv:loading",
+                    "Checking connectors\u{2026}",
+                ));
+                continue;
+            };
+            let listed = listed.expect("listed");
+            if listed.working {
+                column.push(customize::loading("srv:loading", "Reading again\u{2026}"));
+            }
+            column.extend(
+                listed
+                    .error
+                    .clone()
+                    .map(|e| failed(format!("Couldn\u{2019}t do that. {e}"))),
+            );
+            column.push(customize::section(
+                "Your connectors",
+                Some(servers.len()),
+                None,
+                width,
+            ));
+            if servers.is_empty() {
+                column.push(customize::empty(
+                    icons::PLUG,
+                    "No connectors yet. Add one, or find one in Discover.",
+                    width,
+                ));
+            }
+            for server in servers {
+                let status = match server.status {
+                    McpStatus::Connected => "Connected",
+                    McpStatus::NeedsAuth => "Needs authentication",
+                    McpStatus::Pending => "Pending approval",
+                    McpStatus::Disabled => "Off",
+                    McpStatus::Failed => "Failed to connect",
+                };
+                let from = match server.source {
+                    McpSource::Plugin => " \u{b7} from a plugin",
+                    McpSource::Account => " \u{b7} from your account",
+                    _ => "",
+                };
+                let words = format!("{status}{from} \u{b7} {}", server.target);
+                // A plugin's goes with its plugin, an account's with the account.
+                let more = matches!(server.source, McpSource::Other).then(|| {
+                    let menu = format!("cz:more:srv:{}:{}", agent.id, server.name);
+                    let entries = vec![limn::DropdownMenuItem::new(
+                        format!("srv:remove:{}:{}", agent.id, server.name),
+                        "Remove",
+                    )
+                    .icon(icons::of(icons::CLOSE))
+                    .destructive(look::failed())
+                    .into()];
+                    customize::more(
+                        &menu,
+                        entries,
+                        ui.settings_menu.as_deref() == Some(menu.as_str()),
+                    )
+                });
+                column.push(customize::item(
+                    icons::PLUG,
+                    &server.name,
+                    &words,
+                    None,
+                    more,
+                    width,
+                ));
+            }
+        }
+    } else {
+        column.push(
+            muted("Servers listed in the public MCP registry. Make sure you trust one before you add it: it runs on this computer.")
+                .font_size(BODY),
+        );
+        column.push(Element::spacer().size(None, Some(8.0)));
+        match &c.found {
+            None => column.push(customize::loading(
+                "srv:finding",
+                "Searching the MCP registry\u{2026}",
+            )),
+            Some((_, _, Some(error))) => column.push(failed(format!(
+                "Couldn\u{2019}t reach the MCP registry. {error}"
+            ))),
+            Some((_, offers, None)) if offers.is_empty() => column.push(customize::empty(
+                icons::CONNECTORS,
+                "No servers match.",
+                width,
+            )),
+            Some((_, offers, None)) => {
+                for (at, offer) in offers.iter().enumerate() {
+                    let kind = if offer.remote {
+                        "Remote"
+                    } else {
+                        offer.target.as_str()
+                    };
+                    let words = format!(
+                        "{} \u{b7} {kind} \u{b7} {}",
+                        cut(&offer.description, 140),
+                        offer.version
+                    );
+                    let add =
+                        customize::button(&format!("srv:offer:{at}"), "Add", None, false, false);
+                    let name = offer.title.clone().unwrap_or_else(|| offer.name.clone());
+                    column.push(customize::item(
+                        icons::CONNECTORS,
+                        &name,
+                        &words,
+                        Some(add),
+                        None,
+                        width,
+                    ));
+                }
+            }
+        }
+    }
+    Element::column(column).gap(4.0)
+}
+
+/// "Add custom connector": its name, the address it is reached at or the command that starts
+/// it, its environment and headers, and where it goes, as the agent's program adds it.
+fn server_dialog(ui: &Ui, base: Element, palette: ComponentPalette) -> Element {
+    let Some(adding) = &ui.connectors.adding else {
+        return base;
+    };
+    let field = |key: &str, value: &str, hint: &str| {
+        limn::TextField::new(format!("{SRV_FIELD}{key}"), value, hint, palette)
+            .render()
+            .size(Some(460.0), Some(32.0))
+    };
+    let area = |key: &str, value: &str, hint: &str| {
+        Element::text_area(format!("{SRV_FIELD}{key}"), value, hint)
+            .size(Some(460.0), Some(64.0))
+            .background(look::palette().raised)
+            .border(look::settings_field_edge(), 1.0)
+            .radius(8.0)
+    };
+    let label = |words: &str| text(words).font_size(BODY);
+    let note = |words: &str| muted(words).font_size(SMALL);
+    let scopes = ui
+        .connectors
+        .listed
+        .get(&adding.agent)
+        .map_or(&[][..], |l| &l.scopes[..]);
+    let chosen = adding
+        .scope
+        .clone()
+        .or_else(|| scopes.first().map(|s| s.0.clone()));
+    let mut body = vec![
+        note("Make sure you trust a server before you add it: it runs on this computer."),
+        label("Name"),
+        field("name", &adding.name, "my-server"),
+        label("Address or command"),
+        field(
+            "target",
+            &adding.target,
+            "https://\u{2026}/mcp, or npx -y package",
+        ),
+        note("An https:// address, or the command that starts it with its arguments."),
+        label("Environment variables"),
+        area("env", &adding.env, "KEY=value, one a line"),
+    ];
+    if adding.target.trim_start().starts_with("http") {
+        body.push(label("Headers"));
+        body.push(area("headers", &adding.headers, "Name: value, one a line"));
+    }
+    if !scopes.is_empty() {
+        body.push(label("Where"));
+        body.push(
+            Element::row(
+                scopes
+                    .iter()
+                    .map(|(scope, words)| {
+                        keyed_button(
+                            &format!("srv:scope:{scope}"),
+                            words,
+                            "",
+                            chosen.as_deref() == Some(scope),
+                            true,
+                            palette,
+                        )
+                    })
+                    .collect(),
+            )
+            .gap(8.0)
+            .wrap()
+            .max_width(460.0),
+        );
+    }
+    let footer = Element::row(vec![
+        Element::spacer().flex(1.0),
+        keyed_button("srv:cancel", "Cancel", "", false, true, palette),
+        keyed_button(
+            "srv:save",
+            "Add",
+            "",
+            true,
+            adding.server().is_some(),
+            palette,
+        ),
+    ])
+    .gap(8.0);
+    limn::Modal::new(
+        base,
+        true,
+        "Add custom connector",
+        "",
+        "srv:cancel",
+        look::palette(),
+    )
+    .width(520.0)
+    .body(Element::column(body).gap(8.0))
+    .footer(footer)
+    .backdrop_dismiss(true)
+    .scrim(look::scrim())
+    .render()
 }
 
 /// What a Customize page says over its lists: why the last change failed, or what it did.
@@ -8999,7 +9290,10 @@ fn settings_dialog(
     }
     groups.push(("This computer", owned(&["system"])));
     // Desktop's Customize group, with what quill's agents offer.
-    groups.push(("Customize", owned(&[SETTINGS_SKILLS, SETTINGS_PLUGINS])));
+    groups.push((
+        "Customize",
+        owned(&[SETTINGS_SKILLS, SETTINGS_PLUGINS, SETTINGS_CONNECTORS]),
+    ));
     settings::dialog(
         base,
         pages,

@@ -1224,6 +1224,30 @@ fn a_link_opens_in_the_sessions_browser_and_its_menu_closes() {
 }
 
 #[test]
+fn a_custom_connector_is_an_address_or_a_command_with_its_settings() {
+    let mut adding = crate::AddServer {
+        agent: "claude".into(),
+        name: " ctx ".into(),
+        target: "https://mcp.context7.com/mcp".into(),
+        env: "A=1\nnot a pair".into(),
+        headers: "X-Key: 1".into(),
+        scope: None,
+    };
+    let server = adding.server().unwrap();
+    assert!(server.remote && server.name == "ctx" && server.args.is_empty());
+    assert_eq!(
+        (server.env, server.headers),
+        (vec!["A=1".to_owned()], vec!["X-Key: 1".to_owned()])
+    );
+    adding.target = "npx -y @x/pg <database_url>".into();
+    let server = adding.server().unwrap();
+    assert!(!server.remote && server.target == "npx" && server.headers.is_empty());
+    assert_eq!(server.args, ["-y", "@x/pg", "<database_url>"]);
+    adding.name.clear();
+    assert!(adding.server().is_none());
+}
+
+#[test]
 fn each_session_keeps_its_model_and_effort() {
     let (mut store, mut ui) = store_with_session();
     store.apply(Event::SessionCreated {

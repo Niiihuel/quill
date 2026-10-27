@@ -4,10 +4,10 @@
 use std::path::PathBuf;
 
 pub use quill_agent::{
-    AgentCapabilities, AgentEvent, ContextCategory, ContextKind, ContextUsage, Decision,
-    ExtensionOp, Extensions, FileChange, Marketplace, McpServer, McpSource, McpStatus, McpTool,
-    ModelInfo, PlanLimits, Plugin, PluginOffer, Skill, Suggestion, TaskUsage, ToolContent, Usage,
-    UsageWindow,
+    AgentCapabilities, AgentEvent, ConfiguredServer, ContextCategory, ContextKind, ContextUsage,
+    Decision, ExtensionOp, Extensions, FileChange, Marketplace, McpServer, McpSource, McpStatus,
+    McpTool, ModelInfo, NewServer, PlanLimits, Plugin, PluginOffer, Skill, Suggestion, TaskUsage,
+    ToolContent, Usage, UsageWindow,
 };
 
 /// quill's own id of a session.
@@ -23,6 +23,25 @@ pub struct NewSession {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub mode: Option<String>,
+}
+
+/// An MCP server the public registry offers: its names and words, and how to run it, by an
+/// address or a command (`npx`, `uvx`, `docker`), with the settings it needs filled in.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ServerOffer {
+    /// The registry's name, `namespace/name`.
+    pub name: String,
+    pub title: Option<String>,
+    pub description: String,
+    pub version: String,
+    pub repository: Option<String>,
+    /// How it runs: the address it is reached at, or the command with its arguments.
+    pub remote: bool,
+    pub target: String,
+    pub args: Vec<String>,
+    /// What it needs set: environment variables, or headers for an address.
+    pub env: Vec<String>,
+    pub headers: Vec<String>,
 }
 
 /// How one file changed during a request.
@@ -327,6 +346,16 @@ pub enum Intent {
     Extensions {
         agent: String,
         folder: PathBuf,
+    },
+    /// The MCP servers an agent is set up with for a folder, outside any session; answered by
+    /// `Event::Servers`. Listing them can start them, to see how they stand.
+    Servers {
+        agent: String,
+        folder: PathBuf,
+    },
+    /// Servers the public MCP registry lists for `query`; answered by `Event::ServersFound`.
+    FindServers {
+        query: String,
     },
     /// Change an agent's plugins, marketplaces or skills; its running sessions load them
     /// again, and `Event::Extensions` follows.
@@ -750,6 +779,21 @@ pub enum Event {
         extensions: Extensions,
         error: Option<String>,
     },
+    /// An agent's MCP servers for a folder, where one can be added, or why they could not be
+    /// listed.
+    Servers {
+        agent: String,
+        folder: PathBuf,
+        servers: Vec<ConfiguredServer>,
+        scopes: Vec<(String, String)>,
+        error: Option<String>,
+    },
+    /// What the MCP registry lists for `query`, or why it could not be asked.
+    ServersFound {
+        query: String,
+        offers: Vec<ServerOffer>,
+        error: Option<String>,
+    },
     /// What the session hears next was passed on by the session `from`, which started it.
     Forwarded {
         session: SessionId,
@@ -829,7 +873,9 @@ impl Event {
             Event::Settings { .. }
             | Event::Storage { .. }
             | Event::SettingsNotSaved { .. }
-            | Event::Extensions { .. } => 0,
+            | Event::Extensions { .. }
+            | Event::Servers { .. }
+            | Event::ServersFound { .. } => 0,
         }
     }
 }

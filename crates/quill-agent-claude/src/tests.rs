@@ -325,6 +325,80 @@ fn skills_and_plugins_are_read_as_the_cli_lists_them() {
 }
 
 #[test]
+fn mcp_servers_are_listed_added_and_removed_with_the_clis_own_commands() {
+    let claude = Claude::new();
+    let listed = claude.servers(
+        "Checking MCP server health\u{2026}\n\n\
+         claude.ai Gmail: https://gmailmcp.googleapis.com/mcp/v1 - \u{2714} Connected\n\
+         plugin:vercel:vercel: https://mcp.vercel.com (HTTP) - ! Needs authentication\n\
+         rea: /home/me/bin/rea mcp - \u{2718} Failed to connect\n",
+    );
+    let names: Vec<_> = listed
+        .iter()
+        .map(|s| (s.name.as_str(), s.target.as_str(), s.status, s.source))
+        .collect();
+    use quill_agent::{McpSource, McpStatus};
+    assert_eq!(
+        names,
+        [
+            (
+                "claude.ai Gmail",
+                "https://gmailmcp.googleapis.com/mcp/v1",
+                McpStatus::Connected,
+                McpSource::Account
+            ),
+            (
+                "plugin:vercel:vercel",
+                "https://mcp.vercel.com",
+                McpStatus::NeedsAuth,
+                McpSource::Plugin
+            ),
+            (
+                "rea",
+                "/home/me/bin/rea mcp",
+                McpStatus::Failed,
+                McpSource::Other
+            ),
+        ]
+    );
+    let args = |server| {
+        claude
+            .extension_op(&ExtensionOp::AddServer(server))
+            .unwrap()
+            .args
+            .join(" ")
+    };
+    let remote = quill_agent::NewServer {
+        name: "ctx".into(),
+        target: "https://mcp.context7.com/mcp".into(),
+        remote: true,
+        scope: Some("user".into()),
+        headers: vec!["X-Key: 1".into()],
+        ..Default::default()
+    };
+    assert_eq!(
+        args(remote),
+        "mcp add --transport http --scope user -H X-Key: 1 ctx https://mcp.context7.com/mcp"
+    );
+    let local = quill_agent::NewServer {
+        name: "pg".into(),
+        target: "npx".into(),
+        args: vec!["-y".into(), "@x/pg".into()],
+        env: vec!["TOKEN=a".into()],
+        ..Default::default()
+    };
+    assert_eq!(args(local), "mcp add -e TOKEN=a pg npx -- -y @x/pg");
+    assert_eq!(
+        claude
+            .extension_op(&ExtensionOp::RemoveServer("pg".into()))
+            .unwrap()
+            .args
+            .join(" "),
+        "mcp remove pg"
+    );
+}
+
+#[test]
 fn changes_run_the_clis_own_commands() {
     let claude = Claude::new();
     let args = |op: ExtensionOp| claude.extension_op(&op).unwrap().args.join(" ");
