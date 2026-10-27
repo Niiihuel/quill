@@ -435,6 +435,7 @@ impl Router {
                 name: a.name().to_owned(),
                 tested: a.tested().iter().map(|v| (*v).to_owned()).collect(),
                 options: a.options(),
+                icon: a.icon().map(str::to_owned),
             })
             .collect();
         (self.ui)(Event::Settings {
@@ -2640,6 +2641,12 @@ fn report_text(reports: &[quill_model::Report]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_claude_adapter_ships_its_logo() {
+        let icon = adapter("claude").unwrap().icon().unwrap();
+        assert!(icon.starts_with("<svg"));
+    }
 
     #[test]
     fn settings_are_kept_whole_and_an_unknown_key_reads_as_defaults() {

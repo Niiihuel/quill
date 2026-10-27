@@ -1375,6 +1375,7 @@ fn an_adapters_switch_flips_and_its_list_chooses() {
             option("sandbox", &[], "false"),
             option("style", &[("", "Default"), ("x", "X")], ""),
         ],
+        icon: None,
     }];
     click(&store, &mut ui, view::SETTINGS_OPEN);
     let saved = |intents: Vec<Intent>| match intents.as_slice() {
@@ -1996,6 +1997,7 @@ fn the_sidebars_customize_and_the_persons_menu_open_settings() {
             name: "Claude Code".into(),
             tested: vec![],
             options: vec![],
+            icon: None,
         }],
     });
     ui.cwd = "/work".into();
@@ -2028,6 +2030,7 @@ fn customize_lists_and_changes_an_agents_plugins_marketplaces_and_skills() {
             name: "Claude Code".into(),
             tested: vec![],
             options: vec![],
+            icon: None,
         }],
     });
     // A project folder: plugins install for it, and skills' states are kept there.
@@ -2730,6 +2733,7 @@ fn settings_save_through_the_engine_and_shape_what_comes_next() {
                 name: "Claude Code".into(),
                 tested: vec!["2.1.310".into()],
                 options: vec![],
+                icon: None,
             }],
         });
     };

@@ -412,6 +412,11 @@ impl AgentAdapter for Claude {
         Some(vec!["mcp".into(), "list".into()])
     }
 
+    // svgl.app's "Claude AI" icon, recolored to currentColor.
+    fn icon(&self) -> Option<&'static str> {
+        Some(include_str!("../assets/claude.svg"))
+    }
+
     fn servers(&self, stdout: &str) -> Vec<quill_agent::ConfiguredServer> {
         stdout.lines().filter_map(configured_server).collect()
     }

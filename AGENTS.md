@@ -6,7 +6,7 @@
 - Nothing blocking on the UI thread: processes, git, disk and PTYs live in `quill-engine`.
 - Persist before notifying: an important state change is written to `quill-store` before the UI sees it.
 - Unknown CLI messages are kept as `Unknown`, never a crash. A CLI version outside the tested range is reported in the UI.
-- quill does not identify itself as another client (e.g. Claude Desktop) and uses no vendor code, fonts, icons or branding.
+- quill does not identify itself as another client (e.g. Claude Desktop) and uses no vendor code, fonts, icons or branding. One exception: an adapter (`quill-agent-<id>`) may ship its agent's logo, only to name that agent where quill lists agents; generic code never holds one.
 - Every new dependency gets a one-line comment in `Cargo.toml` saying why.
 - Behavior taken from Claude Desktop cites its evidence (`[EV-…]` from `(private notes)`); what is inferred is said to be inferred.
 - Before a commit: `scripts/check.sh` (fmt, clippy `-D warnings`, tests).

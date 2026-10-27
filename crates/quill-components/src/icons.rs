@@ -4,6 +4,9 @@
 //! taken from that font, which is Anthropic's own. Each is an SVG in `currentColor`, which
 //! limn tints like its own icons through `Icon::Custom`.
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
 macro_rules! icon {
     ($body:expr) => {
         concat!(
@@ -18,6 +21,19 @@ macro_rules! icon {
 /// A drawing as limn takes it.
 pub fn of(svg: &'static str) -> limn::Icon {
     limn::Icon::Custom(svg)
+}
+
+/// An agent's logo, as its adapter ships it, or the code icon when it ships none.
+pub fn agent(svg: Option<&str>) -> &'static str {
+    static LOGOS: OnceLock<Mutex<HashMap<String, &'static str>>> = OnceLock::new();
+    let Some(svg) = svg else { return CODE };
+    // shortcut: the cache leaks one string per distinct logo, at most one per installed agent.
+    LOGOS
+        .get_or_init(Default::default)
+        .lock()
+        .expect("agent logos")
+        .entry(svg.to_owned())
+        .or_insert_with(|| Box::leak(svg.to_owned().into_boxed_str()))
 }
 
 // Actions.
@@ -257,3 +273,17 @@ pub const ALL: &[(&str, &str)] = &[
     ("warning", WARNING),
     ("spark", SPARK),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_agent_logo_is_kept_once_and_no_logo_is_the_code_icon() {
+        let svg = "<svg xmlns='http://www.w3.org/2000/svg'><path d='M0 0'/></svg>";
+        let first = agent(Some(svg));
+        assert_eq!(first, svg);
+        assert!(std::ptr::eq(first, agent(Some(svg))));
+        assert_eq!(agent(None), CODE);
+    }
+}

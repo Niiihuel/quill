@@ -302,6 +302,9 @@ pub struct AgentInfo {
     /// Its own settings, as its adapter declares them.
     #[serde(default)]
     pub options: Vec<AgentOption>,
+    /// Its logo, an SVG in `currentColor`, as its adapter ships it.
+    #[serde(default)]
+    pub icon: Option<String>,
 }
 
 /// What the UI asks of the engine.

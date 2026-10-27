@@ -9251,7 +9251,7 @@ fn agent_page(
     SettingsPage {
         key: format!("agent:{mine}"),
         title: agent.name.clone(),
-        icon: icons::CODE,
+        icon: icons::agent(agent.icon.as_deref()),
         groups,
     }
 }

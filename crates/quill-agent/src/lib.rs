@@ -678,6 +678,10 @@ pub trait AgentAdapter: Send {
     fn options(&self) -> Vec<AgentOption> {
         vec![]
     }
+    /// The agent's own logo, an SVG drawn in `currentColor`, to name it where quill lists agents (AGENTS.md).
+    fn icon(&self) -> Option<&'static str> {
+        None
+    }
     /// Where a plugin can be installed and what a skill can be, with how to say each: see
     /// [`Extensions::scopes`] and [`Extensions::skill_states`].
     fn extension_words(&self) -> (Choices, Choices) {
