@@ -214,8 +214,9 @@ pub const STACK_HANDLE: &str = "split:stack";
 /// address bar, and the toolbar's buttons; tabs are "browser:tab:{id}" and their close
 /// "browser:close:{id}".
 pub const BROWSER_TOGGLE: &str = "browser:toggle";
-/// The Files pane: the session's folder as a tree.
+/// The Files pane: the session's folder as a tree, and the tree's filter.
 pub const FILES_TOGGLE: &str = "files:toggle";
+pub use crate::files::{FILTER_CLEAR, FILTER_FIELD};
 pub const BROWSER_VIEW: &str = "browser:view";
 pub const BROWSER_URL: &str = "browser:url";
 pub const BROWSER_NEW_TAB: &str = "browser:new";
@@ -729,15 +730,35 @@ fn files_pane(ui: &Ui, width: f32, height: f32, palette: ComponentPalette) -> El
                 .padding(8.0),
             );
         }
-        let rows = below - if column.is_empty() { 0.0 } else { 44.0 };
-        column.push(tree::view(
-            &pane.tree,
-            &Pack::Quill,
-            tree::Look::Desktop,
-            shown.as_deref(),
-            None,
-            [w, rows.max(0.0)],
-        ));
+        // Desktop 3.6556.2's filter over the tree (`cccc2cf0a`).
+        let filter = limn::SearchField::new(
+            FILTER_FIELD,
+            &pane.filter,
+            "Filter, or ? to search in files",
+            palette,
+        )
+        .size(ControlSize::Compact)
+        .width(w - 16.0)
+        .clearable(true)
+        .render();
+        let rows = below - 44.0 - if column.is_empty() { 0.0 } else { 44.0 };
+        column.push(
+            Element::row(vec![filter])
+                .padding(8.0)
+                .size(None, Some(44.0)),
+        );
+        column.push(if pane.filter.is_empty() {
+            tree::view(
+                &pane.tree,
+                &Pack::Quill,
+                tree::Look::Desktop,
+                shown.as_deref(),
+                None,
+                [w, rows.max(0.0)],
+            )
+        } else {
+            found_view(pane, w, rows.max(0.0))
+        });
         Element::column(column).size(Some(w), Some(below))
     };
     let body = match (pane.tree_open, beside) {
@@ -750,6 +771,126 @@ fn files_pane(ui: &Ui, width: f32, height: f32, palette: ComponentPalette) -> El
         (false, _) => file_view(pane, width, below, palette),
     };
     Element::column(vec![header, body]).size(Some(width), Some(height))
+}
+
+/// What the tree's filter found, in Desktop 3.6556.2's words (`cccc2cf0a`): the files whose
+/// paths match, their folders muted; after `?` each file that holds the words over its lines,
+/// five at most; or why there is nothing.
+fn found_view(pane: &crate::files::FilesPane, width: f32, height: f32) -> Element {
+    use quill_components::tree;
+    use quill_files::find::LIMIT;
+    let (query, contents) = crate::files::filter_query(&pane.filter);
+    let note = |words: String| {
+        Element::truncated_text(words)
+            .font_family(FontFamily::Sans)
+            .font_size(SMALL)
+            .foreground(look::muted())
+            .max_width(width - 24.0)
+            .padding(12.0)
+    };
+    let row = |id: String, content: Vec<Element>| {
+        let mut items = vec![hgap(4.0)];
+        items.extend(content);
+        Element::clickable(id, Element::row(items).gap(6.0).size(None, Some(24.0)))
+            .hover_background(look::row_hover())
+            .radius(6.0)
+            .size(Some(width - 12.0), None)
+    };
+    let file = |path: &std::path::Path| {
+        let name = path
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into());
+        let folder = path
+            .parent()
+            .map_or_else(String::new, |p| p.display().to_string());
+        row(
+            tree::row_id(&pane.tree.root.join(path), false),
+            vec![
+                Element::icon(icons::of(tree::glyph(path)))
+                    .foreground(look::muted())
+                    .size(Some(14.0), Some(14.0))
+                    .centered_y(),
+                text(name).centered_y(),
+                Element::truncated_text(folder)
+                    .font_family(FontFamily::Sans)
+                    .font_size(SMALL)
+                    .foreground(look::muted())
+                    .flex(1.0)
+                    .centered_y(),
+            ],
+        )
+    };
+    let mut rows = vec![];
+    match pane.found.as_ref() {
+        _ if contents && query.is_empty() => {
+            rows.push(note("Type after ? to search in files".into()))
+        }
+        None => rows.push(
+            Element::row(vec![limn::Spinner::new("tree:finding", look::muted())
+                .size(14.0)
+                .render()])
+            .padding(12.0),
+        ),
+        Some(found) if !contents => {
+            if found.paths.is_empty() {
+                rows.push(note("No matching files".into()));
+            }
+            rows.extend(found.paths.iter().map(|p| file(p)));
+            if found.paths.len() >= LIMIT {
+                rows.push(note(format!(
+                    "Only the first {LIMIT} results are shown. Keep typing to narrow."
+                )));
+            }
+        }
+        Some(found) => {
+            if found.hits.is_empty() {
+                rows.push(note("No matches in file contents".into()));
+            }
+            let mut at = 0;
+            while let Some(first) = found.hits.get(at) {
+                let same = found.hits[at..]
+                    .iter()
+                    .take_while(|h| h.path == first.path)
+                    .count();
+                rows.push(file(&first.path));
+                for hit in found.hits[at..at + same].iter().take(5) {
+                    let id = format!(
+                        "{}{}:{}",
+                        crate::files::FOUND_LINE,
+                        hit.path.display(),
+                        hit.row
+                    );
+                    rows.push(row(
+                        id,
+                        vec![
+                            hgap(16.0),
+                            muted((hit.row + 1).to_string())
+                                .font_size(SMALL)
+                                .centered_y(),
+                            Element::truncated_text(hit.text.clone())
+                                .font_family(FontFamily::Sans)
+                                .font_size(SMALL)
+                                .foreground(look::palette().text)
+                                .flex(1.0)
+                                .centered_y(),
+                        ],
+                    ));
+                }
+                if same > 5 {
+                    rows.push(note("More matches in this file.".into()));
+                }
+                at += same;
+            }
+            if found.hits.len() >= LIMIT {
+                rows.push(note(format!(
+                    "Only {LIMIT} matches are shown. Keep typing to narrow."
+                )));
+            }
+        }
+    }
+    Element::scroll("tree:found", Element::column(rows).gap(2.0).padding(6.0))
+        .size(Some(width), Some(height))
+        .clip_children()
 }
 
 /// The file on screen, as Desktop's: its path, folders muted leading to the tree and its name

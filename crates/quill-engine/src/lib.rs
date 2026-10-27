@@ -880,6 +880,39 @@ impl Router {
                 }
                 return;
             }
+            Intent::FindFiles {
+                session,
+                query,
+                contents,
+            } => {
+                if let Some(cwd) = self.folders.get(&session).cloned() {
+                    let sink = self.sink.clone();
+                    tokio::spawn(async move {
+                        let wanted = query.clone();
+                        let found = tokio::task::spawn_blocking(move || {
+                            use quill_files::find;
+                            let files = find::files(&cwd);
+                            if contents {
+                                (vec![], find::grep(&cwd, &files, &wanted))
+                            } else {
+                                let best = find::best(&wanted, &files, find::LIMIT);
+                                (best.into_iter().cloned().collect(), vec![])
+                            }
+                        })
+                        .await;
+                        if let Ok((paths, hits)) = found {
+                            sink(Event::FilesFound {
+                                session,
+                                query,
+                                contents,
+                                paths,
+                                hits,
+                            });
+                        }
+                    });
+                }
+                return;
+            }
             Intent::FileOp { session, op } => {
                 if let Some(cwd) = self.folders.get(&session).cloned() {
                     let sink = self.sink.clone();

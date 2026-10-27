@@ -549,8 +549,7 @@ pub fn view(
             let glyph = match (entry.dir, open) {
                 (true, true) => icons::CARET_DOWN,
                 (true, false) => icons::CARET_RIGHT,
-                (false, _) if code_like(&entry.path) => icons::CODE,
-                (false, _) => icons::FILE,
+                (false, _) => glyph(&entry.path),
             };
             let icon = Element::icon(icons::of(glyph))
                 .foreground(look::muted())
@@ -582,6 +581,15 @@ pub fn view(
     Element::scroll("tree:scroll", Element::column(rows).padding(6.0))
         .size(Some(width), Some(height))
         .clip_children()
+}
+
+/// A file's glyph in Desktop's look: `<>` for code and settings, a page for the rest.
+pub fn glyph(path: &Path) -> &'static str {
+    if code_like(path) {
+        icons::CODE
+    } else {
+        icons::FILE
+    }
 }
 
 /// Whether a file reads as code or settings, which Desktop marks `<>` (inferred from the

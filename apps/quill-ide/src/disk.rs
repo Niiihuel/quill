@@ -49,7 +49,7 @@ pub fn run(job: Job) -> Loaded {
             )
         }
         Job::FindFonts => Loaded::Fonts(monospaced()),
-        Job::FindFiles(root) => Loaded::Files(files(&root)),
+        Job::FindFiles(root) => Loaded::Files(quill_files::find::files(&root)),
         Job::File(root, op) => {
             let done = quill_files::run(&root, &op, quill_files::system_trash);
             Loaded::File(op, done)
@@ -72,7 +72,7 @@ pub fn run(job: Job) -> Loaded {
             Loaded::Changes(path, save.0.revision(), changes)
         }
         Job::Grep(root, query, count) => {
-            let hits = crate::grep::grep(&root, &files(&root), &query);
+            let hits = crate::grep::grep(&root, &quill_files::find::files(&root), &query);
             Loaded::Grep(count, hits)
         }
         Job::SaveSession(root, session) => {
@@ -135,25 +135,6 @@ fn branch_in(head: &Path) -> Option<String> {
         Some(branch) => Some(branch.to_owned()),
         None => Some(head.get(..7)?.to_owned()),
     }
-}
-
-/// Every file under `root` git sees, as paths from it, sorted.
-///
-/// shortcut: at most 100 000, all walked again each time; worth an index kept up to date
-/// for larger trees.
-fn files(root: &Path) -> Vec<std::path::PathBuf> {
-    let mut files: Vec<std::path::PathBuf> = ignore::WalkBuilder::new(root)
-        .hidden(false)
-        .require_git(false)
-        .filter_entry(|e| e.file_name() != ".git")
-        .build()
-        .filter_map(Result::ok)
-        .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
-        .filter_map(|e| e.path().strip_prefix(root).ok().map(Path::to_path_buf))
-        .take(100_000)
-        .collect();
-    files.sort();
-    files
 }
 
 /// The monospaced families fontconfig knows, each by its first name, sorted.

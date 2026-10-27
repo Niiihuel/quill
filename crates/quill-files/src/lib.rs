@@ -3,6 +3,8 @@
 //! under the folder, links are never followed, nothing is overwritten, and deleting only
 //! moves to the desktop's trash. Messages are for the person, without absolute paths.
 
+pub mod find;
+
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};

@@ -1948,6 +1948,64 @@ fn a_turns_changes_list_three_files_then_the_rest_and_each_opens_the_diff() {
 }
 
 #[test]
+fn the_trees_filter_finds_files_by_name_and_lines_after_a_question_mark() {
+    use quill_files::find::Hit;
+    let (store, mut ui) = store_with_session();
+    ui.selected = Some(1);
+    click(&store, &mut ui, view::FILES_TOGGLE);
+    settle(&store, &mut ui);
+    let typed = |ui: &mut Ui, value: &str| {
+        update(
+            &store,
+            ui,
+            &UiAction::InputChanged {
+                id: view::FILTER_FIELD.into(),
+                value: value.into(),
+            },
+        )
+    };
+    let find = |query: &str, contents: bool| Intent::FindFiles {
+        session: 1,
+        query: query.into(),
+        contents,
+    };
+    assert_eq!(typed(&mut ui, "main"), [find("main", false)]);
+    // "?" alone asks nothing yet; words after it search the files' contents.
+    assert_eq!(typed(&mut ui, "?"), []);
+    assert_eq!(typed(&mut ui, "?fn main"), [find("fn main", true)]);
+    let found = |query: &str| Event::FilesFound {
+        session: 1,
+        query: query.into(),
+        contents: true,
+        paths: vec![],
+        hits: vec![Hit {
+            path: "src/a.rs".into(),
+            row: 41,
+            text: "fn main() {}".into(),
+        }],
+    };
+    // An answer to older words is let go.
+    ui.applied(&found("main"));
+    let window = limn::Size::new(1408.0, 844.0);
+    let shows = |ui: &Ui, id: &str| {
+        let frame = UiTree::new(view(&store, ui, window)).layout(window);
+        frame.regions.iter().any(|r| r.id == id)
+    };
+    assert!(!shows(&ui, "found:src/a.rs:41"));
+    ui.applied(&found("fn main"));
+    assert!(shows(&ui, "found:src/a.rs:41") && shows(&ui, "file:/work/src/a.rs"));
+    // A line opens its file, to put the caret on it once read.
+    assert!(
+        click(&store, &mut ui, "found:src/a.rs:41").contains(&Intent::ReadFile {
+            session: 1,
+            path: "src/a.rs".into()
+        })
+    );
+    click(&store, &mut ui, view::FILTER_CLEAR);
+    assert!(!shows(&ui, "found:src/a.rs:41"));
+}
+
+#[test]
 fn outputs_open_in_a_document_pane_that_saves_and_follows_the_agent() {
     use quill_model::{ChangeKind, FileEffect};
     let (mut store, mut ui) = store_with_session();

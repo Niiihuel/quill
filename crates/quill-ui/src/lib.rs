@@ -459,6 +459,7 @@ impl Store {
             | Event::FileWriteFailed { .. }
             | Event::Listed { .. }
             | Event::FileOpDone { .. }
+            | Event::FilesFound { .. }
             | Event::Settings { .. }
             | Event::Storage { .. }
             | Event::SettingsNotSaved { .. }
@@ -873,6 +874,9 @@ pub struct Ui {
     /// What the Files pane asks of the window: a control to focus, and words to copy.
     pub files_focus: Option<String>,
     pub files_copy: Option<String>,
+    /// An editor of the Files pane whose caret the window brings into view, once it is laid
+    /// out: a line the filter found.
+    pub files_reveal: Option<String>,
     /// How many tabs each session's browser had when last heard: a new one opens the pane.
     pub browser_tabs: std::collections::HashMap<SessionId, usize>,
     /// What each session's browser last had to say, until dismissed.
@@ -1451,6 +1455,7 @@ impl Ui {
             reading: None,
             files: std::collections::HashMap::new(),
             files_focus: None,
+            files_reveal: None,
             files_copy: None,
             browser_tabs: Default::default(),
             browser_notice: Default::default(),

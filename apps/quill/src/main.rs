@@ -921,6 +921,10 @@ impl eframe::App for App {
                             self.tree.scroll_to_end(&format!("transcript:{session}"));
                         }
                     }
+                    // The filter's clear empties it; the field keeps its own text.
+                    quill_ui::view::FILTER_CLEAR => {
+                        self.tree.set_input_value(quill_ui::view::FILTER_FIELD, "");
+                    }
                     quill_ui::view::SEND if !self.ui.prompt.trim().is_empty() => {
                         self.tree.set_input_value(quill_ui::view::COMPOSER, "");
                     }
@@ -954,6 +958,13 @@ impl eframe::App for App {
         // What the Files pane asked for: a control to focus, and words to copy.
         if let Some(id) = self.ui.files_focus.take() {
             self.tree.focus(&id);
+        }
+        // Kept until the editor is laid out: a file just read has none yet.
+        if let Some(id) = self.ui.files_reveal.take() {
+            if !self.tree.reveal_code_caret(&id) {
+                self.ui.files_reveal = Some(id);
+                ctx.request_repaint();
+            }
         }
         if let Some(words) = self.ui.files_copy.take() {
             ctx.copy_text(words);

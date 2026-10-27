@@ -284,6 +284,13 @@ pub enum Intent {
         session: SessionId,
         dir: std::path::PathBuf,
     },
+    /// The Files pane's filter: the session's files whose paths match `query`, or with
+    /// `contents` the lines that hold it. Answered by `Event::FilesFound`.
+    FindFiles {
+        session: SessionId,
+        query: String,
+        contents: bool,
+    },
     /// A file operation in the session's folder, from the Files pane: answered by
     /// `Event::FileOpDone`.
     FileOp {
@@ -664,6 +671,15 @@ pub enum Event {
         entries: Vec<quill_files::Entry>,
         stamp: quill_files::Stamp,
     },
+    /// What the filter asked for `query` found: the best paths from the folder, or with
+    /// `contents` the lines that hold it.
+    FilesFound {
+        session: SessionId,
+        query: String,
+        contents: bool,
+        paths: Vec<std::path::PathBuf>,
+        hits: Vec<quill_files::find::Hit>,
+    },
     /// A file operation done, with what it made (paths in the session's folder), or why not.
     FileOpDone {
         session: SessionId,
@@ -765,6 +781,7 @@ impl Event {
             | Event::FileWriteFailed { session, .. }
             | Event::Listed { session, .. }
             | Event::FileOpDone { session, .. }
+            | Event::FilesFound { session, .. }
             | Event::Linked { session, .. }
             | Event::Proposed { session, .. }
             | Event::ProposalAnswered { session, .. }

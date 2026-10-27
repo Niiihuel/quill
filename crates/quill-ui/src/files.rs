@@ -21,6 +21,28 @@ pub const COPY_PATH: &str = "doc:copy-path";
 /// "Discard unsaved changes?" over a tab closed with edits not saved.
 pub const DISCARD: &str = "doc:discard";
 pub const KEEP: &str = "doc:keep";
+/// The tree's filter, Desktop 3.6556.2's "Filter, or ? to search in files" (`cccc2cf0a`),
+/// and its "Clear filter". A line found is `found:{path}:{row}`, its path from the folder.
+pub const FILTER_FIELD: &str = "tree:filter";
+pub const FILTER_CLEAR: &str = "tree:filter:clear";
+pub const FOUND_LINE: &str = "found:";
+
+/// What the filter found for its words: the paths that match them, or after `?` the lines
+/// that hold them.
+pub struct Found {
+    pub query: String,
+    pub contents: bool,
+    pub paths: Vec<PathBuf>,
+    pub hits: Vec<quill_files::find::Hit>,
+}
+
+/// The filter's words as the engine takes them: after `?` a search in the files' contents.
+pub fn filter_query(filter: &str) -> (&str, bool) {
+    match filter.strip_prefix('?') {
+        Some(words) => (words.trim(), true),
+        None => (filter.trim(), false),
+    }
+}
 
 /// A session's Files pane: its folder's tree, the files open in tabs and the one on screen.
 pub struct FilesPane {
@@ -33,6 +55,11 @@ pub struct FilesPane {
     pub find: Option<Find>,
     /// A tab with edits not saved, waiting on "Discard unsaved changes?".
     pub discarding: Option<usize>,
+    /// The tree's filter and what it found for the words it has now.
+    pub filter: String,
+    pub found: Option<Found>,
+    /// A line to put the caret on once its file is read: its path from the folder and row.
+    pub goto: Option<(String, usize)>,
 }
 
 impl FilesPane {
@@ -45,6 +72,9 @@ impl FilesPane {
             tree_open: true,
             find: None,
             discarding: None,
+            filter: String::new(),
+            found: None,
+            goto: None,
         };
         (pane, jobs)
     }
@@ -227,6 +257,7 @@ struct Done {
     tree: Option<Outcome>,
     focus: Option<String>,
     copy: Option<String>,
+    reveal: Option<String>,
 }
 
 /// A click of the pane's own: its tabs, the tree's toggle, the file's tools, the find bar,
@@ -254,6 +285,31 @@ fn clicked(pane: &mut FilesPane, id: &str) -> Option<Done> {
         pane.discarding = None;
     } else if id == TREE_TOGGLE {
         pane.tree_open = !pane.tree_open;
+    } else if id == FILTER_CLEAR {
+        pane.filter.clear();
+        pane.found = None;
+        done.focus = Some(FILTER_FIELD.into());
+    } else if let Some((path, row)) = id
+        .strip_prefix(FOUND_LINE)
+        .and_then(|rest| rest.rsplit_once(':'))
+        .and_then(|(path, row)| Some((path, row.parse::<usize>().ok()?)))
+    {
+        // Open, or go to, the file with the caret on the line, as Desktop's previews do.
+        pane.goto = Some((path.to_owned(), row));
+        if let Some(document) = pane
+            .tabs
+            .iter()
+            .find(|d| d.path == path && d.editor.is_some())
+        {
+            go_to(document, row);
+            pane.goto = None;
+            done.reveal = Some(editor_id(path));
+        }
+        done.focus = Some(editor_id(path));
+        done.tree = Some(Outcome {
+            open: Some(pane.tree.root.join(path)),
+            ..Outcome::default()
+        });
     } else if id == view::DOC_SAVE {
         done.intents = save(pane);
     } else if id == RELOAD || id == REVERT {
@@ -299,6 +355,9 @@ fn finish(ui: &mut Ui, session: SessionId, root: &Path, done: Done) -> Vec<Inten
     if done.focus.is_some() {
         ui.files_focus = done.focus;
     }
+    if done.reveal.is_some() {
+        ui.files_reveal = done.reveal;
+    }
     if let Some(outcome) = done.tree {
         out.extend(apply(ui, session, root, outcome));
     }
@@ -338,6 +397,25 @@ pub(crate) fn action(store: &Store, ui: &mut Ui, action: &UiAction) -> Option<Ve
             id.strip_prefix("doc:editor:")?;
             Done {
                 intents: save(pane),
+                ..Done::default()
+            }
+        }
+        UiAction::InputChanged { id, value } if id == FILTER_FIELD => {
+            pane.filter = value.clone();
+            let (query, contents) = filter_query(value);
+            pane.found = pane
+                .found
+                .take()
+                .filter(|f| f.query == query && f.contents == contents);
+            Done {
+                intents: (!query.is_empty())
+                    .then(|| Intent::FindFiles {
+                        session,
+                        query: query.to_owned(),
+                        contents,
+                    })
+                    .into_iter()
+                    .collect(),
                 ..Done::default()
             }
         }
@@ -422,6 +500,22 @@ pub fn key(ui: &mut Ui, focused: Option<&str>, event: &limn::UiEvent) -> Option<
 
 /// A file's text read, into its tab. What the person edits wins over the disk; saved as it
 /// stands, the editor keeps its caret and scroll.
+/// The caret to the start of `row` of the file, which the editor brings into view.
+fn go_to(document: &Document, row: usize) {
+    let Some(editor) = &document.editor else {
+        return;
+    };
+    let shared = editor.shared_buffer();
+    let Ok(mut text) = shared.lock() else {
+        return;
+    };
+    let snapshot = text.snapshot();
+    let row = row.min(snapshot.line_count().saturating_sub(1));
+    if let Ok(line) = snapshot.line_range(row) {
+        let _ = text.set_selection(limn_editor::Selection::caret(line.start));
+    }
+}
+
 fn read(document: &mut Document, text: &Option<String>) {
     // shortcut: what the person edits wins over the disk; a conflict is not shown, where
     // Desktop says "This file changed on disk since you started editing."
@@ -469,6 +563,28 @@ pub(crate) fn heard(ui: &mut Ui, event: &Event) -> Vec<Intent> {
         Event::FileRead { path, text, .. } => {
             if let Some(document) = pane.tabs.iter_mut().find(|d| d.path == *path) {
                 read(document, text);
+                if let Some((_, row)) = pane.goto.take_if(|(at, _)| at == path) {
+                    go_to(document, row);
+                    ui.files_reveal = Some(editor_id(path));
+                }
+            }
+            vec![]
+        }
+        Event::FilesFound {
+            query,
+            contents,
+            paths,
+            hits,
+            ..
+        } => {
+            // Only for the words the filter has now: an answer to older ones is let go.
+            if filter_query(&pane.filter) == (query.as_str(), *contents) {
+                pane.found = Some(Found {
+                    query: query.clone(),
+                    contents: *contents,
+                    paths: paths.clone(),
+                    hits: hits.clone(),
+                });
             }
             vec![]
         }
