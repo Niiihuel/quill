@@ -21,6 +21,7 @@ use std::time::Instant;
 pub const COMPOSER: &str = "composer";
 pub const NEW_SESSION: &str = "new-session";
 pub const STOP: &str = "stop";
+pub const REWIND_UNDO: &str = "rewind:undo";
 pub const MODE_MENU: &str = "mode-menu";
 pub const MODEL_MENU: &str = "model-menu";
 pub const DIFF_TOGGLE: &str = "diff:toggle";
@@ -2472,6 +2473,9 @@ fn transcript(
     );
     let (entries, running) = entries(store, session, &session.items, busy, ui, column, palette);
     items.extend(entries);
+    if !busy && !session.rewound.is_empty() {
+        items.push(rewound_line());
+    }
     // While the turn runs, its task list sits over the running line; it goes when the
     // turn ends.
     let list = todos(&session.items);
@@ -3081,6 +3085,30 @@ fn reply_actions(
     } else {
         row.reveal_on_hover(format!("{copy}:reveal"))
     }
+}
+
+/// Where a rewind took the messages out: its undo, the way the changes card's Undo is drawn
+/// (inferred: Desktop's placement of "Undo rewind" was not captured).
+fn rewound_line() -> Element {
+    let undo = Element::clickable(
+        REWIND_UNDO,
+        Element::row(vec![
+            hgap(6.0),
+            muted("Undo rewind").font_size(SMALL).centered_y(),
+            hgap(6.0),
+        ])
+        .size(None, Some(24.0)),
+    )
+    .hover_background(look::tool_hover())
+    .radius(6.0);
+    Element::row(vec![
+        muted("Rewound to an earlier message.")
+            .font_size(SMALL)
+            .centered_y(),
+        hgap(4.0),
+        undo,
+    ])
+    .size(None, Some(24.0))
 }
 
 /// The row under the person's message while the pointer is on it, as Desktop's (3.6556.2

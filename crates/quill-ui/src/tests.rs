@@ -1539,6 +1539,72 @@ fn a_message_rewinds_and_forks_from_the_reply_before_it() {
 }
 
 #[test]
+fn a_rewind_is_undone_until_the_next_message() {
+    let (mut store, mut ui) = store_with_session();
+    store.apply(Event::Status {
+        session: 1,
+        status: SessionStatus::Idle,
+    });
+    agent(
+        &mut store,
+        AgentEvent::Text {
+            text: "Done".into(),
+            parent: None,
+            id: Some("m1".into()),
+            at: Some(0),
+        },
+    );
+    store.apply(Event::Queued {
+        session: 1,
+        request: "r2".into(),
+        text: "And now?".into(),
+        at: Some(0),
+    });
+    agent(
+        &mut store,
+        AgentEvent::Text {
+            text: "Again".into(),
+            parent: None,
+            id: Some("m2".into()),
+            at: Some(0),
+        },
+    );
+    let before = store.session(1).unwrap().items.clone();
+    store.apply(Event::RewoundTo {
+        session: 1,
+        request: "r2".into(),
+        at: Some("m1".into()),
+    });
+    assert_eq!(store.session(1).unwrap().items.len(), 2);
+    assert_eq!(store.session(1).unwrap().rewound.len(), 2);
+    // The words the rewind put back in the box leave with the undo.
+    ui.prompt = "And now?".into();
+    assert_eq!(
+        click(&store, &mut ui, "rewind:undo"),
+        vec![Intent::UndoRewind { session: 1 }]
+    );
+    assert!(ui.prompt.is_empty());
+    store.apply(Event::RewindUndone { session: 1 });
+    assert_eq!(store.session(1).unwrap().items, before);
+    assert!(store.session(1).unwrap().rewound.is_empty());
+    assert_eq!(click(&store, &mut ui, "rewind:undo"), vec![]);
+    // A message sent after a rewind is the end of it: nothing is left to undo.
+    store.apply(Event::RewoundTo {
+        session: 1,
+        request: "r2".into(),
+        at: Some("m1".into()),
+    });
+    store.apply(Event::Queued {
+        session: 1,
+        request: "r3".into(),
+        text: "Instead".into(),
+        at: Some(0),
+    });
+    assert!(store.session(1).unwrap().rewound.is_empty());
+    assert_eq!(click(&store, &mut ui, "rewind:undo"), vec![]);
+}
+
+#[test]
 fn a_reply_copies_forks_from_itself_and_reads_aloud() {
     let (mut store, mut ui) = store_with_session();
     for (text, id) in [("First", "m1"), ("Second", "m2")] {

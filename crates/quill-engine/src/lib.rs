@@ -654,6 +654,10 @@ impl Router {
                 self.sink.clone(),
             );
             actor.spec.resume = restored.resume;
+            // Undoing a rewind from before the restart goes back to the conversation's last id.
+            if restored.rewound.is_some() {
+                actor.unrewind = Some((actor.spec.resume.clone(), false, None));
+            }
             if let Some(at) = restored.rewound {
                 if at.is_none() {
                     actor.spec.resume = None;
@@ -956,6 +960,7 @@ impl Router {
                 request,
                 at,
             } => (session, Input::RewindTo(request, at)),
+            Intent::UndoRewind { session } => (session, Input::UndoRewind),
             Intent::Rename { session, title } => {
                 self.titles.insert(session, title.clone());
                 (self.sink)(Event::Renamed { session, title });
@@ -1675,7 +1680,7 @@ struct Restored {
     pull_request: Option<String>,
     archived: bool,
     /// Taken back to the agent's message (`Some(None)`: to the start) and not written to
-    /// since: the next launch goes on from there.
+    /// since, nor undone: the next launch goes on from there.
     rewound: Option<Option<String>>,
 }
 
@@ -1702,7 +1707,9 @@ impl Restored {
                 Event::RewoundTo { at, .. } => rewound = Some(at.clone()),
                 Event::ModelChosen { model, .. } => new.model = Some(model.clone()),
                 Event::EffortChosen { effort, .. } => new.effort = Some(effort.clone()),
-                Event::Queued { .. } => rewound = None,
+                Event::Queued { .. } | Event::Reported { .. } | Event::RewindUndone { .. } => {
+                    rewound = None
+                }
                 Event::Linked {
                     parent: p,
                     side: false,
@@ -1755,6 +1762,7 @@ enum Input {
     Report(Vec<quill_model::Report>),
     Rewind(RequestId),
     RewindTo(RequestId, Option<String>),
+    UndoRewind,
     Command(AgentCommand),
     Line {
         generation: u64,
@@ -1797,6 +1805,8 @@ struct Actor {
     last_text: String,
     /// Added to the agent's environment: the `$BROWSER` bridge.
     env: Vec<(String, String)>,
+    /// The resume, fork and resume-at the last rewind replaced, until a message is sent.
+    unrewind: Option<(Option<String>, bool, Option<String>)>,
 }
 
 impl Actor {
@@ -1838,6 +1848,7 @@ impl Actor {
             route: None,
             last_text: String::new(),
             env: Vec::new(),
+            unrewind: None,
         }
     }
 
@@ -1858,6 +1869,8 @@ impl Actor {
             });
             return;
         }
+        // What was taken back stays taken back once a message goes on from here.
+        self.unrewind = None;
         let request = uuid::Uuid::new_v4().to_string();
         // The first request in line starts from the folder as it is now; the
         // ones queued behind it start where the turn before them ended.
@@ -1974,11 +1987,12 @@ impl Actor {
         if self.busy {
             return;
         }
-        if let Some((mut child, _)) = self.process.take() {
-            let _ = child.kill().await;
-        }
-        // What the old process still says is not this conversation's.
-        self.generation += 1;
+        self.unrewind = Some((
+            self.spec.resume.clone(),
+            self.spec.fork,
+            self.spec.resume_at.clone(),
+        ));
+        self.stop().await;
         if at.is_none() {
             self.spec.resume = None;
         }
@@ -1990,6 +2004,31 @@ impl Actor {
             at,
         });
         self.status(SessionStatus::Idle);
+    }
+
+    /// Undo the last rewind, until a message is sent: the conversation it took back is the
+    /// one the next launch resumes. Never while it works.
+    async fn undo_rewind(&mut self) {
+        if self.busy {
+            return;
+        }
+        let Some((resume, fork, resume_at)) = self.unrewind.take() else {
+            return;
+        };
+        self.stop().await;
+        self.spec.resume = resume;
+        self.spec.fork = fork;
+        self.spec.resume_at = resume_at;
+        (self.sink)(Event::RewindUndone { session: self.id });
+        self.status(SessionStatus::Idle);
+    }
+
+    /// Ends the process, if any: what it still says is not this conversation's.
+    async fn stop(&mut self) {
+        if let Some((mut child, _)) = self.process.take() {
+            let _ = child.kill().await;
+        }
+        self.generation += 1;
     }
 
     fn status(&self, status: SessionStatus) {
@@ -2014,6 +2053,7 @@ impl Actor {
                 }
                 Input::Rewind(request) => self.rewind(request).await,
                 Input::RewindTo(request, at) => self.rewind_to(request, at).await,
+                Input::UndoRewind => self.undo_rewind().await,
                 Input::Command(command) => {
                     // A launch after this one runs at what was chosen last.
                     match &command {
@@ -2597,6 +2637,28 @@ mod tests {
             at: None,
         });
         assert_eq!(Restored::from(&sent).unwrap().rewound, None);
+    }
+
+    #[test]
+    fn an_undone_rewind_is_not_restored() {
+        let events = [
+            Event::SessionCreated {
+                session: 1,
+                agent: "claude".into(),
+                cwd: "/work".into(),
+            },
+            Event::RewoundTo {
+                session: 1,
+                request: "r2".into(),
+                at: Some("m1".into()),
+            },
+        ];
+        assert_eq!(
+            Restored::from(&events).unwrap().rewound,
+            Some(Some("m1".into()))
+        );
+        let undone = [events.as_slice(), &[Event::RewindUndone { session: 1 }]].concat();
+        assert_eq!(Restored::from(&undone).unwrap().rewound, None);
     }
 
     #[test]

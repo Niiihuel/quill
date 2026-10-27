@@ -149,6 +149,8 @@ pub struct Session {
     pub aside: bool,
     /// The version of the agent's program, as it said when it started.
     pub agent_version: Option<String>,
+    /// The messages the last rewind took out, while it can still be undone.
+    pub rewound: Vec<Item>,
 }
 
 /// Work the agent runs beside its turns, as Desktop counts "1 running task" and
@@ -257,6 +259,7 @@ impl Store {
                 parent: None,
                 aside: false,
                 agent_version: None,
+                rewound: vec![],
             }),
             Event::Status { session, status } => {
                 if let Some(s) = self.session_mut(session) {
@@ -297,6 +300,7 @@ impl Store {
                             .take(60)
                             .collect();
                     }
+                    s.rewound.clear();
                     s.items.push(Item::User { request, text, at });
                 }
             }
@@ -406,16 +410,23 @@ impl Store {
                     s.effort = Some(effort);
                 }
             }
-            // "Rewind to here": the message and all after it go.
+            // "Rewind to here": the message and all after it go, kept until a message is sent.
             Event::RewoundTo {
                 session, request, ..
             } => {
                 if let Some(s) = self.session_mut(session) {
                     let from = (s.items.iter())
                         .position(|i| matches!(i, Item::User { request: r, .. } if *r == request));
-                    if let Some(from) = from {
-                        s.items.truncate(from);
-                    }
+                    s.rewound = match from {
+                        Some(from) => s.items.split_off(from),
+                        None => vec![],
+                    };
+                }
+            }
+            // "Undo rewind": what the rewind took out is there again.
+            Event::RewindUndone { session } => {
+                if let Some(s) = self.session_mut(session) {
+                    s.items.extend(std::mem::take(&mut s.rewound));
                 }
             }
             Event::Unread { session, unread } => {
@@ -471,6 +482,7 @@ impl Store {
                 reports,
             } => {
                 if let Some(s) = self.session_mut(session) {
+                    s.rewound.clear();
                     s.items.push(Item::Reports { request, reports });
                 }
             }
@@ -2642,6 +2654,21 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
             }];
         }
         return vec![];
+    }
+    if id == view::REWIND_UNDO {
+        let Some(s) = ui.selected.and_then(|id| store.session(id)) else {
+            return vec![];
+        };
+        if s.working() || s.rewound.is_empty() {
+            return vec![];
+        }
+        // The words the rewind put back in the box go with it, unless the person wrote on.
+        if let Some(Item::User { text, .. }) = s.rewound.first() {
+            if ui.prompt == *text {
+                ui.prompt.clear();
+            }
+        }
+        return vec![Intent::UndoRewind { session: s.id }];
     }
     if id == view::STOP {
         return ui

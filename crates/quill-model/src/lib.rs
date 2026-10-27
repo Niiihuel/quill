@@ -346,6 +346,11 @@ pub enum Intent {
         request: RequestId,
         at: Option<String>,
     },
+    /// Undo the last rewind: its messages come back and the agent goes on in the
+    /// conversation it had. Answered by `Event::RewindUndone`; not once a message was sent.
+    UndoRewind {
+        session: SessionId,
+    },
     /// The person's own name for the session, in place of the one its first message gave.
     Rename {
         session: SessionId,
@@ -754,6 +759,11 @@ pub enum Event {
         request: RequestId,
         at: Option<String>,
     },
+    /// The last rewind taken back: its messages are there again and the agent goes on in
+    /// the conversation it had.
+    RewindUndone {
+        session: SessionId,
+    },
     /// The model or the effort the session runs at, kept so it goes on with them: chosen
     /// when it was made and each time the person changed them.
     ModelChosen {
@@ -933,6 +943,7 @@ impl Event {
             | Event::Changes { session, .. }
             | Event::Rewound { session, .. }
             | Event::RewoundTo { session, .. }
+            | Event::RewindUndone { session }
             | Event::ModelChosen { session, .. }
             | Event::EffortChosen { session, .. }
             | Event::Decided { session, .. }
