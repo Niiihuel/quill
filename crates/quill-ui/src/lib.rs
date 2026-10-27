@@ -3334,9 +3334,16 @@ fn plus_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
             Intent::McpStatus { session },
         ]);
     }
-    // A plugin switched from the menu, with Settings closed.
-    if id.starts_with("ext:switch:") && ui.settings_page.is_none() {
-        return extensions_clicked(ui, id);
+    // A plugin's skill goes into the message, as Desktop's chip does.
+    if let Some(skill) = id.strip_prefix(view::PLUGIN_SKILL) {
+        ui.open_menu = None;
+        let mut prompt = ui.prompt.trim_end().to_owned();
+        if !prompt.is_empty() {
+            prompt.push(' ');
+        }
+        prompt.push_str(&format!("/{skill} "));
+        ui.restore_prompt = Some(prompt);
+        return Some(vec![]);
     }
     let page = |ui: &mut Ui, page: &str| {
         ui.open_menu = None;

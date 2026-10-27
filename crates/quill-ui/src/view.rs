@@ -40,6 +40,7 @@ pub const CONNECTORS_MANAGE: &str = "plus:connectors:manage";
 pub const CONNECTOR_SWITCH: &str = "plus:connector:";
 pub const PLUGINS_BROWSE: &str = "plus:plugins:browse";
 pub const PLUGINS_MANAGE: &str = "plus:plugins:manage";
+pub const PLUGIN_SKILL: &str = "plus:skill:";
 pub const LINK_MENU: &str = "link-menu";
 pub const LINK_BROWSER: &str = "link-browser:";
 pub const LINK_EXTERNAL: &str = "link-external:";
@@ -5113,23 +5114,62 @@ fn plus_menu(session: Option<&Session>, ui: &Ui) -> Element {
             switch_row(id, icons::PLUG, &server.label, on)
         }));
     }
+    // Desktop's Plugins (3.6556.2 `c227f4d5e` `CL`): each plugin on with skills, its one skill
+    // or a menu of them, which goes into the message as `/plugin:skill`; then managing and
+    // finding plugins.
     let agent = session.map_or(ui.agent.as_str(), |s| s.agent.as_str());
-    let mut plugins = vec![
-        limn::DropdownMenuItem::new(PLUGINS_BROWSE, "Browse plugins")
-            .icon(icons::of(icons::CONNECTORS))
-            .into(),
+    let known = ui.extensions.get(agent).map(|e| &e.list);
+    let mut plugins: Vec<limn::DropdownMenuEntry> = vec![];
+    for plugin in known
+        .map_or(&[][..], |k| &k.plugins)
+        .iter()
+        .filter(|p| p.enabled)
+    {
+        let prefix = format!("{}:", plugin.name);
+        let skills: Vec<&quill_model::Skill> = known
+            .map_or(&[][..], |k| &k.skills)
+            .iter()
+            .filter(|s| s.name.starts_with(&prefix))
+            .collect();
+        let item = |skill: &quill_model::Skill, label: &str| {
+            limn::DropdownMenuItem::new(format!("{PLUGIN_SKILL}{}", skill.name), label)
+                .description(skill.description.clone())
+                .truncate()
+        };
+        match skills.as_slice() {
+            [] => {}
+            [skill] => plugins.push(
+                item(skill, &plugin.name)
+                    .icon(icons::of(icons::PLUG))
+                    .into(),
+            ),
+            many => plugins.push(
+                limn::DropdownMenuItem::new(
+                    format!("{PLUS_MENU}:plugin:{}", plugin.id),
+                    plugin.name.clone(),
+                )
+                .icon(icons::of(icons::PLUG))
+                .description(format!("{} skills", many.len()))
+                .submenu(
+                    many.iter()
+                        .map(|s| item(s, s.name.trim_start_matches(&prefix)).into())
+                        .collect(),
+                )
+                .into(),
+            ),
+        }
+    }
+    plugins.push(limn::DropdownMenuEntry::Separator);
+    plugins.push(
         limn::DropdownMenuItem::new(PLUGINS_MANAGE, "Manage plugins")
             .icon(icons::of(icons::BRIEFCASE))
             .into(),
-    ];
-    let installed = ui.extensions.get(agent).map(|e| &e.list.plugins);
-    if let Some(installed) = installed.filter(|p| !p.is_empty()) {
-        plugins.push(limn::DropdownMenuEntry::Separator);
-        plugins.extend(installed.iter().map(|plugin| {
-            let id = format!("ext:switch:{agent}:{}", plugin.id);
-            switch_row(id, icons::PLUG, &plugin.name, plugin.enabled)
-        }));
-    }
+    );
+    plugins.push(
+        limn::DropdownMenuItem::new(PLUGINS_BROWSE, "Browse plugins")
+            .icon(icons::of(icons::CONNECTORS))
+            .into(),
+    );
     entries.push(
         limn::DropdownMenuItem::new(format!("{PLUS_MENU}:connectors"), "Connectors")
             .icon(icons::of(icons::CONNECTORS))
