@@ -3,6 +3,7 @@
 
 mod direct;
 mod editors;
+mod images;
 mod page;
 
 use eframe::egui;
@@ -29,6 +30,15 @@ struct App {
     chosen: Arc<Mutex<Option<(SessionId, quill_model::BrowserOp)>>>,
     /// Files or a folder chosen from "+", to go into the message as @-mentions.
     attached: Arc<Mutex<Vec<PathBuf>>>,
+    /// Images pasted from the clipboard, saved, waiting to join the composer's.
+    pasted: Arc<Mutex<Vec<PathBuf>>>,
+    /// V is down as a key of its own, not as a paste egui-winit kept.
+    v_down: bool,
+    /// The engine has retold the kept sessions; events from here on are news.
+    restored: bool,
+    /// Thumbnails decoded off the window's thread, and the images asked for so far (each once).
+    thumbs_done: Arc<Mutex<Vec<(PathBuf, limn::RasterImage)>>>,
+    thumbs_asked: std::collections::HashSet<PathBuf>,
     /// The terminal tabs of each folder, kept while the window lives (features/terminal.md).
     terminals: HashMap<PathBuf, quill_pty::Tabs>,
     fonts_attached: bool,
@@ -450,6 +460,32 @@ impl App {
         self.tree.focus(quill_ui::view::COMPOSER);
     }
 
+    /// Files the picker or a drop gave: images join the composer's, and the others go into the
+    /// message as @-mentions the agent reads.
+    fn add_files(&mut self, files: Vec<PathBuf>) {
+        let (images, others): (Vec<PathBuf>, Vec<PathBuf>) =
+            files.into_iter().partition(|p| quill_ui::is_image(p));
+        if !images.is_empty() {
+            quill_ui::add_images(&mut self.ui, images);
+        }
+        if others.is_empty() {
+            return;
+        }
+        // Paths inside the folder are written from it, as the agent reads them.
+        let base = quill_ui::folder(&self.store, &self.ui);
+        let mentions: Vec<String> = others
+            .iter()
+            .map(|p| format!("@{}", p.strip_prefix(&base).unwrap_or(p).display()))
+            .collect();
+        let mut prompt = self.ui.prompt.trim_end().to_owned();
+        if !prompt.is_empty() {
+            prompt.push(' ');
+        }
+        prompt.push_str(&mentions.join(" "));
+        prompt.push(' ');
+        self.set_prompt(prompt);
+    }
+
     /// Ask the platform for files or a folder beside the window; they land in `attached`.
     fn attach(&self, ctx: &egui::Context, folder: bool) {
         let (attached, start, ctx) = (
@@ -561,8 +597,14 @@ impl eframe::App for App {
             // A session that needs the person, or finished, while it is not in view shows a
             // banner and flags quill, as Desktop's notifications and "Draw attention on
             // notifications".
-            if let Some((level, title, body)) =
-                quill_ui::notice(&self.store, &self.ui, &event, focused)
+            // What the engine retells of kept sessions at start is history, not news.
+            if matches!(event, Event::Restored) {
+                self.restored = true;
+            }
+            if let Some((level, title, body)) = self
+                .restored
+                .then(|| quill_ui::notice(&self.store, &self.ui, &event, focused))
+                .flatten()
             {
                 if level == quill_model::NotifyLevel::Banner {
                     let sound = self.ui.settings.notification_sound;
@@ -656,21 +698,58 @@ impl eframe::App for App {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             }
         }
-        let attached = std::mem::take(&mut *self.attached.lock().unwrap());
-        if !attached.is_empty() {
-            // Paths inside the folder are written from it, as the agent reads them.
-            let base = quill_ui::folder(&self.store, &self.ui);
-            let mentions: Vec<String> = attached
+        let mut files = std::mem::take(&mut *self.attached.lock().unwrap());
+        files.extend(ctx.input(|i| {
+            i.raw
+                .dropped_files
                 .iter()
-                .map(|p| format!("@{}", p.strip_prefix(&base).unwrap_or(p).display()))
-                .collect();
-            let mut prompt = self.ui.prompt.trim_end().to_owned();
-            if !prompt.is_empty() {
-                prompt.push(' ');
+                .map(|f| f.path().to_path_buf())
+                .collect::<Vec<_>>()
+        }));
+        self.add_files(files);
+        // Ctrl+V (Cmd+V on macOS) in the composer: egui pastes text only, so the clipboard is
+        // asked for an image too. egui-winit 0.36 keeps a paste's key press for itself, so a V
+        // released without its press is a paste, whatever was let go first; text pastes go on.
+        let mut pasting = false;
+        ctx.input(|i| {
+            for event in &i.events {
+                if let egui::Event::Key {
+                    key: egui::Key::V,
+                    pressed,
+                    ..
+                } = event
+                {
+                    pasting |= !*pressed && !self.v_down;
+                    self.v_down = *pressed;
+                }
             }
-            prompt.push_str(&mentions.join(" "));
-            prompt.push(' ');
-            self.set_prompt(prompt);
+        });
+        if pasting && self.tree.focused_id() == Some(quill_ui::view::COMPOSER) {
+            images::paste(self.pasted.clone(), ctx.clone());
+        }
+        let pasted = std::mem::take(&mut *self.pasted.lock().unwrap());
+        if !pasted.is_empty() {
+            quill_ui::add_images(&mut self.ui, pasted);
+        }
+        // Thumbnails for the images on screen, each decoded once, the new ones in one thread.
+        let todo: Vec<PathBuf> = quill_ui::image_paths(&self.store, &self.ui)
+            .into_iter()
+            .filter(|p| !self.ui.thumbs.contains_key(p) && self.thumbs_asked.insert(p.clone()))
+            .collect();
+        if !todo.is_empty() {
+            let (done, ctx) = (self.thumbs_done.clone(), ctx.clone());
+            std::thread::spawn(move || {
+                for path in todo {
+                    // An image that does not decode keeps its file icon.
+                    if let Some(thumb) = images::thumbnail(&path) {
+                        done.lock().unwrap().push((path, thumb));
+                        ctx.request_repaint();
+                    }
+                }
+            });
+        }
+        for (path, thumb) in std::mem::take(&mut *self.thumbs_done.lock().unwrap()) {
+            self.ui.thumbs.insert(path, thumb);
         }
         if let Some(folder) = self.picked.lock().unwrap().take() {
             self.ui.cwd = folder;
@@ -1458,6 +1537,11 @@ fn main() -> eframe::Result {
                 chosen: Arc::default(),
                 chromium: Arc::default(),
                 attached: Arc::default(),
+                pasted: Arc::default(),
+                v_down: false,
+                restored: false,
+                thumbs_done: Arc::default(),
+                thumbs_asked: Default::default(),
                 terminals: HashMap::new(),
                 transcript: None,
                 beside: None,

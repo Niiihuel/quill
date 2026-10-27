@@ -934,6 +934,8 @@ pub enum Event {
         settings: Settings,
         agents: Vec<AgentInfo>,
     },
+    /// Every kept session has been told again: what follows is new, not history.
+    Restored,
     /// Where quill keeps its data and how many bytes it takes.
     Storage {
         path: PathBuf,
@@ -1048,6 +1050,7 @@ impl Event {
             | Event::Browser { session, .. } => *session,
             // quill's own, not a session's: no session has id 0.
             Event::Settings { .. }
+            | Event::Restored
             | Event::Storage { .. }
             | Event::SettingsNotSaved { .. }
             | Event::Extensions { .. }

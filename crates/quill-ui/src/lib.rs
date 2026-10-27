@@ -30,6 +30,8 @@ pub enum Item {
         text: String,
         /// When it was sent, in seconds since 1970.
         at: Option<u64>,
+        /// The image files it attached, drawn above the words.
+        images: Vec<PathBuf>,
     },
     Assistant {
         text: String,
@@ -301,6 +303,7 @@ impl Store {
                 request,
                 text,
                 at,
+                images,
                 ..
             } => {
                 if let Some(s) = self.session_mut(session) {
@@ -314,7 +317,12 @@ impl Store {
                             .collect();
                     }
                     s.rewound.clear();
-                    s.items.push(Item::User { request, text, at });
+                    s.items.push(Item::User {
+                        request,
+                        text,
+                        at,
+                        images,
+                    });
                 }
             }
             Event::Notice { session, text } => {
@@ -555,6 +563,7 @@ impl Store {
             | Event::FilesFound { .. }
             | Event::Settings { .. }
             | Event::Storage { .. }
+            | Event::Restored
             | Event::SettingsNotSaved { .. }
             | Event::Extensions { .. }
             | Event::Servers { .. }
@@ -935,6 +944,10 @@ pub struct Editor {
     pub picture: Option<limn::RasterImage>,
 }
 
+/// A message written before its session existed: its text, the sessions it mentions and its
+/// image files.
+pub type Waiting = (String, Vec<(SessionId, String)>, Vec<PathBuf>);
+
 /// What the person is doing, apart from what the engine knows.
 pub struct Ui {
     pub selected: Option<SessionId>,
@@ -954,7 +967,13 @@ pub struct Ui {
     pub expanded: Vec<String>,
     /// A message written before its session existed, and the sessions it mentions, sent once
     /// it does.
-    pub waiting: Option<(String, Vec<(SessionId, String)>)>,
+    pub waiting: Option<Waiting>,
+    /// The image files the composer's message attaches, sent with it, and their thumbnails
+    /// the host decodes for the tiles and the messages shown.
+    pub images: Vec<PathBuf>,
+    pub thumbs: std::collections::HashMap<PathBuf, limn::RasterImage>,
+    /// Why the last image was left out, until the composer's images change again.
+    pub image_notice: Option<String>,
     /// The request whose changes the diff pane shows.
     pub diff: Option<(SessionId, RequestId)>,
     /// The panes open beside the conversation, in the order they opened: the first sets the
@@ -1659,6 +1678,9 @@ impl Ui {
             editors: vec![],
             expanded: vec![],
             waiting: None,
+            images: vec![],
+            thumbs: Default::default(),
+            image_notice: None,
             diff: None,
             panes: vec![],
             expanded_pane: None,
@@ -2139,7 +2161,7 @@ impl Ui {
                 self.title_edit = None;
                 return vec![Intent::WorkingTree { session: *session }];
             }
-            if let Some((text, mentions)) = self.waiting.take() {
+            if let Some((text, mentions, images)) = self.waiting.take() {
                 self.selected = Some(*session);
                 // The branch bar shows from the start, not after the first step.
                 return vec![
@@ -2147,7 +2169,7 @@ impl Ui {
                         session: *session,
                         text,
                         mentions,
-                        images: vec![],
+                        images,
                     },
                     Intent::WorkingTree { session: *session },
                 ];
@@ -2211,6 +2233,41 @@ impl Ui {
 /// What one action of the person asks of the engine; the rest changes `ui` only.
 /// What `action` asks of the engine, and the Files pane's tree for the session on screen when
 /// it has none yet (another session selected with the pane open).
+/// The most images one message carries (Desktop's count for a local session).
+pub const MAX_IMAGES: usize = 20;
+
+/// Whether a file is an image the composer takes: PNG, JPEG, GIF or WebP by its extension.
+pub fn is_image(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+        ["png", "jpg", "jpeg", "gif", "webp"]
+            .iter()
+            .any(|kind| e.eq_ignore_ascii_case(kind))
+    })
+}
+
+/// Attaches image files to the composer's message, up to `MAX_IMAGES`; the rest are left out
+/// and the composer says so.
+pub fn add_images(ui: &mut Ui, paths: Vec<PathBuf>) {
+    let room = MAX_IMAGES.saturating_sub(ui.images.len());
+    ui.image_notice =
+        (paths.len() > room).then(|| format!("Maximum of {MAX_IMAGES} images allowed."));
+    ui.images.extend(paths.into_iter().take(room));
+}
+
+/// The images the host decodes thumbnails for: the composer's and those of the shown session's
+/// messages.
+pub fn image_paths(store: &Store, ui: &Ui) -> Vec<PathBuf> {
+    let items = ui
+        .selected
+        .and_then(|id| store.session(id))
+        .map_or(&[][..], |s| &s.items[..]);
+    let shown = items.iter().flat_map(|item| match item {
+        Item::User { images, .. } => images.clone(),
+        _ => vec![],
+    });
+    ui.images.iter().cloned().chain(shown).collect()
+}
+
 pub fn update(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Intent> {
     let mut intents = match files::action(store, ui, action) {
         Some(intents) => intents,
@@ -2432,6 +2489,7 @@ fn update_action(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Int
                 return vec![];
             }
             ui.prompt.clear();
+            ui.image_notice = None;
             ui.slash_dismissed = None;
             let mentions = mention::mentions_in(&text, &ui.mentioned_sessions);
             ui.mentioned_sessions.clear();
@@ -2460,10 +2518,10 @@ fn update_action(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Int
                     session,
                     text,
                     mentions,
-                    images: vec![],
+                    images: std::mem::take(&mut ui.images),
                 }],
                 None => {
-                    ui.waiting = Some((text, mentions));
+                    ui.waiting = Some((text, mentions, std::mem::take(&mut ui.images)));
                     vec![Intent::NewSession(NewSession {
                         agent: ui.agent.clone(),
                         cwd: ui.cwd.clone(),
@@ -2713,6 +2771,20 @@ pub fn terminal_key(
 }
 
 fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
+    if let Some(index) = id
+        .strip_prefix("image:remove:")
+        .and_then(|i| i.parse::<usize>().ok())
+    {
+        if index < ui.images.len() {
+            ui.images.remove(index);
+            ui.image_notice = None;
+        }
+        return vec![];
+    }
+    // The viewer comes next: a tile's click does nothing yet.
+    if id.starts_with("image:open:") || id.starts_with("image:msg:") {
+        return vec![];
+    }
     if id == view::NEW_SESSION {
         ui.selected = None;
         ui.search = None;

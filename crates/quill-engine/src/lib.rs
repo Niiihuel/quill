@@ -238,6 +238,7 @@ async fn route(mut rx: UnboundedReceiver<Intent>, ui: Sink, config: Config) {
         .await
         .unwrap_or_default();
     router.restore();
+    (router.ui)(Event::Restored);
     router.announce_settings();
     loop {
         tokio::select! {

@@ -289,6 +289,21 @@ fn a_kept_session_comes_back_and_continues() {
         replayed.first(),
         Some(Event::SessionCreated { session: 1, .. })
     ));
+    // The history is told before `Restored`, so the host notifies only what follows it.
+    let mut told = replayed.clone();
+    if !told.iter().any(|e| matches!(e, Event::Restored)) {
+        told.extend(until(&rx, |e| matches!(e, Event::Restored)));
+    }
+    let at = |wanted: fn(&Event) -> bool| told.iter().position(wanted);
+    assert!(
+        at(|e| matches!(
+            e,
+            Event::Agent {
+                event: AgentEvent::TurnFinished { .. },
+                ..
+            }
+        )) < at(|e| matches!(e, Event::Restored))
+    );
     assert!(replayed
         .iter()
         .any(|e| matches!(e, Event::Queued { text, .. } if text.contains("ok"))));
@@ -500,10 +515,10 @@ fn a_name_and_a_pin_are_kept_and_a_deleted_session_is_gone() {
 
     let (engine, rx) = start();
     new_session(&engine, "simple");
-    // The settings come first at every start; they are no session's.
+    // The settings and the end of the retelling come at every start; they are no session's.
     let events: Vec<Event> = until(&rx, |e| matches!(e, Event::SessionCreated { .. }))
         .into_iter()
-        .filter(|e| !matches!(e, Event::Settings { .. }))
+        .filter(|e| !matches!(e, Event::Settings { .. } | Event::Restored))
         .collect();
     assert_eq!(
         events.len(),

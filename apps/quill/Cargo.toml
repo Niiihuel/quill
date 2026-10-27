@@ -36,3 +36,8 @@ quill-link = { path = "../../crates/quill-link" }
 # already in the tree).
 sha2 = "0.10"
 base64 = "0.22"
+# clipboard images: egui pastes text only (read on a thread, in images.rs).
+# Thumbnails of the attached images, and PNG for pasted ones (the engine sizes them too).
+# Clipboard images: egui pastes text only.
+arboard = "3.7"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif"] }

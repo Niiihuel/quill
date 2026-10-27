@@ -50,6 +50,7 @@ impl Store {
             | Event::FileOpDone { .. }
             | Event::Settings { .. }
             | Event::Storage { .. }
+            | Event::Restored
             | Event::SettingsNotSaved { .. }
             | Event::Extensions { .. }
             | Event::FilesFound { .. }

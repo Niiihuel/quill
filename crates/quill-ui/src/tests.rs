@@ -3939,3 +3939,137 @@ fn a_sent_session_mention_goes_to_the_engine_numbered_and_not_into_the_text() {
     );
     assert!(ui.mentioned_sessions.is_empty());
 }
+
+#[test]
+fn the_composer_takes_png_jpeg_gif_and_webp_by_name_in_any_case() {
+    for name in ["a.png", "b.JPG", "c.jpeg", "d.gif", "e.WebP"] {
+        assert!(is_image(Path::new(name)), "{name}");
+    }
+    for name in ["notes.md", "image.bmp", "png", "photo.png.txt", "dir/"] {
+        assert!(!is_image(Path::new(name)), "{name}");
+    }
+}
+
+#[test]
+fn each_attached_image_is_a_tile_with_remove_and_open_regions() {
+    let (store, mut ui) = store_with_session();
+    add_images(&mut ui, vec!["/work/a.png".into(), "/work/b.jpg".into()]);
+    let window = limn::Size::new(1408.0, 844.0);
+    let frame = UiTree::new(view(&store, &ui, window)).layout(window);
+    for id in [
+        "image:remove:0",
+        "image:open:0",
+        "image:remove:1",
+        "image:open:1",
+    ] {
+        assert!(frame.regions.iter().any(|r| r.id == id), "no {id}");
+    }
+    assert!(!frame.regions.iter().any(|r| r.id == "image:remove:2"));
+}
+
+#[test]
+fn removing_an_image_drops_that_one_from_the_composer() {
+    let (store, mut ui) = store_with_session();
+    add_images(&mut ui, vec!["/work/a.png".into(), "/work/b.png".into()]);
+    click(&store, &mut ui, "image:remove:0");
+    assert_eq!(ui.images, vec![PathBuf::from("/work/b.png")]);
+    // An index past the end changes nothing.
+    click(&store, &mut ui, "image:remove:5");
+    assert_eq!(ui.images.len(), 1);
+}
+
+#[test]
+fn sending_carries_the_images_and_clears_the_composer() {
+    let (store, mut ui) = store_with_session();
+    add_images(&mut ui, vec!["/work/a.png".into()]);
+    let sent = update(
+        &store,
+        &mut ui,
+        &UiAction::Submitted {
+            id: view::COMPOSER.into(),
+            value: "look at this".into(),
+        },
+    );
+    assert_eq!(
+        sent,
+        [Intent::Send {
+            session: 1,
+            text: "look at this".into(),
+            mentions: vec![],
+            images: vec!["/work/a.png".into()],
+        }]
+    );
+    assert!(ui.images.is_empty());
+}
+
+#[test]
+fn a_message_written_before_its_session_keeps_its_images() {
+    let store = Store::default();
+    let mut ui = Ui::new("/work".into());
+    add_images(&mut ui, vec!["/work/a.png".into()]);
+    update(
+        &store,
+        &mut ui,
+        &UiAction::Submitted {
+            id: view::COMPOSER.into(),
+            value: "hi".into(),
+        },
+    );
+    assert!(ui.images.is_empty());
+    let then = ui.applied(&Event::SessionCreated {
+        session: 7,
+        agent: "claude".into(),
+        cwd: "/work".into(),
+    });
+    assert!(matches!(
+        then.first(),
+        Some(Intent::Send { session: 7, images, .. }) if *images == [PathBuf::from("/work/a.png")]
+    ));
+}
+
+#[test]
+fn a_queued_message_shows_its_images_above_its_words() {
+    let (mut store, ui) = store_with_session();
+    store.apply(Event::Queued {
+        session: 1,
+        request: "r2".into(),
+        text: "what is this?".into(),
+        at: None,
+        images: vec!["/work/shot.png".into()],
+    });
+    assert!(matches!(
+        store.session(1).unwrap().items.last(),
+        Some(Item::User { images, .. }) if *images == [PathBuf::from("/work/shot.png")]
+    ));
+    let window = limn::Size::new(1408.0, 844.0);
+    let frame = UiTree::new(view(&store, &ui, window)).layout(window);
+    let find = |id: &str| {
+        frame
+            .regions
+            .iter()
+            .find(|r| r.id == id)
+            .unwrap_or_else(|| panic!("no {id}"))
+            .rect
+    };
+    let tile = find("image:msg:r2:0");
+    assert!(
+        tile.y + tile.height <= find(view::COMPOSER).y,
+        "the image is under the composer"
+    );
+    assert!(tile.x > 1408.0 / 2.0, "the image is not right-aligned");
+}
+
+#[test]
+fn more_than_twenty_images_keep_the_first_twenty_and_say_so() {
+    let (_, mut ui) = store_with_session();
+    let paths: Vec<PathBuf> = (0..22).map(|i| format!("/work/{i}.png").into()).collect();
+    add_images(&mut ui, paths.clone());
+    assert_eq!(ui.images, paths[..MAX_IMAGES]);
+    assert_eq!(
+        ui.image_notice.as_deref(),
+        Some("Maximum of 20 images allowed.")
+    );
+    // The notice lasts until the composer's images change again.
+    add_images(&mut ui, vec![]);
+    assert!(ui.image_notice.is_none());
+}

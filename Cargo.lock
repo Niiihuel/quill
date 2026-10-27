@@ -3377,10 +3377,12 @@ dependencies = [
 name = "quill"
 version = "0.0.1"
 dependencies = [
+ "arboard",
  "base64 0.22.1",
  "bytemuck",
  "eframe",
  "gbm",
+ "image",
  "limn",
  "limn-egui",
  "quill-components",

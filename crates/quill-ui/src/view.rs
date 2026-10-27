@@ -6,8 +6,8 @@ use crate::{
     Item, Pane, Session, Store, ToolResult, Ui, NOTICE_DONE, NOTICE_PERMISSION, NOTICE_QUESTION,
 };
 use limn::{
-    Button, ButtonGroup, ButtonSize, ButtonVariant, Component, ComponentPalette, Composer,
-    ControlSize, Element, FontFamily, Markdown, OutputBlock, Size, Spinner, TextShimmer,
+    Attachment, Button, ButtonGroup, ButtonSize, ButtonVariant, Component, ComponentPalette,
+    Composer, ControlSize, Element, FontFamily, Markdown, OutputBlock, Size, Spinner, TextShimmer,
 };
 use quill_components::pieces::{
     confirm, hgap, hline, icon_tool, keyed_button, menu, muted, pane_header, pane_tab, tabs_header,
@@ -18,7 +18,11 @@ use quill_components::settings::{
 };
 use quill_model::{ChangeKind, FileEffect, NotifyLevel, SessionStatus, TranscriptView};
 use serde_json::Value;
+use std::path::Path;
 use std::time::Instant;
+
+/// A square image tile, 85 px: in the composer and in a message (docs/ui.md §2.6).
+const IMAGE_TILE: f32 = 85.0;
 
 pub const COMPOSER: &str = "composer";
 pub const NEW_SESSION: &str = "new-session";
@@ -3430,7 +3434,12 @@ fn item(
                 .centered_y(),
         ])
         .gap(5.0),
-        Item::User { text: t, .. } => {
+        Item::User {
+            request,
+            text: t,
+            images,
+            ..
+        } => {
             // As wide as its words, up to 3/4 of the column, 16 px of side padding.
             let line = text(t.clone())
                 .font_size(chat())
@@ -3439,7 +3448,20 @@ fn item(
                 .background(look::user_bubble())
                 .radius(14.0)
                 .padding(12.0);
-            Element::row(vec![Element::spacer().flex(1.0), bubble])
+            let bubble = Element::row(vec![Element::spacer().flex(1.0), bubble]);
+            if images.is_empty() {
+                return bubble;
+            }
+            // The images sit above the words, right-aligned.
+            let tiles = images.iter().enumerate().map(|(index, path)| {
+                let id = format!("image:msg:{request}:{index}");
+                image_tile(&id, path, ui, palette).open_action(id).render()
+            });
+            let tiles = Element::row(vec![
+                Element::spacer().flex(1.0),
+                Element::row(tiles.collect()).wrap().gap(8.0),
+            ]);
+            Element::column(vec![tiles, bubble]).gap(8.0)
         }
         Item::Assistant {
             text: t, streaming, ..
@@ -4958,6 +4980,7 @@ fn composer(
     .shadow_color(look::composer_shadow())
     .card_radius(14.0)
     .context(composer_footer(store, session, ui, palette))
+    .attachments(composer_images(ui, palette))
     .render();
     let box_ = crate::slash::list(store, ui, box_, column, palette);
     let box_ = crate::mention::list(store, ui, box_, column, palette);
@@ -4983,6 +5006,44 @@ fn composer(
         box_,
     ])
     .gap(13.0)
+}
+
+/// The composer's image tiles, each with its remove and open actions, and the note why an
+/// image was left out.
+fn composer_images(ui: &Ui, palette: ComponentPalette) -> Vec<Element> {
+    let mut stacked = vec![];
+    if !ui.images.is_empty() {
+        let tiles = ui.images.iter().enumerate().map(|(index, path)| {
+            let tile = image_tile(&format!("image:tile:{index}"), path, ui, palette)
+                .remove_action(format!("image:remove:{index}"))
+                .open_action(format!("image:open:{index}"));
+            tile.render()
+        });
+        stacked.push(Element::row(tiles.collect()).wrap().gap(8.0));
+    }
+    if let Some(notice) = &ui.image_notice {
+        stacked.push(
+            text(notice.clone())
+                .font_size(SMALL)
+                .foreground(look::muted()),
+        );
+    }
+    stacked
+}
+
+/// An image as a square tile: its thumbnail once decoded, else its file icon.
+fn image_tile(id: &str, path: &Path, ui: &Ui, palette: ComponentPalette) -> Attachment {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tile = Attachment::new(id, name, palette)
+        .preview_only()
+        .width(IMAGE_TILE);
+    match ui.thumbs.get(path) {
+        Some(thumb) => tile.preview(thumb.clone().cover()),
+        None => tile,
+    }
 }
 
 /// A count with commas between its thousands, as the branch bar writes them.
