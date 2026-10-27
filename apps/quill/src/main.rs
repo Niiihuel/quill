@@ -68,6 +68,8 @@ struct App {
     beside: Option<(SessionId, usize, usize)>,
     /// The motion Settings asked for that is in force.
     applied: Option<quill_model::Motion>,
+    /// The theme the window's icon was last drawn for.
+    icon_dark: Option<bool>,
     /// `QUILL_THEME` pins the theme over Settings, for demos and captures.
     pinned_theme: bool,
     /// Where the browser leaves its pages' frames, presented each frame.
@@ -540,6 +542,13 @@ impl App {
                 });
                 quill_ui::look::set_dark(dark);
             }
+        }
+        let dark = quill_ui::look::is_dark();
+        if self.icon_dark != Some(dark) {
+            self.icon_dark = Some(dark);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(window_icon(
+                dark,
+            )))));
         }
         let motion = self.ui.settings.motion;
         if self.applied != Some(motion) {
@@ -1503,6 +1512,24 @@ fn show_in_file_manager(folder: &std::path::Path) {
     }
 }
 
+/// quill's own icon for its window in the theme in force (X11, Windows); a Wayland desktop
+/// takes it by the app id from the icon theme instead (`scripts/install-desktop.sh`).
+fn window_icon(dark: bool) -> egui::IconData {
+    let png: &[u8] = if dark {
+        include_bytes!("../assets/icons/quill-dark-256.png")
+    } else {
+        include_bytes!("../assets/icons/quill-256.png")
+    };
+    let decoded = image::load_from_memory(png)
+        .map(|image| image.to_rgba8())
+        .unwrap_or_default();
+    egui::IconData {
+        width: decoded.width(),
+        height: decoded.height(),
+        rgba: decoded.into_raw(),
+    }
+}
+
 fn main() -> eframe::Result {
     // Chromium's own processes are quill run again; they do their work and leave.
     if let Some(code) = quill_engine::native::subprocess() {
@@ -1532,6 +1559,7 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_title("quill")
             .with_app_id("quill")
+            .with_icon(window_icon(false))
             .with_inner_size([1408.0, 844.0])
             .with_min_inner_size([720.0, 480.0])
             // Where the page is presented beneath it, the window is see-through.
@@ -1654,6 +1682,7 @@ fn main() -> eframe::Result {
                 transcript: None,
                 beside: None,
                 applied: None,
+                icon_dark: None,
                 pinned_theme: std::env::var_os("QUILL_THEME").is_some(),
                 frames,
                 textures: HashMap::new(),

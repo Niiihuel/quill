@@ -2564,7 +2564,7 @@ fn start_at_login(on: bool) -> Result<(), String> {
     std::fs::write(
         &entry,
         format!(
-            "[Desktop Entry]\nType=Application\nName=quill\nExec=\"{}\"\nX-GNOME-Autostart-enabled=true\n",
+            "[Desktop Entry]\nType=Application\nName=quill\nIcon=quill\nExec=\"{}\"\nX-GNOME-Autostart-enabled=true\n",
             program.display()
         ),
     )
