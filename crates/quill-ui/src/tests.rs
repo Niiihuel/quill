@@ -2581,7 +2581,7 @@ fn a_session_remembers_the_pull_request_its_agent_named() {
 
 #[test]
 fn settings_save_through_the_engine_and_shape_what_comes_next() {
-    use quill_model::{AgentInfo, Settings, TextSize};
+    use quill_model::{AgentInfo, InterfaceFont, Settings, TextSize};
     let (mut store, mut ui) = store_with_session();
     agent(
         &mut store,
@@ -2660,6 +2660,20 @@ fn settings_save_through_the_engine_and_shape_what_comes_next() {
     assert!(
         matches!(saved.as_slice(), [Intent::SaveSettings(s)] if s.text_size == TextSize::Large)
     );
+    // The interface font is a select; the code font is a field, saved by Enter.
+    let saved = click(&store, &mut ui, "set:interface_font=ubuntu");
+    assert!(
+        matches!(saved.as_slice(), [Intent::SaveSettings(s)] if s.interface_font == InterfaceFont::Ubuntu)
+    );
+    let saved = update(
+        &store,
+        &mut ui,
+        &UiAction::Submitted {
+            id: "set:code_font".into(),
+            value: " Fira Code ".into(),
+        },
+    );
+    assert!(matches!(saved.as_slice(), [Intent::SaveSettings(s)] if s.code_font == "Fira Code"));
     // An agent's defaults: a new model drops the effort chosen for the old one.
     let mut settings = Settings::default();
     settings.agents.entry("claude".into()).or_default().effort = Some("high".into());

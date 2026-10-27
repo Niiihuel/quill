@@ -12,10 +12,12 @@ pub mod settings;
 pub mod sidebar;
 pub mod tree;
 
-/// The system's sans and monospace faces, as Desktop's Code surface draws in: it sets
-/// `--font-anthropic-sans` to the system fallbacks, which fontconfig resolves (DejaVu on
-/// NixOS). `None` keeps limn's bundled faces when fontconfig cannot say.
-pub fn system_fonts() -> Option<limn::Fonts> {
+/// The faces of the interface and of code: `system_sans` takes the desktop's sans-serif (else
+/// limn's bundled Ubuntu) and the desktop's monospace; `code` names a monospace face that `fc-match`
+/// resolves (an unknown name falls back to the desktop's). A face fontconfig cannot find keeps
+/// its bundled one. `fc-match` blocks, so this must not run on the UI thread.
+pub fn fonts(system_sans: bool, code: &str) -> limn::Fonts {
+    use limn::FontFamily::*;
     let face = |pattern: &str| -> Option<limn::Font> {
         let out = std::process::Command::new("fc-match")
             .args(["-f", "%{file}", pattern])
@@ -24,16 +26,37 @@ pub fn system_fonts() -> Option<limn::Fonts> {
         let path = String::from_utf8(out.stdout).ok()?;
         limn::Font::new(std::fs::read(path.trim()).ok()?).ok()
     };
-    use limn::FontFamily::*;
-    let mut fonts = limn::Fonts::bundled();
-    for (family, pattern) in [
-        (Sans, "sans-serif"),
-        (SansMedium, "sans-serif:bold"),
-        (SansBold, "sans-serif:bold"),
-        (Monospace, "monospace"),
-        (MonospaceBold, "monospace:bold"),
-    ] {
-        fonts = fonts.face(family, face(pattern)?);
+    let code = code.trim();
+    let mut wanted = vec![
+        (
+            Monospace,
+            if code.is_empty() {
+                "monospace".into()
+            } else {
+                format!("{code},monospace")
+            },
+        ),
+        (
+            MonospaceBold,
+            if code.is_empty() {
+                "monospace:bold".into()
+            } else {
+                format!("{code},monospace:bold")
+            },
+        ),
+    ];
+    if system_sans {
+        wanted.extend([
+            (Sans, "sans-serif".into()),
+            (SansMedium, "sans-serif:bold".into()),
+            (SansBold, "sans-serif:bold".into()),
+        ]);
     }
-    Some(fonts)
+    let mut fonts = limn::Fonts::bundled();
+    for (family, pattern) in wanted {
+        if let Some(font) = face(&pattern) {
+            fonts = fonts.face(family, font);
+        }
+    }
+    fonts
 }

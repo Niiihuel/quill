@@ -2213,6 +2213,12 @@ fn update_action(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Int
                 value.lines().map(str::to_owned).collect();
             vec![Intent::SaveSettings(settings)]
         }
+        // Enter saves the code font, which blocks on fontconfig when the faces are built.
+        UiAction::Submitted { id, value } if id == "set:code_font" => {
+            let mut settings = ui.settings.clone();
+            settings.code_font = value.trim().to_owned();
+            vec![Intent::SaveSettings(settings)]
+        }
         UiAction::InputChanged { id, value } if id.starts_with("set:agent:") => {
             let Some(agent) = id
                 .strip_prefix("set:agent:")
@@ -3775,7 +3781,7 @@ pub enum McpPhase {
 /// setting, which the engine keeps before the UI shows it. `None` when `id` is none of
 /// them. A select reports its trigger, `set:{name}`, then a choice, `set:{name}={value}`.
 fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
-    use quill_model::{Motion, TextSize, Theme};
+    use quill_model::{InterfaceFont, Motion, TextSize, Theme};
     if id == view::ACCOUNT_MENU {
         ui.account_menu = !ui.account_menu;
         return Some(vec![]);
@@ -3841,6 +3847,8 @@ fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
             ("theme", "system") => settings.theme = Theme::System,
             ("theme", "light") => settings.theme = Theme::Light,
             ("theme", "dark") => settings.theme = Theme::Dark,
+            ("interface_font", "system") => settings.interface_font = InterfaceFont::System,
+            ("interface_font", "ubuntu") => settings.interface_font = InterfaceFont::Ubuntu,
             ("text_size", "small") => settings.text_size = TextSize::Small,
             ("text_size", "medium") => settings.text_size = TextSize::Medium,
             ("text_size", "large") => settings.text_size = TextSize::Large,

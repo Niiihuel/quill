@@ -715,9 +715,7 @@ fn main() -> eframe::Result {
         "quill-ide",
         options,
         Box::new(move |creation| {
-            if let Some(fonts) = quill_components::system_fonts() {
-                limn::set_fonts(fonts);
-            }
+            limn::set_fonts(quill_components::fonts(true, ""));
             limn_egui::install_fonts(&creation.egui_ctx);
             // `QUILL_THEME=dark|light`, else the system's, else dark, as quill.
             let dark = match std::env::var("QUILL_THEME").as_deref() {

@@ -87,6 +87,11 @@ pub struct Settings {
     pub text_size: TextSize,
     /// How wide the conversation and the message box get, Desktop's "Transcript width".
     pub width: Width,
+    /// The font of the whole interface (Desktop's `interfaceFont`); see `InterfaceFont`.
+    pub interface_font: InterfaceFont,
+    /// The monospace font of code and the terminal, by name, which `fc-match` resolves
+    /// (Desktop's `codeFont`); empty takes the desktop's own monospace.
+    pub code_font: String,
     /// The old "wide", read once into `width` (Medium, which it was).
     #[serde(skip_serializing)]
     pub wide: bool,
@@ -135,6 +140,8 @@ impl Default for Settings {
             theme: Theme::System,
             text_size: TextSize::Medium,
             width: Width::Narrow,
+            interface_font: InterfaceFont::System,
+            code_font: String::new(),
             wide: false,
             links_in_browser: true,
             archive_after_days: 0,
@@ -191,6 +198,17 @@ pub enum Width {
     Narrow,
     Medium,
     Wide,
+}
+
+/// Desktop's "Interface font" (`interfaceFont`), which offers Anthropic Sans, System and
+/// OpenDyslexic. quill does not ship Anthropic's face: System is the desktop's sans-serif and
+/// Ubuntu is the face limn bundles. OpenDyslexic is left out, as it would mean bundling it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InterfaceFont {
+    #[default]
+    System,
+    Ubuntu,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]

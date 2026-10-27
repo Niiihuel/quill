@@ -2508,6 +2508,19 @@ mod tests {
     }
 
     #[test]
+    fn settings_saved_before_the_fonts_read_as_system_and_the_desktops_monospace() {
+        let dir = std::env::temp_dir().join(format!("quill-fonts-{}", std::process::id()));
+        let path = dir.join("settings.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, r#"{"text_size": "large"}"#).unwrap();
+        let read = read_settings(Some(&path));
+        assert_eq!(read.text_size, quill_model::TextSize::Large);
+        assert_eq!(read.interface_font, quill_model::InterfaceFont::System);
+        assert_eq!(read.code_font, "");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn a_restored_session_keeps_its_pull_request_and_archive() {
         let events = vec![
             Event::SessionCreated {

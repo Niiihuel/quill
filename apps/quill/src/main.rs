@@ -32,6 +32,11 @@ struct App {
     /// The terminal tabs of each folder, kept while the window lives (features/terminal.md).
     terminals: HashMap<PathBuf, quill_pty::Tabs>,
     fonts_attached: bool,
+    /// The interface font and code font in force, as Settings chose them.
+    fonts_in_force: (quill_model::InterfaceFont, String),
+    /// The faces being built for Settings' fonts, taken on a frame once they are ready.
+    fonts_coming:
+        Option<std::sync::mpsc::Receiver<((quill_model::InterfaceFont, String), limn::Fonts)>>,
     /// The session on screen and how much its transcript held last frame.
     transcript: Option<(SessionId, usize, usize)>,
     /// The same of the session beside it, in the side pane.
@@ -498,6 +503,33 @@ impl App {
         }
     }
 
+    /// Settings' fonts, built on a thread since fontconfig blocks, then taken: the next frame
+    /// re-measures the text in them.
+    fn apply_fonts(&mut self, ctx: &egui::Context) {
+        if let Some((wanted, fonts)) = self.fonts_coming.as_ref().and_then(|rx| rx.try_recv().ok())
+        {
+            self.fonts_coming = None;
+            self.fonts_in_force = wanted;
+            limn::set_fonts(fonts);
+            limn_egui::install_fonts(ctx);
+            self.fonts_attached = false;
+        }
+        let settings = &self.ui.settings;
+        let wanted = (settings.interface_font, settings.code_font.clone());
+        if self.fonts_coming.is_none() && wanted != self.fonts_in_force {
+            let (interface, code) = wanted.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let repaint = ctx.clone();
+            std::thread::spawn(move || {
+                let fonts =
+                    quill_components::fonts(interface == quill_model::InterfaceFont::System, &code);
+                let _ = tx.send((wanted, fonts));
+                repaint.request_repaint();
+            });
+            self.fonts_coming = Some(rx);
+        }
+    }
+
     fn dispatch(&mut self, intents: Vec<Intent>) {
         for intent in intents {
             quill_ui::decided(&mut self.store, &intent);
@@ -509,6 +541,7 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, host: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.apply_fonts(&ctx);
         if !self.fonts_attached {
             limn_egui::attach_fonts(&mut self.tree, &ctx);
             self.fonts_attached = true;
@@ -1303,9 +1336,7 @@ fn main() -> eframe::Result {
         "quill",
         options,
         Box::new(move |creation| {
-            if let Some(fonts) = quill_components::system_fonts() {
-                limn::set_fonts(fonts);
-            }
+            limn::set_fonts(quill_components::fonts(true, ""));
             limn_egui::install_fonts(&creation.egui_ctx);
             // `QUILL_THEME=dark|light`, else the system's, else dark.
             let dark = match std::env::var("QUILL_THEME").as_deref() {
@@ -1415,6 +1446,8 @@ fn main() -> eframe::Result {
                 browser_shown: None,
                 address: None,
                 fonts_attached: false,
+                fonts_in_force: (quill_model::InterfaceFont::System, String::new()),
+                fonts_coming: None,
                 archive_checked: None,
             }))
         }),

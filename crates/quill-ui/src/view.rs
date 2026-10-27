@@ -7524,13 +7524,17 @@ fn setting_select(
 /// pages for its account, its cloud and its own features are not here: quill has none of
 /// them (docs/ui.md §2.11).
 fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<SettingsPage> {
-    use quill_model::{Motion, TextSize, Theme};
+    use quill_model::{InterfaceFont, Motion, TextSize, Theme};
     let s = &ui.settings;
     let theme = settings::theme_control(match s.theme {
         Theme::System => "system",
         Theme::Light => "light",
         Theme::Dark => "dark",
     });
+    let interface_font = match s.interface_font {
+        InterfaceFont::System => "system",
+        InterfaceFont::Ubuntu => "ubuntu",
+    };
     let text_size = match s.text_size {
         TextSize::Small => "small",
         TextSize::Medium => "medium",
@@ -7550,6 +7554,19 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
                 "Appearance".into(),
                 vec![
                     setting("Theme", "", theme),
+                    // Desktop's own words and choices (3.6556.2 registry `cc7db14f1`); its
+                    // Anthropic Sans and OpenDyslexic are not quill's (docs/ui.md §2.11).
+                    setting(
+                        "Interface font",
+                        "Font for the whole interface \u{2014} menus, sidebars, and panels.",
+                        setting_select(
+                            ui,
+                            "interface_font",
+                            &choices(&[("system", "System"), ("ubuntu", "Ubuntu")]),
+                            interface_font,
+                            palette,
+                        ),
+                    ),
                     setting(
                         "Transcript text size",
                         "The size of the conversation's words.",
@@ -7588,6 +7605,21 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
                         ),
                     ),
                 ],
+            ),
+            (
+                "Code".into(),
+                vec![setting(
+                    "Code font",
+                    "Set a custom monospace font for code and terminal.",
+                    limn::TextField::new(
+                        "set:code_font",
+                        s.code_font.as_str(),
+                        "Default monospace",
+                        palette,
+                    )
+                    .render()
+                    .size(Some(240.0), Some(32.0)),
+                )],
             )],
         },
         SettingsPage {
