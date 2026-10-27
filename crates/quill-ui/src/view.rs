@@ -3648,7 +3648,8 @@ pub(crate) fn ago_from(seconds: u64) -> String {
     format!("{count} {unit}{s} ago")
 }
 
-/// The line under the turn: Desktop's orange dots, then the step running, or the
+/// The line under the turn: quill's pen writing (in place of Desktop's orange
+/// dots, as the person chose on 2026-10-27), then the step running, or the
 /// turn's clock, its tokens, the work running beside it and whether the model thinks, muted,
 /// at the transcript's size. Waiting on the person it says so; with only background work
 /// left, it counts it.
@@ -3660,10 +3661,10 @@ fn status_line(
     palette: ComponentPalette,
 ) -> Option<Element> {
     let dots = || {
-        Spinner::new("status:dots", look::spark())
-            .variant(limn::SpinnerVariant::Dots)
-            .size(16.0)
-            .decorative()
+        // Large enough for its loops to stay open at a 1.5 px line.
+        limn::Scribble::new("status:scribble", look::running())
+            .size(34.0, 15.0)
+            .stroke(1.5)
             .render()
             .centered_y()
     };
