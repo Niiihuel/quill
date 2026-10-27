@@ -3,12 +3,14 @@
 //! Layout and colors follow Claude Desktop's Code surface (docs/ui.md, features/code-*.md).
 
 mod files;
+mod mention;
 mod pixels;
 mod slash;
 pub use quill_components::{icons, look};
 pub mod view;
 
 pub use files::key as files_key;
+pub use mention::{key as mention_key, mention_query};
 pub use slash::{key as slash_key, slash_query};
 pub use view::{menu_digit, view};
 
@@ -1043,6 +1045,13 @@ pub struct Ui {
     /// The slash palette's highlighted row, and the `/` (its byte index) Escape shut it at.
     pub slash_selected: usize,
     pub slash_dismissed: Option<usize>,
+    /// The "@" list's highlighted row, and the `@query` Escape shut it at.
+    pub mention_selected: usize,
+    pub mention_dismissed: Option<String>,
+    /// The sessions the message mentions, by id and title, for the next task.
+    pub mentioned_sessions: Vec<(SessionId, String)>,
+    /// The files the engine found for the "@" query it was asked: its session, query and paths.
+    pub mention_found: Option<(SessionId, String, Vec<PathBuf>)>,
     /// The Completed group shows every session, not its first few.
     pub show_more: bool,
     /// The side chat its pane shows, one asked for that the engine is making, and what its
@@ -1687,6 +1696,10 @@ impl Ui {
             restore_prompt: None,
             slash_selected: 0,
             slash_dismissed: None,
+            mention_selected: 0,
+            mention_dismissed: None,
+            mentioned_sessions: vec![],
+            mention_found: None,
             show_more: false,
             side_chat: None,
             side_waiting: false,
@@ -1991,6 +2004,7 @@ impl Ui {
     /// After the engine reported `event`: select a session the person just created
     /// and send what they wrote while it was being made.
     pub fn applied(&mut self, event: &Event) -> Vec<Intent> {
+        mention::heard(self, event);
         let mut intents = files::heard(self, event);
         intents.extend(self.mcp_heard(event));
         intents.extend(self.applied_to_view(event));
@@ -2290,13 +2304,18 @@ fn update_action(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Int
             }
         }
         UiAction::InputChanged { id, value } if id == view::COMPOSER => {
+            let before = mention_query(&ui.prompt).map(|(_, query)| query.to_owned());
             ui.prompt = value.clone();
             // The highlight starts at the top with each keystroke; a `/` that went away can open again.
             ui.slash_selected = 0;
+            ui.mention_selected = 0;
             if slash_query(&ui.prompt).is_none() {
                 ui.slash_dismissed = None;
             }
-            vec![]
+            if mention_query(&ui.prompt).is_none() {
+                ui.mention_dismissed = None;
+            }
+            mention::asked(ui, before.as_deref())
         }
         UiAction::InputChanged { id, value } if id == view::SETTINGS_SEARCH => {
             ui.settings_query = value.clone();
@@ -2396,6 +2415,7 @@ fn update_action(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Int
             }
             ui.prompt.clear();
             ui.slash_dismissed = None;
+            ui.mentioned_sessions.clear();
             // "/mcp" shows the session's MCP servers, as Desktop's does (3.6556.2 `cff0db614`).
             if text == "/mcp" {
                 if let Some(session) = ui.selected {
@@ -2857,6 +2877,9 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
     }
     if let Some(intents) = slash::clicked(store, ui, id) {
         return intents;
+    }
+    if mention::clicked(store, ui, id) {
+        return vec![];
     }
     for menu in [
         view::MODE_MENU,

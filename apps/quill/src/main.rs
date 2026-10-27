@@ -888,6 +888,10 @@ impl eframe::App for App {
                 self.dispatch(intents);
                 continue;
             }
+            // The "@" list takes the same keys over the composer; only one of the two opens.
+            if quill_ui::mention_key(&self.store, &mut self.ui, focused.as_deref(), &event) {
+                continue;
+            }
             // On a row of the Files pane, the arrows and nvim-tree's letters walk and change it.
             if let Some(intents) = quill_ui::files_key(&mut self.ui, focused.as_deref(), &event) {
                 self.dispatch(intents);

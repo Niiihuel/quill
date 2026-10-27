@@ -1076,9 +1076,15 @@ impl Router {
                         let wanted = query.clone();
                         let found = tokio::task::spawn_blocking(move || {
                             use quill_files::find;
-                            let files = find::files(&cwd);
+                            let files = if wanted.is_empty() {
+                                vec![]
+                            } else {
+                                find::files(&cwd)
+                            };
                             if contents {
                                 (vec![], find::grep(&cwd, &files, &wanted))
+                            } else if wanted.is_empty() {
+                                (find::top(&cwd), vec![])
                             } else {
                                 let best = find::best(&wanted, &files, find::LIMIT);
                                 (best.into_iter().cloned().collect(), vec![])

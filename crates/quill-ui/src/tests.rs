@@ -3682,3 +3682,219 @@ fn slash_quill_command_clears_the_token_and_runs_its_action() {
     );
     assert_eq!(ui.restore_prompt.as_deref(), Some(""));
 }
+
+/// A session with a title, made after the others (its activity follows their order).
+fn named(store: &mut Store, session: u64, title: &str, cwd: &str) {
+    store.apply(Event::SessionCreated {
+        session,
+        agent: "claude".into(),
+        cwd: cwd.into(),
+    });
+    store.apply(Event::Renamed {
+        session,
+        title: title.into(),
+    });
+    store.apply(Event::Queued {
+        session,
+        request: format!("r{session}"),
+        text: "hi".into(),
+        at: None,
+    });
+}
+
+fn mention_ids(store: &Store, ui: &Ui) -> Vec<String> {
+    crate::mention::open(store, ui)
+        .map(|(_, rows)| rows.into_iter().map(|(id, _)| id).collect())
+        .unwrap_or_default()
+}
+
+fn type_prompt(store: &Store, ui: &mut Ui, text: &str) -> Vec<Intent> {
+    update(
+        store,
+        ui,
+        &UiAction::InputChanged {
+            id: view::COMPOSER.into(),
+            value: text.into(),
+        },
+    )
+}
+
+#[test]
+fn mention_query_takes_the_word_at_the_end() {
+    assert_eq!(mention_query("@"), Some((0, "")));
+    assert_eq!(mention_query("look @ma"), Some((5, "ma")));
+    assert_eq!(mention_query("a@b"), None);
+    assert_eq!(mention_query("@ma "), None);
+    assert_eq!(mention_query("/ma"), None);
+    assert_eq!(
+        mention_query(&format!("@{}", "a".repeat(50))).map(|(_, q)| q.len()),
+        Some(50)
+    );
+    assert_eq!(mention_query(&format!("@{}", "a".repeat(51))), None);
+}
+
+#[test]
+fn mention_sessions_skip_archived_untitled_and_the_one_on_screen() {
+    let (mut store, mut ui) = store_with_session();
+    store.apply(Event::Renamed {
+        session: 1,
+        title: "Fix login".into(),
+    });
+    named(&mut store, 2, "Login page", "/work/web");
+    named(&mut store, 3, "Old login", "/work/old");
+    store.apply(Event::Archived {
+        session: 3,
+        archived: true,
+    });
+    named(&mut store, 4, "", "/work/untitled");
+    ui.prompt = "@log".into();
+    assert_eq!(mention_ids(&store, &ui), ["mention:session:2"]);
+}
+
+#[test]
+fn mention_lists_three_sessions_empty_and_eight_with_a_query() {
+    let (mut store, mut ui) = store_with_session();
+    for id in 2..=12 {
+        named(&mut store, id, &format!("Task {id}"), "/work/app");
+    }
+    ui.prompt = "@".into();
+    let empty = mention_ids(&store, &ui);
+    assert_eq!(empty.len(), 3);
+    assert_eq!(empty[0], "mention:session:12", "most recent first");
+    ui.prompt = "@task".into();
+    assert_eq!(mention_ids(&store, &ui).len(), 8);
+}
+
+#[test]
+fn mention_sessions_match_title_without_spaces_and_branch() {
+    let (mut store, mut ui) = store_with_session();
+    named(&mut store, 2, "Rate limits", "/work/api");
+    store
+        .sessions
+        .iter_mut()
+        .find(|s| s.id == 2)
+        .unwrap()
+        .branch = Some("feat/quota".into());
+    ui.prompt = "@ratelim".into();
+    assert_eq!(mention_ids(&store, &ui), ["mention:session:2"]);
+    ui.prompt = "@quota".into();
+    assert_eq!(mention_ids(&store, &ui), ["mention:session:2"]);
+    ui.prompt = "@zzz".into();
+    assert!(mention_ids(&store, &ui).is_empty());
+}
+
+#[test]
+fn mention_files_are_kept_only_for_the_query_asked() {
+    let (mut store, mut ui) = store_with_session();
+    named(&mut store, 2, "Login page", "/work/web");
+    let found = |query: &str| Event::FilesFound {
+        session: 1,
+        query: query.into(),
+        contents: false,
+        paths: vec!["src/main.rs".into()],
+        hits: vec![],
+    };
+    assert_eq!(
+        type_prompt(&store, &mut ui, "@ma"),
+        [Intent::FindFiles {
+            session: 1,
+            query: "ma".into(),
+            contents: false,
+        }]
+    );
+    ui.applied(&found("ma"));
+    assert_eq!(mention_ids(&store, &ui), ["mention:file:src/main.rs"]);
+    // Typing on asks again, and an answer to the old query is let go.
+    assert_eq!(
+        type_prompt(&store, &mut ui, "@mai"),
+        [Intent::FindFiles {
+            session: 1,
+            query: "mai".into(),
+            contents: false,
+        }]
+    );
+    ui.applied(&found("ma"));
+    assert!(mention_ids(&store, &ui).is_empty());
+    ui.applied(&found("mai"));
+    assert_eq!(mention_ids(&store, &ui), ["mention:file:src/main.rs"]);
+}
+
+#[test]
+fn mention_enter_writes_a_file_and_a_session_by_its_title() {
+    let (mut store, mut ui) = store_with_session();
+    named(&mut store, 2, "Login page", "/work/web");
+    ui.prompt = "look @log".into();
+    ui.applied(&Event::FilesFound {
+        session: 1,
+        query: "log".into(),
+        contents: false,
+        paths: vec!["src/login.rs".into()],
+        hits: vec![],
+    });
+    // The session first, then the file.
+    assert_eq!(
+        mention_ids(&store, &ui),
+        ["mention:session:2", "mention:file:src/login.rs"]
+    );
+    // Tab does not pick.
+    assert!(!mention_key(
+        &store,
+        &mut ui,
+        Some(view::COMPOSER),
+        &key(limn::Key::Tab)
+    ));
+    assert!(mention_key(
+        &store,
+        &mut ui,
+        Some(view::COMPOSER),
+        &key(limn::Key::Enter)
+    ));
+    assert_eq!(ui.restore_prompt.as_deref(), Some("look @[Login page] "));
+    assert_eq!(ui.mentioned_sessions, [(2, "Login page".to_owned())]);
+    // Down to the file, then Enter.
+    assert!(mention_key(
+        &store,
+        &mut ui,
+        Some(view::COMPOSER),
+        &key(limn::Key::ArrowDown)
+    ));
+    assert!(mention_key(
+        &store,
+        &mut ui,
+        Some(view::COMPOSER),
+        &key(limn::Key::Enter)
+    ));
+    assert_eq!(ui.restore_prompt.as_deref(), Some("look @src/login.rs "));
+    assert_eq!(ui.mentioned_sessions.len(), 1);
+}
+
+#[test]
+fn mention_escape_stays_shut_for_the_same_query() {
+    let (mut store, mut ui) = store_with_session();
+    named(&mut store, 2, "Login page", "/work/web");
+    ui.prompt = "@log".into();
+    assert!(mention_key(
+        &store,
+        &mut ui,
+        Some(view::COMPOSER),
+        &key(limn::Key::Escape)
+    ));
+    assert!(mention_ids(&store, &ui).is_empty());
+    type_prompt(&store, &mut ui, "@log");
+    assert!(mention_ids(&store, &ui).is_empty());
+    type_prompt(&store, &mut ui, "@logi");
+    assert_eq!(mention_ids(&store, &ui), ["mention:session:2"]);
+}
+
+#[test]
+fn slash_and_mention_never_open_together() {
+    let (mut store, mut ui) = store_with_session();
+    with_commands(&mut store);
+    named(&mut store, 2, "Login page", "/work/web");
+    ui.prompt = "/mo".into();
+    assert!(mention_ids(&store, &ui).is_empty());
+    assert!(!slash_ids(&store, &ui).is_empty());
+    ui.prompt = "look @log".into();
+    assert!(slash_ids(&store, &ui).is_empty());
+    assert_eq!(mention_ids(&store, &ui), ["mention:session:2"]);
+}

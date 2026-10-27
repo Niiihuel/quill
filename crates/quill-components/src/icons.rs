@@ -206,6 +206,11 @@ pub const SPARK: &str = icon!(
     "<path d='M10 2.5v15M2.5 10h15M4.7 4.7l10.6 10.6M15.3 4.7L4.7 15.3' stroke-width='1.6'/>"
 );
 
+/// A conversation: a chat bubble with its tail, for the "@" list's sessions.
+pub const CHAT: &str = icon!(
+    "<path d='M4.25 4.25h11.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5H9l-3.5 2.75v-2.75h-1.25a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5z'/>"
+);
+
 /// Every icon by name, for the preview sheet and its test.
 pub const ALL: &[(&str, &str)] = &[
     ("add", ADD),
@@ -218,6 +223,7 @@ pub const ALL: &[(&str, &str)] = &[
     ("filter", FILTER),
     ("share", SHARE),
     ("pin", PIN),
+    ("chat", CHAT),
     ("code", CODE),
     ("monitor", MONITOR),
     ("sun", SUN),

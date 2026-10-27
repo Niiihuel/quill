@@ -27,6 +27,29 @@ pub fn files(root: &Path) -> Vec<PathBuf> {
     files
 }
 
+/// The folder's own entries, as an empty "@" lists them: folders first, each ending in `/`, then
+/// files, by name, without `.git`.
+pub fn top(root: &Path) -> Vec<PathBuf> {
+    let Ok(dir) = std::fs::read_dir(root) else {
+        return vec![];
+    };
+    let mut entries: Vec<(bool, String)> = dir
+        .filter_map(Result::ok)
+        .filter(|e| e.file_name() != ".git")
+        .map(|e| {
+            (
+                !e.file_type().is_ok_and(|t| t.is_dir()),
+                e.file_name().to_string_lossy().into_owned(),
+            )
+        })
+        .collect();
+    entries.sort();
+    entries
+        .into_iter()
+        .map(|(file, name)| PathBuf::from(if file { name } else { format!("{name}/") }))
+        .collect()
+}
+
 /// How well `query` matches `path`: all its letters in order, case aside, scored higher when
 /// they run together, begin a word or fall in the file's name, and for shorter paths. `None`
 /// when they do not all appear.
@@ -139,6 +162,23 @@ mod tests {
         );
         assert_eq!(best("engmd")[0], &PathBuf::from("docs/engine.md"));
         assert_eq!(best("").len(), 4);
+    }
+
+    #[test]
+    fn the_top_level_lists_folders_then_files_without_git() {
+        let root = std::env::temp_dir().join(format!("quill-files-top-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for dir in [".git", "src", "docs"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        std::fs::write(root.join("README.md"), "").unwrap();
+        std::fs::write(root.join(".env"), "").unwrap();
+        let top = top(&root);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            top,
+            ["docs/", "src/", ".env", "README.md"].map(PathBuf::from)
+        );
     }
 
     #[test]
