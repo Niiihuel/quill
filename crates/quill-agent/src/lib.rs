@@ -71,10 +71,23 @@ pub struct ModelInfo {
     pub modes: Vec<String>,
 }
 
+/// A command the agent runs itself when a message starts with `/name`.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AgentSlashCommand {
+    pub name: String,
+    pub description: String,
+    pub argument_hint: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+}
+
 /// What this agent can do; the UI offers only what is here.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AgentCapabilities {
     pub models: Vec<ModelInfo>,
+    /// The agent's own slash commands, sorted by name.
+    #[serde(default)]
+    pub commands: Vec<AgentSlashCommand>,
     /// Permission modes, in the agent's own words (`default`, `acceptEdits`, `plan`…).
     pub modes: Vec<String>,
     /// Modes that skip every approval, offered only once the person allows them.

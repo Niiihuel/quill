@@ -1782,6 +1782,7 @@ fn the_effort_thumb_follows_a_drag_and_springs_to_the_level_let_go_at() {
         AgentEvent::Ready {
             version: "2.1.310".into(),
             capabilities: quill_model::AgentCapabilities {
+                commands: vec![],
                 models: vec![quill_model::ModelInfo {
                     id: "opus".into(),
                     name: "Opus 5.5".into(),
@@ -2712,6 +2713,7 @@ fn settings_save_through_the_engine_and_shape_what_comes_next() {
         AgentEvent::Ready {
             version: "2.1.310".into(),
             capabilities: quill_model::AgentCapabilities {
+                commands: vec![],
                 models: vec![quill_model::ModelInfo {
                     id: "haiku".into(),
                     name: "Haiku".into(),
@@ -3203,6 +3205,7 @@ fn thinking_agent(store: &mut Store, thinking_text: bool) {
         AgentEvent::Ready {
             version: "2.1.310".into(),
             capabilities: quill_model::AgentCapabilities {
+                commands: vec![],
                 thinking_text,
                 ..Default::default()
             },

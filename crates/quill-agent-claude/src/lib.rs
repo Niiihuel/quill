@@ -3,11 +3,11 @@
 //! (`fixtures/2.1.310/`, docs/engine.md §11.4).
 
 use quill_agent::{
-    AgentAdapter, AgentCapabilities, AgentCommand, AgentEvent, AgentId, CommandRun,
-    ContextCategory, ContextKind, ContextUsage, Decision, Decoded, ExtensionOp, FileChange,
-    LaunchPlan, Marketplace, McpServer, McpSource, McpStatus, McpTool, ModelInfo, PlanLimits,
-    Plugin, PluginOffer, ProgramRun, SessionSpec, Skill, Suggestion, TaskUsage, ToolContent, Usage,
-    UsageWindow, BROWSER_GUIDE, BROWSER_TOOLS, HOST_TOOLS,
+    AgentAdapter, AgentCapabilities, AgentCommand, AgentEvent, AgentId, AgentSlashCommand,
+    CommandRun, ContextCategory, ContextKind, ContextUsage, Decision, Decoded, ExtensionOp,
+    FileChange, LaunchPlan, Marketplace, McpServer, McpSource, McpStatus, McpTool, ModelInfo,
+    PlanLimits, Plugin, PluginOffer, ProgramRun, SessionSpec, Skill, Suggestion, TaskUsage,
+    ToolContent, Usage, UsageWindow, BROWSER_GUIDE, BROWSER_TOOLS, HOST_TOOLS,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -25,6 +25,8 @@ const QUIET: [&str; 2] = ["command_lifecycle", "auth_status"];
 pub struct Claude {
     next_request: u64,
     initialize: Option<String>,
+    /// The answer to `initialize`, kept to tell the commands again when `system/init` lists them.
+    ready: Option<AgentEvent>,
     /// The `get_context_usage` request waiting for its answer.
     context_request: Option<String>,
     /// `mcp_status` requests waiting for their answers.
@@ -748,7 +750,8 @@ impl AgentAdapter for Claude {
                 let body = response["response"].clone();
                 if ok && self.initialize.as_deref() == Some(id.as_str()) {
                     self.ultracode = offers_ultracode(&body);
-                    decoded.events.push(ready(&body, self.ultracode));
+                    self.ready = Some(ready(&body, self.ultracode));
+                    decoded.events.extend(self.ready.clone());
                 }
                 if let Some(server) = self.sign_ins.remove(&id) {
                     let url = (body["authUrl"].as_str())
@@ -799,9 +802,27 @@ impl AgentAdapter for Claude {
                     .remove(msg["request_id"].as_str().unwrap_or_default());
                 decoded.events.push(AgentEvent::Unknown(msg));
             }
-            ("system", Some("init")) => decoded.events.push(AgentEvent::Session {
-                id: text(&msg["session_id"]),
-            }),
+            ("system", Some("init")) => {
+                decoded.events.push(AgentEvent::Session {
+                    id: text(&msg["session_id"]),
+                });
+                // Without the initialize answer's commands, `system/init` names them (no details).
+                if let Some(AgentEvent::Ready {
+                    version,
+                    mut capabilities,
+                    ..
+                }) = self.ready.clone()
+                {
+                    if capabilities.commands.is_empty() {
+                        capabilities.commands = slash_commands(&msg["slash_commands"]);
+                        decoded.events.push(AgentEvent::Ready {
+                            version,
+                            capabilities,
+                            mode: None,
+                        });
+                    }
+                }
+            }
             ("system", Some("status")) => {
                 if let Some(requests) = msg["user_message_uuids"].as_array() {
                     let requests = requests
@@ -1039,6 +1060,38 @@ fn offers_ultracode(body: &Value) -> bool {
         })
 }
 
+/// The agent's slash commands, sorted by name and without repeats: objects from `initialize`
+/// (`name`, `description`, `argumentHint`, `aliases`), or bare names from `system/init`.
+fn slash_commands(list: &Value) -> Vec<AgentSlashCommand> {
+    let mut commands: Vec<AgentSlashCommand> = list
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|c| match c.as_str() {
+            Some(name) => AgentSlashCommand {
+                name: name.into(),
+                ..Default::default()
+            },
+            None => AgentSlashCommand {
+                name: text(&c["name"]),
+                description: text(&c["description"]),
+                argument_hint: text(&c["argumentHint"]),
+                aliases: c["aliases"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect(),
+            },
+        })
+        .filter(|c| !c.name.is_empty())
+        .collect();
+    commands.sort_by(|a, b| a.name.cmp(&b.name));
+    commands.dedup_by(|a, b| a.name == b.name);
+    commands
+}
+
 /// The answer to `get_context_usage` (CLI 2.1.310): its categories, each with a `kind`, and
 /// the lists Desktop opens under them, MCP tools, memory files and custom agents
 /// (3.6556.2 `c2d611398`).
@@ -1148,6 +1201,7 @@ fn ready(body: &Value, ultracode: bool) -> AgentEvent {
             tool_hooks: true,
             mcp: true,
             thinking_text: true,
+            commands: slash_commands(&body["commands"]),
             plan: body["account"]["subscriptionType"]
                 .as_str()
                 .map(str::to_owned),

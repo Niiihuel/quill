@@ -116,6 +116,64 @@ fn initialize_reports_models_with_their_efforts() {
 }
 
 #[test]
+fn initialize_lists_the_agents_slash_commands_sorted_by_name() {
+    let (_, events, _) = replay_at("2.1.311", "extensions");
+    let Some(AgentEvent::Ready { capabilities, .. }) = events
+        .iter()
+        .find(|e| matches!(e, AgentEvent::Ready { .. }))
+    else {
+        panic!("no Ready")
+    };
+    let names: Vec<&str> = capabilities
+        .commands
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "deep-research",
+            "graphify",
+            "reverse-engineer-anything",
+            "vercel:bootstrap"
+        ]
+    );
+    let graphify = &capabilities.commands[1];
+    assert!(graphify
+        .description
+        .starts_with("Use only when the user types /graphify"));
+    assert_eq!(graphify.argument_hint, "");
+    assert!(graphify.aliases.is_empty());
+}
+
+#[test]
+fn system_init_names_the_commands_when_initialize_gave_none() {
+    let (mut claude, _, _) = replay("simple");
+    let id = claude.initialize.clone().unwrap();
+    let answer = json!({ "type": "control_response", "response": {
+        "subtype": "success", "request_id": id, "response": { "commands": [] } } });
+    claude.decode(&answer.to_string());
+    let init = json!({ "type": "system", "subtype": "init", "session_id": "s",
+        "slash_commands": ["plan", "clear", "plan"] });
+    let events = claude.decode(&init.to_string()).events;
+    let Some(AgentEvent::Ready {
+        capabilities, mode, ..
+    }) = events
+        .iter()
+        .find(|e| matches!(e, AgentEvent::Ready { .. }))
+    else {
+        panic!("no Ready")
+    };
+    let names: Vec<&str> = capabilities
+        .commands
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect();
+    assert_eq!(names, ["clear", "plan"]);
+    assert_eq!(*mode, None);
+}
+
+#[test]
 fn ultracode_is_extra_high_effort_with_workflows_on() {
     let (mut claude, _, _) = replay("simple");
     let settings = |claude: &mut Claude, effort: &str| -> Value {
