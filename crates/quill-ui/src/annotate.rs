@@ -134,11 +134,13 @@ fn clicked(ui: &mut Ui, id: &str) -> bool {
         DISCARD => close(ui),
         KEEP => ui.discarding = false,
         _ => {
+            // Only its own menus: another menu's dismiss is the composer's to hear.
             if let Some(menu) = id.strip_suffix(":dismiss") {
                 if [SHAPES_MENU, INK_MENU, WIDTH_MENU].contains(&menu) {
                     ui.open_menu = None;
+                    return true;
                 }
-                return true;
+                return false;
             }
             if let Some(i) = id
                 .strip_prefix(SHAPE_PICK)

@@ -91,7 +91,7 @@ fn rank<S: AsRef<str>>(
 
 /// quill's own commands whose action exists now: the ones that need a session only show once
 /// one is selected, and plan only when the agent offers that mode.
-fn own_commands(session: Option<&Session>, ui: &Ui) -> Vec<Own> {
+fn own_commands(store: &Store, session: Option<&Session>, ui: &Ui) -> Vec<Own> {
     let own = |name, aliases, description, action: &str| Own {
         name,
         aliases,
@@ -119,7 +119,10 @@ fn own_commands(session: Option<&Session>, ui: &Ui) -> Vec<Own> {
             "argument:permissions",
         ),
     ];
-    if view::offered_modes(session, ui).iter().any(|m| m == "plan") {
+    if view::offered_modes(store, session, ui)
+        .iter()
+        .any(|m| m == "plan")
+    {
         commands.push(own("plan", &[], "Switch to plan mode", "mode:plan"));
     }
     commands.extend([
@@ -183,7 +186,7 @@ fn rows(store: &Store, ui: &Ui, query: &str) -> Vec<Row> {
         .and_then(|s| s.capabilities.as_ref())
         .map(|c| c.commands.as_slice())
         .unwrap_or_default();
-    let own = own_commands(session, ui);
+    let own = own_commands(store, session, ui);
     let mut found: Vec<(u8, Row)> = Vec::new();
     for command in &own {
         if let Some((rank, matched)) = rank(query, command.name, command.aliases) {
@@ -222,7 +225,7 @@ fn options(store: &Store, ui: &Ui, command: &str, query: &str) -> Vec<Row> {
     let options: Vec<(String, String, String, String, bool)> = match command {
         "model" => {
             let current = view::current_model(store, session, ui).map(|m| m.id.clone());
-            let (latest, more) = view::split_models(view::offered_models(store, session));
+            let (latest, more) = view::split_models(view::offered_models(store, session, ui));
             latest
                 .into_iter()
                 .chain(more)
@@ -254,7 +257,7 @@ fn options(store: &Store, ui: &Ui, command: &str, query: &str) -> Vec<Row> {
             .collect(),
         _ => {
             let current = session.map_or(ui.mode.as_str(), |s| s.mode.as_str());
-            view::menu_modes(session, ui)
+            view::menu_modes(store, session, ui)
                 .into_iter()
                 .filter_map(|m| {
                     let (label, about) = view::mode_entry(&m)?;
@@ -306,7 +309,7 @@ pub(crate) fn open(store: &Store, ui: &Ui) -> Option<(usize, Vec<Row>)> {
 fn argument_title(store: &Store, ui: &Ui) -> Option<String> {
     let (_, command, _) = argument(&ui.prompt)?;
     let session = ui.selected.and_then(|id| store.session(id));
-    own_commands(session, ui)
+    own_commands(store, session, ui)
         .into_iter()
         .find(|own| own.name == command)
         .map(|own| format!("{} — {}", own.name, own.description))

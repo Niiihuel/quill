@@ -3897,7 +3897,7 @@ fn item(
             tool,
             decided: None,
             ..
-        } if tool == "ExitPlanMode" => plan_card(id, Some(session), ui, column, palette),
+        } if tool == "ExitPlanMode" => plan_card(store, id, Some(session), ui, column, palette),
         Item::Permission { .. } => permission(item, ui, column, palette),
         Item::TurnEnd {
             ok: false,
@@ -5060,6 +5060,7 @@ fn permission(item: &Item, ui: &Ui, column: f32, palette: ComponentPalette) -> E
 /// accepting into the most trusting mode offered, the other modes in its menu
 ///.
 fn plan_card(
+    store: &Store,
     id: &str,
     session: Option<&Session>,
     ui: &Ui,
@@ -5079,7 +5080,7 @@ fn plan_card(
             .centered_y(),
     ])
     .size(Some(inner), None);
-    let modes = offered_modes(session, ui);
+    let modes = offered_modes(store, session, ui);
     let trusting = if modes.iter().any(|m| m == "auto") {
         ("auto", "Accept and auto mode")
     } else {
@@ -5851,7 +5852,7 @@ fn composer_footer(
 ) -> Element {
     let row = Element::row(vec![
         plus_menu(session, ui),
-        mode_menu(session, ui),
+        mode_menu(store, session, ui),
         Element::spacer().flex(1.0),
         model_menu(store, session, ui, palette),
         effort_menu(store, ui),
@@ -6084,8 +6085,8 @@ fn folder_menu(store: &Store, ui: &Ui) -> Element {
 
 /// The modes the menu lists, in its order: those the agent offers, then those the chosen
 /// model adds (Auto), that quill can name.
-pub(crate) fn offered_modes(session: Option<&Session>, ui: &Ui) -> Vec<String> {
-    let capabilities = session.and_then(|s| s.capabilities.as_ref());
+pub(crate) fn offered_modes(store: &Store, session: Option<&Session>, ui: &Ui) -> Vec<String> {
+    let capabilities = agent_capabilities(store, session, ui);
     let mut modes = capabilities
         .map(|c| c.modes.clone())
         .filter(|m| !m.is_empty())
@@ -6104,13 +6105,12 @@ pub(crate) fn offered_modes(session: Option<&Session>, ui: &Ui) -> Vec<String> {
 
 /// The modes the mode menu lists: those offered, and those that skip every approval once the
 /// person allowed them for the agent in Settings.
-pub(crate) fn menu_modes(session: Option<&Session>, ui: &Ui) -> Vec<String> {
-    let mut modes = offered_modes(session, ui);
+pub(crate) fn menu_modes(store: &Store, session: Option<&Session>, ui: &Ui) -> Vec<String> {
+    let mut modes = offered_modes(store, session, ui);
     let agent = session.map_or(ui.agent.as_str(), |s| s.agent.as_str());
     if ui.settings.agent(agent).allow_unsafe {
         modes.extend(
-            session
-                .and_then(|s| s.capabilities.as_ref())
+            agent_capabilities(store, session, ui)
                 .map(|c| c.unsafe_modes.clone())
                 .unwrap_or_default()
                 .into_iter()
@@ -6120,21 +6120,29 @@ pub(crate) fn menu_modes(session: Option<&Session>, ui: &Ui) -> Vec<String> {
     modes
 }
 
+/// What the agent can do: the session's, or for a new session the last session of the same
+/// agent that heard it, so the composer offers its models and modes before the first message.
+pub(crate) fn agent_capabilities<'a>(
+    store: &'a Store,
+    session: Option<&'a Session>,
+    ui: &Ui,
+) -> Option<&'a quill_model::AgentCapabilities> {
+    let agent = session.map_or(ui.agent.as_str(), |s| s.agent.as_str());
+    session.and_then(|s| s.capabilities.as_ref()).or_else(|| {
+        (store.sessions.iter().rev())
+            .filter(|s| s.agent == agent)
+            .find_map(|s| s.capabilities.as_ref())
+    })
+}
+
 /// The models the menu lists: the session's agent's, or for a new session the last
 /// session's.
 pub(crate) fn offered_models<'a>(
     store: &'a Store,
     session: Option<&'a Session>,
+    ui: &Ui,
 ) -> &'a [quill_model::ModelInfo] {
-    session
-        .and_then(|s| s.capabilities.as_ref())
-        .or_else(|| {
-            store
-                .sessions
-                .iter()
-                .rev()
-                .find_map(|s| s.capabilities.as_ref())
-        })
+    agent_capabilities(store, session, ui)
         .map(|c| c.models.as_slice())
         .unwrap_or_default()
 }
@@ -6179,10 +6187,10 @@ pub fn menu_digit(store: &Store, ui: &Ui, typed: &str) -> Option<String> {
     let n: usize = typed.parse().ok().filter(|n| (1..=9).contains(n))?;
     let session = ui.selected.and_then(|id| store.session(id));
     match ui.open_menu? {
-        MODE_MENU => menu_modes(session, ui)
+        MODE_MENU => menu_modes(store, session, ui)
             .get(n - 1)
             .map(|m| format!("mode:{m}")),
-        MODEL_MENU => split_models(offered_models(store, session))
+        MODEL_MENU => split_models(offered_models(store, session, ui))
             .0
             .get(n - 1)
             .map(|m| format!("model:{}", m.id)),
@@ -6215,7 +6223,7 @@ fn mode_icon(mode: &str) -> &'static str {
 }
 
 /// The permission mode: Manual reads amber, as Desktop's chip does.
-fn mode_menu(session: Option<&Session>, ui: &Ui) -> Element {
+fn mode_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
     let open = ui.open_menu == Some(MODE_MENU);
     let current = session.map_or(ui.mode.as_str(), |s| s.mode.as_str());
     let label = mode_entry(current).map_or("Manual", |(label, _)| label);
@@ -6235,7 +6243,7 @@ fn mode_menu(session: Option<&Session>, ui: &Ui) -> Element {
         Some("Ctrl+Shift+M"),
     );
     let mut entries = vec![limn::DropdownMenuEntry::Heading("Mode".into())];
-    for (i, mode) in menu_modes(session, ui).iter().enumerate() {
+    for (i, mode) in menu_modes(store, session, ui).iter().enumerate() {
         let (label, about) = mode_entry(mode).unwrap_or(("", ""));
         let n = i + 1;
         entries.push(
@@ -6282,7 +6290,7 @@ fn model_menu(
     _palette: ComponentPalette,
 ) -> Element {
     let open = ui.open_menu == Some(MODEL_MENU);
-    let models = offered_models(store, session);
+    let models = offered_models(store, session, ui);
     let current = models.iter().find(|m| {
         ui.model
             .as_deref()
@@ -6336,7 +6344,7 @@ pub(crate) fn current_model<'a>(
     session: Option<&'a Session>,
     ui: &Ui,
 ) -> Option<&'a quill_model::ModelInfo> {
-    offered_models(store, session).iter().find(|m| {
+    offered_models(store, session, ui).iter().find(|m| {
         ui.model
             .as_deref()
             .is_some_and(|id| m.id == id || m.name.to_lowercase().contains(id))
@@ -7734,7 +7742,7 @@ fn agent_pane(
     .radius(14.0)
     .padding(16.0)];
     // "Model Haiku 5.5": the model it was given, else the session's.
-    let models = offered_models(store, Some(session));
+    let models = offered_models(store, Some(session), ui);
     let model = input["model"]
         .as_str()
         .and_then(|id| {

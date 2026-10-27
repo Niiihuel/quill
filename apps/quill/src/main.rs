@@ -1273,16 +1273,28 @@ impl eframe::App for App {
         if (follow && changed) || focus_terminal {
             self.tree.scroll_to_end(quill_ui::view::TERMINAL_SCROLL);
         }
+        // At the end, the transcript stays there every frame, not only when a message grows:
+        // the text is revealed over frames, and thumbnails and steps open after it. A frame in
+        // which the person scrolls (the wheel, a drag on the bar, the paging keys) is left to
+        // them, so scrolling up to read lets go of the end.
+        let scrolling = ctx.input(|i| {
+            i.pointer.primary_down()
+                || (i.events.iter()).any(|e| {
+                    matches!(e, egui::Event::MouseWheel { .. })
+                        || matches!(e, egui::Event::Key { key, pressed: true, .. } if matches!(key,
+                            egui::Key::PageUp | egui::Key::PageDown | egui::Key::Home | egui::Key::End))
+                })
+        });
         let mark = self.transcript_mark(self.ui.selected);
         let opened = mark.map(|m| m.0) != self.transcript.map(|m| m.0);
-        if let Some((id, ..)) = mark.filter(|_| opened || (at_end && mark != self.transcript)) {
+        if let Some((id, ..)) = mark.filter(|_| opened || (at_end && !scrolling)) {
             self.tree.scroll_to_end(&format!("transcript:{id}"));
         }
         self.transcript = mark;
         // The session beside opens at its end too, and follows it the same way.
         let mark = self.transcript_mark(self.ui.side_chat);
         let opened = mark.map(|m| m.0) != self.beside.map(|m| m.0);
-        if let Some((id, ..)) = mark.filter(|_| opened || (beside_at_end && mark != self.beside)) {
+        if let Some((id, ..)) = mark.filter(|_| opened || (beside_at_end && !scrolling)) {
             self.tree.scroll_to_end(&format!("side:{id}:scroll"));
         }
         self.beside = mark;

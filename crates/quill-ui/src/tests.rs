@@ -2869,7 +2869,12 @@ fn settings_save_through_the_engine_and_shape_what_comes_next() {
     ui.selected = Some(1);
     // The agent's modes, the model's Auto, then Bypass once allowed, Desktop's order.
     assert_eq!(
-        view::menu_modes(store.session(1), &ui),
+        view::menu_modes(&store, store.session(1), &ui),
+        ["default", "plan", "auto", "bypassPermissions"]
+    );
+    // A new session offers them too, from the agent's last session, before its first message.
+    assert_eq!(
+        view::menu_modes(&store, None, &ui),
         ["default", "plan", "auto", "bypassPermissions"]
     );
     assert_eq!(click(&store, &mut ui, view::SETTINGS_CLOSE), vec![]);
@@ -4470,4 +4475,16 @@ fn the_editor_fits_the_picture_to_the_window() {
     assert_eq!((tall.width, tall.height), (342.0, 684.0));
     let narrow = annotate::shown(1.0, limn::Size::new(500.0, 844.0));
     assert_eq!(narrow.width, 468.0);
+}
+
+#[test]
+fn a_composer_menu_closes_on_its_dismiss() {
+    let (store, mut ui) = store_with_session();
+    for menu in [view::MODE_MENU, view::MODEL_MENU, view::EFFORT_MENU] {
+        click(&store, &mut ui, menu);
+        assert_eq!(ui.open_menu, Some(menu));
+        // Escape or a press outside: limn reports the menu's dismiss.
+        click(&store, &mut ui, &format!("{menu}:dismiss"));
+        assert_eq!(ui.open_menu, None, "{menu}");
+    }
 }
