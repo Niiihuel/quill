@@ -6931,9 +6931,13 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
     for agent in &ui.agents {
         pages.push(agent_page(store, ui, agent, palette));
     }
-    let storage = match &ui.storage {
-        Some((path, bytes)) => format!("{} \u{b7} {}", path.display(), human_bytes(*bytes)),
-        None => "Measuring\u{2026}".to_owned(),
+    let kept = match &ui.storage {
+        Some((path, bytes)) => format!(
+            "Sessions and their file history are kept in {} ({}).",
+            path.display(),
+            human_bytes(*bytes)
+        ),
+        None => "Sessions and their file history are kept on this computer.".to_owned(),
     };
     pages.push(SettingsPage {
         key: "system".into(),
@@ -6943,7 +6947,7 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
             (
                 "quill".into(),
                 vec![
-                    setting("Version", "", muted(env!("CARGO_PKG_VERSION")).centered_y()),
+                    setting("Version", "", text(env!("CARGO_PKG_VERSION")).centered_y()),
                     setting(
                         "Open at login",
                         "Start quill when you log in to this computer.",
@@ -6955,7 +6959,7 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
                 "Storage".into(),
                 vec![setting(
                     "Data folder",
-                    &format!("Sessions and their file history are kept in {storage}."),
+                    &kept,
                     setting_button(SETTINGS_STORAGE_OPEN, "Open"),
                 )],
             ),
@@ -7020,7 +7024,16 @@ fn agent_page(
                 ),
                 program,
             ),
-            setting("Version", &version_about, muted(version_value).centered_y()),
+            setting(
+                "Version",
+                &version_about,
+                if version.is_some() {
+                    text(version_value)
+                } else {
+                    muted(version_value)
+                }
+                .centered_y(),
+            ),
         ],
     )];
     let defaults = match capabilities {
@@ -7158,5 +7171,13 @@ fn settings_dialog(
         groups.push(("Agents", agents));
     }
     groups.push(("This computer", owned(&["system"])));
-    settings::dialog(base, pages, groups, current, &ui.settings_query, window)
+    settings::dialog(
+        base,
+        pages,
+        groups,
+        current,
+        &ui.settings_query,
+        ui.settings_error.as_deref(),
+        window,
+    )
 }

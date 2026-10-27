@@ -49,7 +49,8 @@ impl Store {
             | Event::Listed { .. }
             | Event::FileOpDone { .. }
             | Event::Settings { .. }
-            | Event::Storage { .. } => false,
+            | Event::Storage { .. }
+            | Event::SettingsNotSaved { .. } => false,
             // What a session's browser shows is the moment's; its tabs' addresses are kept.
             Event::Browser { update, .. } => {
                 matches!(update, quill_model::BrowserUpdate::Kept(_))

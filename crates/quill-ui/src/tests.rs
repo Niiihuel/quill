@@ -1819,8 +1819,22 @@ fn settings_save_through_the_engine_and_shape_what_comes_next() {
         panic!("{saved:?}");
     };
     assert!(!settings.keep_awake && ui.settings.keep_awake);
+    // Not kept, it says so over the page until the next change.
+    ui.applied(&Event::SettingsNotSaved {
+        error: "read-only file system".into(),
+    });
+    let window = limn::Size::new(1408.0, 844.0);
+    let said = |ui: &Ui| {
+        let frame = UiTree::new(view(&store, ui, window)).layout(window);
+        frame.access.iter().any(|node| node.name.contains("read-only file system"))
+            || frame.commands.iter().any(|command| {
+                matches!(command, limn::DrawCommand::Text { text, .. } if text.contains("read-only file system"))
+            })
+    };
+    assert!(said(&ui));
     // A select opens, and a choice closes it and saves.
     click(&store, &mut ui, "set:text_size");
+    assert!(!said(&ui));
     assert_eq!(ui.settings_menu.as_deref(), Some("text_size"));
     let saved = click(&store, &mut ui, "set:text_size=large");
     assert!(ui.settings_menu.is_none());

@@ -604,10 +604,7 @@ impl Router {
         .await
         .unwrap_or_else(|e| Err(e.to_string()));
         if let Err(error) = saved {
-            (self.ui)(Event::Status {
-                session: 0,
-                status: SessionStatus::Failed(format!("settings not saved: {error}")),
-            });
+            (self.ui)(Event::SettingsNotSaved { error });
             // What is in force stays as it was, and the UI hears it again.
             self.announce_settings();
             return;

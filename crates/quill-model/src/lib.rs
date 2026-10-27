@@ -647,6 +647,10 @@ pub enum Event {
         path: PathBuf,
         bytes: u64,
     },
+    /// Settings could not be written: what is in force stays as it was.
+    SettingsNotSaved {
+        error: String,
+    },
     /// What the session hears next was passed on by the session `from`, which started it.
     Forwarded {
         session: SessionId,
@@ -719,7 +723,7 @@ impl Event {
             | Event::Reported { session, .. }
             | Event::Browser { session, .. } => *session,
             // quill's own, not a session's: no session has id 0.
-            Event::Settings { .. } | Event::Storage { .. } => 0,
+            Event::Settings { .. } | Event::Storage { .. } | Event::SettingsNotSaved { .. } => 0,
         }
     }
 }

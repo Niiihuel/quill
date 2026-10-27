@@ -97,7 +97,14 @@ tones! {
     settings_field_edge = hex(0xebebeb), hex(0x2c2c2c);
     settings_button = hex(0xf2f2f2), hex(0x404040);
     settings_track = hex(0xf3f3f3), hex(0x2a2a2a);
+    /// The theme's chosen icon: a chip of the page's white on the track, and its edge
+    /// (dark: inferred).
+    settings_chip = hex(0xffffff), hex(0x3b3b3b);
+    settings_chip_edge = hex(0xe7e7e7), hex(0x4a4a4a);
     switch_on = hex(0x257de0), hex(0x257de0);
+    /// A switch that is off: its pale track under the white thumb
+    /// (dark: inferred).
+    switch_off = hex(0xcecece), hex(0x4d4d4d);
     /// A session named in the conversation: Desktop's blue chip
     /// (light: inferred).
     mention = hex(0x1f63b8), hex(0x8ab4f0);

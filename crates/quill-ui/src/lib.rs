@@ -457,7 +457,8 @@ impl Store {
             | Event::Listed { .. }
             | Event::FileOpDone { .. }
             | Event::Settings { .. }
-            | Event::Storage { .. } => {}
+            | Event::Storage { .. }
+            | Event::SettingsNotSaved { .. } => {}
         }
     }
 }
@@ -877,6 +878,8 @@ pub struct Ui {
     pub settings_menu: Option<String>,
     /// Where quill keeps its data and how much it takes, as last measured.
     pub storage: Option<(PathBuf, u64)>,
+    /// Why the last change in Settings was not kept, until the next one.
+    pub settings_error: Option<String>,
     /// Things quill moves itself jump to where they go, as limn's do under reduced motion.
     pub reduced_motion: bool,
     /// How many of each session's items the person has had in view.
@@ -1433,6 +1436,7 @@ impl Ui {
             settings_query: String::new(),
             settings_menu: None,
             storage: None,
+            settings_error: None,
             reduced_motion: false,
             seen: Default::default(),
             new_from: Default::default(),
@@ -1685,6 +1689,10 @@ impl Ui {
         }
         if let Event::Storage { path, bytes } = event {
             self.storage = Some((path.clone(), *bytes));
+            return vec![];
+        }
+        if let Event::SettingsNotSaved { error } = event {
+            self.settings_error = Some(error.clone());
             return vec![];
         }
         if let Event::Reading {
@@ -2726,6 +2734,7 @@ fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
     if id == view::SETTINGS_CLOSE {
         ui.settings_page = None;
         ui.settings_menu = None;
+        ui.settings_error = None;
         return Some(vec![]);
     }
     if let Some(page) = id.strip_prefix("settings:page:") {
@@ -2734,6 +2743,8 @@ fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
         return Some(vec![]);
     }
     let rest = id.strip_prefix("set:")?;
+    // A new change is tried afresh: the last one's failure goes.
+    ui.settings_error = None;
     if let Some(menu) = rest.strip_suffix(":dismiss") {
         if ui.settings_menu.as_deref() == Some(menu) {
             ui.settings_menu = None;

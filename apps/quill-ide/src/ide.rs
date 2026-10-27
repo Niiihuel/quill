@@ -2087,6 +2087,7 @@ pub fn view(ide: &Ide, window: Size) -> Element {
             prefs::groups(),
             page,
             &ide.settings_query,
+            None,
             window,
         ),
         None => root,

@@ -50,11 +50,11 @@ pub fn select(name: &str, choices: &[(String, String)], current: &str, open: boo
         .collect();
     let chevron = Element::icon(crate::icons::of(crate::icons::CARET_DOWN))
         .foreground(look::muted())
-        .size(Some(12.0), Some(12.0))
+        .size(Some(14.0), Some(14.0))
         .centered_y();
     let trigger = Element::row(vec![
         hgap(8.0),
-        text(label).font_size(15.0).centered_y(),
+        text(label).font_size(BODY).centered_y(),
         chevron,
         hgap(6.0),
     ])
@@ -92,7 +92,7 @@ pub fn theme_control(current: &str) -> Element {
     ]
     .into_iter()
     .map(|(value, icon)| {
-        limn::Tab::new(format!("set:theme={value}"), "", 28.0)
+        limn::Tab::new(format!("set:theme={value}"), "", 26.0)
             .icon(icons::of(icon))
             .active(current == value)
     })
@@ -100,11 +100,12 @@ pub fn theme_control(current: &str) -> Element {
     limn::SegmentedControl::new(
         tabs,
         ComponentPalette {
-            raised: look::settings_track(),
-            selected: look::settings_current(),
+            surface: look::settings_track(),
+            selected: look::settings_chip(),
             ..look::palette()
         },
     )
+    .selection_border(look::settings_chip_edge())
     .render()
 }
 
@@ -115,11 +116,12 @@ pub fn choices(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Desktop's switch: white on its blue when on, on a gray track when off.
+/// Desktop's switch: white on its blue when on, on a pale gray track when off.
 pub fn setting_switch(name: &str, on: bool, palette: ComponentPalette) -> Element {
     limn::Switch::new(format!("set:{name}"), on, palette)
         .variant(limn::SwitchVariant::Accent)
         .ink(look::switch_on())
+        .off_ink(look::switch_off())
         .render()
 }
 
@@ -155,13 +157,15 @@ fn unreachable_page(key: &str) -> SettingsPage {
 
 /// Settings over `base`, on the page `current`, or what `query` finds on every page. The
 /// column lists `pages` under each of `groups`' headings, by key; a page reports
-/// `settings:page:{key}` when picked.
+/// `settings:page:{key}` when picked. `failed` is why the last change was not kept, said
+/// over the page in Desktop's words.
 pub fn dialog(
     base: Element,
     pages: Vec<SettingsPage>,
     groups: Vec<(&str, Vec<String>)>,
     current: &str,
     query: &str,
+    failed: Option<&str>,
     window: Size,
 ) -> Element {
     let palette = look::palette();
@@ -201,20 +205,21 @@ pub fn dialog(
         }
         .interactive_surface(Element::clickable(
             format!("settings:page:{}", page.key),
+            // Desktop's: the icon 9 in, its label 15 after it, at 14 px.
             Element::row(vec![
-                hgap(10.0),
+                hgap(9.0),
                 Element::icon(crate::icons::of(page.icon))
                     .foreground(look::palette().text)
                     .size(Some(16.0), Some(16.0))
                     .centered_y(),
+                hgap(15.0),
                 Element::truncated_text(page.title.clone())
                     .font_family(FontFamily::Sans)
-                    .font_size(15.0)
+                    .font_size(BODY)
                     .foreground(look::palette().text)
                     .flex(1.0)
                     .centered_y(),
             ])
-            .gap(12.0)
             .size(Some(inner - 10.0), Some(32.0)),
         ))
         .radius(8.0);
@@ -244,20 +249,22 @@ pub fn dialog(
     let section = |title: String, rows: Vec<Setting>| {
         // The rows keep their own 10 px inset; the title takes it too, as Desktop aligns them.
         let mut items = vec![
-            Element::row(vec![hgap(10.0), text(title).font_size(16.0)]),
-            Element::spacer().size(None, Some(10.0)),
+            Element::row(vec![hgap(10.0), text(title).font_size(15.0)]),
+            Element::spacer().size(None, Some(19.0)),
         ];
         let count = rows.len();
         for (at, row) in rows.into_iter().enumerate() {
+            // Desktop's at 1×: 14 px words, a description's lines 20 apart.
             let mut action = limn::ActionRow::new(row.title, palette)
-                .title_size(15.0)
-                .subtitle_size(14.0)
+                .title_size(BODY)
+                .subtitle_size(BODY)
+                .subtitle_line_height(20.0)
                 .sizing(limn::ActionRowSizing {
                     gap: 24.0,
-                    copy_gap: 4.0,
+                    copy_gap: 6.0,
                     icon_column: 0.0,
                     min_height: 52.0,
-                    min_height_with_subtitle: 64.0,
+                    min_height_with_subtitle: 68.0,
                 })
                 .wrap_title(true);
             if let Some(about) = row.about {
@@ -269,8 +276,12 @@ pub fn dialog(
                     .render()
                     .size(Some(rows_width), None),
             );
+            // The hairline runs under the copy and the control, inside the rows' inset.
             if at + 1 < count {
-                items.push(hline(rows_width, look::settings_row_line()));
+                items.push(Element::row(vec![
+                    hgap(10.0),
+                    hline(rows_width - 20.0, look::settings_row_line()),
+                ]));
             }
         }
         Element::column(items)
@@ -305,6 +316,20 @@ pub fn dialog(
         if content.is_empty() {
             content.push(muted("No settings match your search.").font_size(15.0));
         }
+    }
+    // Desktop's words when a setting is not kept [2.9939.4 `cf4f70727`], over the page.
+    if let Some(error) = failed {
+        content.insert(
+            0,
+            Element::column(vec![
+                text("Couldn\u{2019}t save the setting. Try again.")
+                    .font_size(BODY)
+                    .foreground(look::failed()),
+                muted(error.to_owned()).font_size(BODY),
+            ])
+            .gap(4.0)
+            .padding(10.0),
+        );
     }
     let content = Element::scroll(
         "settings:content",
