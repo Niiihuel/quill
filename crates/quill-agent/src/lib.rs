@@ -124,6 +124,27 @@ pub struct Plugin {
     pub enabled: bool,
 }
 
+/// A plugin a marketplace offers.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PluginOffer {
+    /// The id installing it takes.
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub marketplace: String,
+    pub version: Option<String>,
+    /// How many times it was installed, when the marketplace counts.
+    pub installs: Option<u64>,
+}
+
+/// A marketplace of plugins the agent knows.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Marketplace {
+    pub name: String,
+    /// Where it comes from: a repository, an address or a folder.
+    pub source: String,
+}
+
 /// A skill the agent offers, as it lists them.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Skill {
@@ -131,8 +152,63 @@ pub struct Skill {
     pub description: String,
     /// Where it comes from, in the agent's words (`user`, `plugin`…).
     pub source: String,
-    /// Whether the agent offers it at all; one that is off is listed and never used.
-    pub enabled: bool,
+    /// What the agent does with it, one of [`Extensions::skill_states`] (the first is on).
+    pub state: String,
+    /// Why its state cannot be changed here, when it cannot.
+    pub locked: Option<String>,
+    /// What the adapter needs back to change its state.
+    pub key: Value,
+}
+
+/// An agent's plugins, the marketplaces it knows and what they offer, and its skills, as
+/// its program lists them for a folder.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Extensions {
+    pub plugins: Vec<Plugin>,
+    pub offers: Vec<PluginOffer>,
+    pub marketplaces: Vec<Marketplace>,
+    pub skills: Vec<Skill>,
+    /// Where a plugin can be installed, in the agent's words, each with how to say it; the
+    /// first is the person's own, for every folder.
+    pub scopes: Choices,
+    /// What a skill can be, in the agent's words, each with how to say it.
+    pub skill_states: Choices,
+}
+
+/// Choices in the agent's words, each with how to say it.
+pub type Choices = Vec<(String, String)>;
+
+/// A change to an agent's plugins, marketplaces or skills, made by its own program.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum ExtensionOp {
+    SwitchPlugin {
+        plugin: Plugin,
+        enabled: bool,
+    },
+    /// Install an offered plugin, for the person (`None`) or where `scope` says.
+    Install {
+        id: String,
+        scope: Option<String>,
+    },
+    Uninstall(Plugin),
+    Update(String),
+    AddMarketplace(String),
+    UpdateMarketplace(String),
+    RemoveMarketplace(String),
+    /// A skill's state, for the folder.
+    SkillState {
+        skill: Skill,
+        state: String,
+    },
+}
+
+/// What to run for an [`ExtensionOp`]: the program's arguments and what goes to its stdin.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProgramRun {
+    pub args: Vec<String>,
+    pub stdin: Option<String>,
+    /// How long it may take, in seconds.
+    pub timeout: u64,
 }
 
 /// Where a server's definition came from: the person's own settings, the project's, the
@@ -418,6 +494,8 @@ pub enum AgentCommand {
     Skills,
     /// Load the plugins again, after one was switched on or off.
     ReloadPlugins,
+    /// Load the skills again, after one's state changed.
+    ReloadSkills,
     /// The answer to an [`AgentEvent::HostTool`] call.
     HostToolResult {
         id: String,
@@ -485,17 +563,36 @@ pub trait AgentAdapter: Send {
     fn launch_file(&self) -> Option<&'static str> {
         None
     }
-    /// The arguments that make the agent's program list its installed plugins, read by
-    /// [`plugins`](Self::plugins); `None` when it has none.
+    /// The arguments that make the agent's program list its installed plugins and the
+    /// ones its marketplaces offer, read by [`plugins`](Self::plugins); `None` when it has
+    /// none.
     fn plugins_query(&self) -> Option<Vec<String>> {
         None
     }
-    /// The plugins in what [`plugins_query`](Self::plugins_query) printed.
-    fn plugins(&self, _stdout: &str) -> Vec<Plugin> {
+    /// The installed plugins and the offered ones in what
+    /// [`plugins_query`](Self::plugins_query) printed.
+    fn plugins(&self, _stdout: &str) -> (Vec<Plugin>, Vec<PluginOffer>) {
+        (vec![], vec![])
+    }
+    /// The arguments that list the marketplaces, read by
+    /// [`marketplaces`](Self::marketplaces).
+    fn marketplaces_query(&self) -> Option<Vec<String>> {
+        None
+    }
+    fn marketplaces(&self, _stdout: &str) -> Vec<Marketplace> {
         vec![]
     }
-    /// The arguments that switch `plugin` on or off where it is installed.
-    fn plugin_switch(&self, _plugin: &Plugin, _enabled: bool) -> Option<Vec<String>> {
+    /// Where a plugin can be installed and what a skill can be, with how to say each: see
+    /// [`Extensions::scopes`] and [`Extensions::skill_states`].
+    fn extension_words(&self) -> (Choices, Choices) {
+        (vec![], vec![])
+    }
+    /// What to run for `op`; `None` when the agent cannot.
+    fn extension_op(&self, _op: &ExtensionOp) -> Option<ProgramRun> {
+        None
+    }
+    /// Why `op` failed, in what its run printed although it exited well.
+    fn extension_failed(&self, _stdout: &str) -> Option<String> {
         None
     }
     /// Lines for `command`. Commands the agent answers get an id, reported back as [`AgentEvent::Reply`].

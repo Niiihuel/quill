@@ -889,6 +889,10 @@ pub struct Ui {
     pub settings_error: Option<String>,
     /// Each agent's plugins and skills, as the engine last read them, by agent id.
     pub extensions: std::collections::HashMap<String, Extensions>,
+    /// What Customize asks before removing, while it asks.
+    pub removing: Option<Removing>,
+    /// The marketplace being typed in Customize › Plugins.
+    pub marketplace_field: String,
     /// Things quill moves itself jump to where they go, as limn's do under reduced motion.
     pub reduced_motion: bool,
     /// How many of each session's items the person has had in view.
@@ -1448,6 +1452,8 @@ impl Ui {
             storage: None,
             settings_error: None,
             extensions: std::collections::HashMap::new(),
+            removing: None,
+            marketplace_field: String::new(),
             reduced_motion: false,
             seen: Default::default(),
             new_from: Default::default(),
@@ -1489,9 +1495,31 @@ impl Ui {
         }
     }
 
+    /// Ask for every agent's plugins and skills, for Customize's folder.
+    fn ask_extensions(&mut self) -> Vec<Intent> {
+        let folder = customize_folder(self);
+        for agent in &self.agents {
+            let known = self.extensions.entry(agent.id.clone()).or_default();
+            known.folder = folder.clone();
+            known.working = Some(String::new());
+        }
+        let agents = self.agents.iter().map(|a| Intent::Extensions {
+            agent: a.id.clone(),
+            folder: folder.clone(),
+        });
+        agents.collect()
+    }
+
     /// What is due to be asked on its own: the open MCP dialog's servers, every
-    /// [`MCP_POLL`], so one that connects or fails shows it.
+    /// [`MCP_POLL`], so one that connects or fails shows it; Customize's lists, read again
+    /// for a folder chosen while it shows.
     pub fn due(&mut self) -> Vec<Intent> {
+        let customizing = (self.settings_page.as_deref())
+            .is_some_and(|p| [view::SETTINGS_PLUGINS, view::SETTINGS_SKILLS].contains(&p));
+        let folder = customize_folder(self);
+        if customizing && self.extensions.values().any(|k| k.folder != folder) {
+            return self.ask_extensions();
+        }
         match &mut self.mcp {
             Some(mcp) if mcp.asked.elapsed() >= MCP_POLL => {
                 mcp.asked = std::time::Instant::now();
@@ -1724,18 +1752,24 @@ impl Ui {
         }
         if let Event::Extensions {
             agent,
-            plugins,
-            skills,
+            folder,
+            extensions,
             error,
         } = event
         {
-            let extensions = Extensions {
-                plugins: plugins.clone(),
-                skills: skills.clone(),
+            let done = self.extensions.get(agent).and_then(|k| k.done.clone());
+            // Desktop's toast once an install went through (2.9939.4 `c6a2a31c4`).
+            let notice = (done.filter(|_| error.is_none()))
+                .map(|name| format!("{name} is installed and ready to use."));
+            let known = Extensions {
+                folder: folder.clone(),
+                list: extensions.clone(),
                 error: error.clone(),
-                switching: None,
+                working: None,
+                notice,
+                done: None,
             };
-            self.extensions.insert(agent.clone(), extensions);
+            self.extensions.insert(agent.clone(), known);
             return vec![];
         }
         if let Event::Reading {
@@ -1949,6 +1983,16 @@ fn update_action(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Int
         UiAction::InputChanged { id, value } if id == view::SETTINGS_SEARCH => {
             ui.settings_query = value.clone();
             vec![]
+        }
+        UiAction::InputChanged { id, value } if id.starts_with(view::EXT_MKT_FIELD) => {
+            ui.marketplace_field = value.clone();
+            vec![]
+        }
+        // Enter in the marketplace's field adds it, as its button does.
+        UiAction::Submitted { id, value } if id.starts_with(view::EXT_MKT_FIELD) => {
+            ui.marketplace_field = value.clone();
+            let agent = id.strip_prefix(view::EXT_MKT_FIELD).unwrap_or_default();
+            clicked(store, ui, &format!("ext:mkt-add:{agent}"))
         }
         UiAction::InputChanged { id, value } if id.starts_with("set:agent:") => {
             let Some(agent) = id
@@ -2773,15 +2817,186 @@ fn answer(store: &Store, ui: &mut Ui, rest: &str) -> Vec<Intent> {
     vec![]
 }
 
-/// An agent's plugins and skills, for Settings' Customize pages.
+/// An agent's plugins, marketplaces and skills, for Settings' Customize pages.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Extensions {
-    pub plugins: Vec<quill_model::Plugin>,
-    pub skills: Vec<quill_model::Skill>,
-    /// Why a list could not be read, or a plugin not switched.
+    /// The folder they were read for.
+    pub folder: PathBuf,
+    pub list: quill_model::Extensions,
+    /// Why the last change or list failed.
     pub error: Option<String>,
-    /// The plugin being switched on or off, until the engine reads them again.
-    pub switching: Option<String>,
+    /// What is being changed, by its id or name, until the engine reads them again.
+    pub working: Option<String>,
+    /// What the last change did, in Desktop's words ("… is installed and ready to use.").
+    pub notice: Option<String>,
+    /// What the last change was, to say what it did once the lists come back.
+    pub done: Option<String>,
+}
+
+/// What Customize asks before it removes: a plugin, or a marketplace with its plugins.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Removing {
+    Plugin(String, quill_model::Plugin),
+    Marketplace(String, String),
+}
+
+/// The folder Customize reads plugins and skills for: the one a new session starts in, or
+/// the person's own when none is chosen.
+pub fn customize_folder(ui: &Ui) -> PathBuf {
+    if ui.cwd.as_os_str().is_empty() {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default()
+    } else {
+        ui.cwd.clone()
+    }
+}
+
+/// Whether `folder` is a project, not the person's own folder: what installing for a
+/// project and a skill's state need.
+pub fn is_project(folder: &std::path::Path) -> bool {
+    std::env::var_os("HOME").is_none_or(|home| folder != std::path::Path::new(&home))
+}
+
+/// Customize's clicks: a plugin's switch, install (for a scope from its menu),
+/// update and removal (after asking); a marketplace's update, removal (after asking) and
+/// adding one; a skill's state from its menu. Each sends the change with the folder, and
+/// the engine reads the lists again. `None` when `id` is none of them.
+fn extensions_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
+    use quill_model::ExtensionOp;
+    let folder = customize_folder(ui);
+    if id == view::EXT_REMOVE_NO {
+        ui.removing = None;
+        return Some(vec![]);
+    }
+    let send = |ui: &mut Ui, agent: &str, working: String, done: Option<String>, op| {
+        if let Some(known) = ui.extensions.get_mut(agent) {
+            known.working = Some(working);
+            known.error = None;
+            known.notice = None;
+            known.done = done;
+        }
+        Some(vec![Intent::ExtensionOp {
+            agent: agent.to_owned(),
+            folder: folder.clone(),
+            op,
+        }])
+    };
+    if id == view::EXT_REMOVE_YES {
+        return match ui.removing.take()? {
+            Removing::Plugin(agent, plugin) => send(
+                ui,
+                &agent,
+                plugin.id.clone(),
+                None,
+                ExtensionOp::Uninstall(plugin),
+            ),
+            Removing::Marketplace(agent, name) => send(
+                ui,
+                &agent,
+                name.clone(),
+                None,
+                ExtensionOp::RemoveMarketplace(name),
+            ),
+        };
+    }
+    let (verb, rest) = id.strip_prefix("ext:")?.split_once(':')?;
+    let (agent, name) = rest.split_once(':').unwrap_or((rest, ""));
+    let known = ui.extensions.get(agent)?;
+    let plugin = known.list.plugins.iter().find(|p| p.id == name).cloned();
+    match verb {
+        "switch" => {
+            let plugin = plugin?;
+            let enabled = !plugin.enabled;
+            send(
+                ui,
+                agent,
+                name.to_owned(),
+                None,
+                ExtensionOp::SwitchPlugin { plugin, enabled },
+            )
+        }
+        "update" => send(
+            ui,
+            agent,
+            name.to_owned(),
+            None,
+            ExtensionOp::Update(name.to_owned()),
+        ),
+        "remove" => {
+            ui.removing = Some(Removing::Plugin(agent.to_owned(), plugin?));
+            Some(vec![])
+        }
+        "mkt-update" => send(
+            ui,
+            agent,
+            name.to_owned(),
+            None,
+            ExtensionOp::UpdateMarketplace(name.to_owned()),
+        ),
+        "mkt-remove" => {
+            ui.removing = Some(Removing::Marketplace(agent.to_owned(), name.to_owned()));
+            Some(vec![])
+        }
+        "mkt-add" => {
+            let source = ui.marketplace_field.trim().to_owned();
+            if source.is_empty() {
+                return Some(vec![]);
+            }
+            ui.marketplace_field.clear();
+            send(
+                ui,
+                agent,
+                source.clone(),
+                None,
+                ExtensionOp::AddMarketplace(source),
+            )
+        }
+        "install" => {
+            // `{id}` for the person's own, `{id}={scope}` from the menu of scopes.
+            let (id, scope) = match name.rsplit_once('=') {
+                Some((id, scope)) => (id, Some(scope.to_owned())),
+                None => (name, None),
+            };
+            if scope.is_none() && is_project(&folder) {
+                let menu = format!("ext:install:{agent}:{id}");
+                ui.settings_menu = (ui.settings_menu.as_deref() != Some(&menu)).then_some(menu);
+                return Some(vec![]);
+            }
+            ui.settings_menu = None;
+            let label = (known.list.offers.iter())
+                .find(|o| o.id == id)
+                .map_or(id.to_owned(), |o| o.name.clone());
+            let op = ExtensionOp::Install {
+                id: id.to_owned(),
+                scope,
+            };
+            send(ui, agent, id.to_owned(), Some(label), op)
+        }
+        "skill" => {
+            let (skill, state) = match name.rsplit_once('=') {
+                Some((skill, state)) => (skill, state),
+                None => {
+                    let menu = format!("ext:skill:{agent}:{name}");
+                    ui.settings_menu = (ui.settings_menu.as_deref() != Some(&menu)).then_some(menu);
+                    return Some(vec![]);
+                }
+            };
+            ui.settings_menu = None;
+            let skill = known
+                .list
+                .skills
+                .iter()
+                .find(|s| s.name == skill)
+                .cloned()?;
+            let op = ExtensionOp::SkillState {
+                state: state.to_owned(),
+                skill: skill.clone(),
+            };
+            send(ui, agent, skill.name, None, op)
+        }
+        _ => None,
+    }
 }
 
 /// How often the open MCP dialog asks for its servers again (inferred: Desktop polls them,
@@ -2956,27 +3171,12 @@ fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
         ui.settings_query.clear();
         // Customize's pages read each agent's plugins and skills afresh.
         if [view::SETTINGS_PLUGINS, view::SETTINGS_SKILLS].contains(&page) {
-            let agents = ui.agents.iter().map(|a| Intent::Extensions {
-                agent: a.id.clone(),
-            });
-            return Some(agents.collect());
+            return Some(ui.ask_extensions());
         }
         return Some(vec![]);
     }
-    // A plugin's switch, `set:plugin:{agent}:{id}`: the engine switches it and reads again.
-    if let Some((agent, id)) = (id.strip_prefix("set:plugin:")).and_then(|r| r.split_once(':')) {
-        let known = ui.extensions.get_mut(agent);
-        let Some(plugin) = known.and_then(|known| {
-            known.switching = Some(id.to_owned());
-            known.plugins.iter().find(|p| p.id == id).cloned()
-        }) else {
-            return Some(vec![]);
-        };
-        return Some(vec![Intent::SetPlugin {
-            agent: agent.to_owned(),
-            enabled: !plugin.enabled,
-            plugin,
-        }]);
+    if let Some(intents) = extensions_clicked(ui, id) {
+        return Some(intents);
     }
     let rest = id.strip_prefix("set:")?;
     // A new change is tried afresh: the last one's failure goes.

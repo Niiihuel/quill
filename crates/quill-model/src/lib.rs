@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 pub use quill_agent::{
     AgentCapabilities, AgentEvent, ContextCategory, ContextKind, ContextUsage, Decision,
-    FileChange, McpServer, McpSource, McpStatus, McpTool, ModelInfo, PlanLimits, Plugin, Skill,
-    Suggestion, ToolContent, Usage, UsageWindow,
+    ExtensionOp, Extensions, FileChange, Marketplace, McpServer, McpSource, McpStatus, McpTool,
+    ModelInfo, PlanLimits, Plugin, PluginOffer, Skill, Suggestion, ToolContent, Usage, UsageWindow,
 };
 
 /// quill's own id of a session.
@@ -301,17 +301,18 @@ pub enum Intent {
     SaveSettings(Settings),
     /// How much room quill's own data takes; answered by `Event::Storage`.
     MeasureStorage,
-    /// An agent's installed plugins and the skills it offers, outside any session;
+    /// An agent's plugins, marketplaces and skills for a folder, outside any session;
     /// answered by `Event::Extensions`.
     Extensions {
         agent: String,
+        folder: PathBuf,
     },
-    /// Switch one of an agent's plugins on or off; its running sessions load their plugins
+    /// Change an agent's plugins, marketplaces or skills; its running sessions load them
     /// again, and `Event::Extensions` follows.
-    SetPlugin {
+    ExtensionOp {
         agent: String,
-        plugin: Plugin,
-        enabled: bool,
+        folder: PathBuf,
+        op: ExtensionOp,
     },
     /// Read a reply aloud with the system's voice, stopping any other; `None` stops.
     ReadAloud {
@@ -690,12 +691,12 @@ pub enum Event {
     SettingsNotSaved {
         error: String,
     },
-    /// An agent's installed plugins and its skills, as its program lists them; `error` says
-    /// why a list could not be read (the plugins', or a change to one).
+    /// An agent's plugins, marketplaces and skills for `folder`, as its program lists them;
+    /// `error` says why a change or a list failed.
     Extensions {
         agent: String,
-        plugins: Vec<Plugin>,
-        skills: Vec<Skill>,
+        folder: PathBuf,
+        extensions: Extensions,
         error: Option<String>,
     },
     /// What the session hears next was passed on by the session `from`, which started it.

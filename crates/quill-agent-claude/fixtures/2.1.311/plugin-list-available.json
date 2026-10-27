@@ -1,0 +1,86 @@
+{
+ "installed": [
+  {
+   "id": "agent-skills@addy-agent-skills",
+   "version": "0.6.12",
+   "scope": "user",
+   "enabled": true,
+   "installPath": "/home/user/.claude/plugins/cache/addy-agent-skills/agent-skills/0.6.12",
+   "installedAt": "2026-10-09T16:06:45.341Z",
+   "lastUpdated": "2026-10-09T16:06:45.341Z",
+   "projectEnabled": false
+  },
+  {
+   "id": "commit@better-claude",
+   "version": "0.2.0",
+   "scope": "user",
+   "enabled": true,
+   "installPath": "/home/user/.claude/plugins/cache/better-claude/commit/0.2.0",
+   "installedAt": "2026-10-16T19:28:07.846Z",
+   "lastUpdated": "2026-10-16T19:28:07.846Z",
+   "projectEnabled": false
+  }
+ ],
+ "available": [
+  {
+   "pluginId": "frontend-design@claude-plugins-official",
+   "name": "frontend-design",
+   "description": "Create distinctive, production-grade frontend interfaces with high design quality. Generates creative, polished code that avoids generic AI aesthetics.",
+   "marketplaceName": "claude-plugins-official",
+   "source": "./plugins/frontend-design",
+   "installCount": 1266133
+  },
+  {
+   "pluginId": "superpowers@claude-plugins-official",
+   "name": "superpowers",
+   "description": "Superpowers teaches Claude brainstorming, subagent driven development with built in code review, systematic debugging, and red/green TDD. Additionally, it teaches Claude how to author and test new skills.",
+   "marketplaceName": "claude-plugins-official",
+   "source": {
+    "source": "url",
+    "url": "https://github.com/obra/superpowers.git",
+    "sha": "bb92a77741419a4ab5f06e711a283343f1ada0c3"
+   },
+   "installCount": 1123984
+  },
+  {
+   "pluginId": "after@better-claude",
+   "name": "after",
+   "description": "Queue prompts to run after the current task, without steering it.",
+   "marketplaceName": "better-claude",
+   "version": "0.2.0",
+   "source": "./plugins/after"
+  },
+  {
+   "pluginId": "use-haiku@better-claude",
+   "name": "use-haiku",
+   "description": "Start a prompt with _ to run that turn on Haiku, shown as you type, while it runs and under the answer.",
+   "marketplaceName": "better-claude",
+   "version": "0.2.0",
+   "source": "./plugins/use-haiku"
+  },
+  {
+   "pluginId": "superpowers@anthropic-plugin-directory",
+   "name": "superpowers",
+   "description": "Core skills library for Claude Code: TDD, debugging, collaboration patterns, and proven techniques",
+   "marketplaceName": "anthropic-plugin-directory",
+   "version": "6.4.2",
+   "source": {
+    "source": "url",
+    "url": "https://github.com/obra/superpowers.git",
+    "sha": "8ca22dba9a94f28898bbce59f2537ff4d87c747d"
+   }
+  },
+  {
+   "pluginId": "frontend-design@anthropic-plugin-directory",
+   "name": "frontend-design",
+   "description": "Frontend design skill for UI/UX implementation",
+   "marketplaceName": "anthropic-plugin-directory",
+   "source": {
+    "source": "git-subdir",
+    "url": "https://github.com/anthropics/claude-plugins-official",
+    "path": "plugins/frontend-design",
+    "sha": "58267944f92187b7d6a1c822165c96c81c864806"
+   }
+  }
+ ]
+}

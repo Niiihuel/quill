@@ -1518,8 +1518,10 @@ fn a_started_session_opens_beside_and_says_when_it_waits() {
 }
 
 #[test]
-fn customize_lists_an_agents_plugins_and_skills_and_switches_a_plugin() {
-    use quill_model::{AgentInfo, Plugin, Skill};
+fn customize_lists_and_changes_an_agents_plugins_marketplaces_and_skills() {
+    use quill_model::{
+        AgentInfo, ExtensionOp, Extensions, Marketplace, Plugin, PluginOffer, Skill,
+    };
     let (store, mut ui) = store_with_session();
     ui.applied(&Event::Settings {
         settings: Default::default(),
@@ -1529,12 +1531,16 @@ fn customize_lists_an_agents_plugins_and_skills_and_switches_a_plugin() {
             tested: vec![],
         }],
     });
+    // A project folder: plugins install for it, and skills' states are kept there.
+    ui.cwd = "/work".into();
+    let folder = std::path::PathBuf::from("/work");
     click(&store, &mut ui, view::SETTINGS_OPEN);
     let page = format!("settings:page:{}", view::SETTINGS_PLUGINS);
     assert_eq!(
         click(&store, &mut ui, &page),
         vec![Intent::Extensions {
-            agent: "claude".into()
+            agent: "claude".into(),
+            folder: folder.clone()
         }]
     );
     let window = limn::Size::new(1408.0, 844.0);
@@ -1552,34 +1558,117 @@ fn customize_lists_an_agents_plugins_and_skills_and_switches_a_plugin() {
         scope: "user".into(),
         enabled: true,
     };
-    ui.applied(&Event::Extensions {
-        agent: "claude".into(),
+    let pair = |a: &str, b: &str| (a.to_owned(), b.to_owned());
+    let list = Extensions {
         plugins: vec![plugin.clone()],
+        offers: vec![PluginOffer {
+            id: "figma@official".into(),
+            name: "figma".into(),
+            description: "Figma's design files.".into(),
+            marketplace: "official".into(),
+            version: None,
+            installs: Some(968_600),
+        }],
+        marketplaces: vec![Marketplace {
+            name: "better".into(),
+            source: "midudev/better-claude".into(),
+        }],
         skills: vec![Skill {
             name: "graphify".into(),
             description: "Any input to a knowledge graph.".into(),
             source: "user".into(),
-            enabled: false,
+            state: "on".into(),
+            locked: None,
+            key: serde_json::json!({"name": "graphify"}),
         }],
-        error: None,
-    });
-    assert!(shows(&ui, "0.2.0 \u{b7} installed for user"));
+        scopes: vec![
+            pair("user", "Install for me"),
+            pair("project", "Install for project (shared)"),
+        ],
+        skill_states: vec![pair("on", "On"), pair("off", "Off")],
+    };
+    let heard = |ui: &mut Ui, error: Option<&str>| {
+        ui.applied(&Event::Extensions {
+            agent: "claude".into(),
+            folder: folder.clone(),
+            extensions: list.clone(),
+            error: error.map(str::to_owned),
+        })
+    };
+    heard(&mut ui, None);
+    assert!(shows(&ui, "0.2.0 \u{b7} installed for user") && shows(&ui, "968.6K installs"));
+    let op = |op| Intent::ExtensionOp {
+        agent: "claude".into(),
+        folder: folder.clone(),
+        op,
+    };
     // Its switch asks the engine to turn it off, and says so until the lists come back.
     assert_eq!(
-        click(&store, &mut ui, "set:plugin:claude:commit@better"),
-        vec![Intent::SetPlugin {
-            agent: "claude".into(),
-            plugin,
+        click(&store, &mut ui, "ext:switch:claude:commit@better"),
+        vec![op(ExtensionOp::SwitchPlugin {
+            plugin: plugin.clone(),
             enabled: false
-        }]
+        })]
     );
-    assert!(shows(&ui, "Switching"));
+    assert!(shows(&ui, "Working"));
+    heard(&mut ui, Some("could not reach the marketplace"));
+    assert!(shows(&ui, "could not reach the marketplace"));
+    // In a project, Install opens Desktop's menu of where; a choice installs there.
+    assert!(click(&store, &mut ui, "ext:install:claude:figma@official").is_empty());
+    assert!(shows(&ui, "Install for project (shared)"));
+    assert_eq!(
+        click(&store, &mut ui, "ext:install:claude:figma@official=project"),
+        vec![op(ExtensionOp::Install {
+            id: "figma@official".into(),
+            scope: Some("project".into())
+        })]
+    );
+    heard(&mut ui, None);
+    assert!(shows(&ui, "figma is installed and ready to use."));
+    // Removing asks first.
+    assert!(click(&store, &mut ui, "ext:remove:claude:commit@better").is_empty());
+    assert!(shows(&ui, "Remove plugin?"));
+    assert_eq!(
+        click(&store, &mut ui, view::EXT_REMOVE_YES),
+        vec![op(ExtensionOp::Uninstall(plugin))]
+    );
+    // A marketplace from its field.
+    update(
+        &store,
+        &mut ui,
+        &UiAction::InputChanged {
+            id: format!("{}claude", view::EXT_MKT_FIELD),
+            value: "o/r".into(),
+        },
+    );
+    assert_eq!(
+        click(&store, &mut ui, "ext:mkt-add:claude"),
+        vec![op(ExtensionOp::AddMarketplace("o/r".into()))]
+    );
+    // A skill's state, from its menu.
     click(
         &store,
         &mut ui,
         &format!("settings:page:{}", view::SETTINGS_SKILLS),
     );
-    assert!(shows(&ui, "graphify") && shows(&ui, "Off"));
+    heard(&mut ui, None);
+    assert!(shows(&ui, "graphify"));
+    assert_eq!(
+        click(&store, &mut ui, "ext:skill:claude:graphify=off"),
+        vec![op(ExtensionOp::SkillState {
+            skill: list.skills[0].clone(),
+            state: "off".into()
+        })]
+    );
+    // Another folder chosen while it shows is read again.
+    ui.cwd = "/other".into();
+    assert_eq!(
+        ui.due(),
+        vec![Intent::Extensions {
+            agent: "claude".into(),
+            folder: "/other".into()
+        }]
+    );
 }
 
 #[test]

@@ -331,8 +331,9 @@ pub fn dialog(
             .padding(10.0),
         );
     }
+    // Each page keeps its own place, and opens at its top.
     let content = Element::scroll(
-        "settings:content",
+        format!("settings:content:{current}"),
         Element::row(vec![
             hgap(6.0),
             Element::column(vec![

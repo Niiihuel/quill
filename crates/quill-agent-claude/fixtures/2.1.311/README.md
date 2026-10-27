@@ -24,3 +24,16 @@ Request shapes, from the CLI's own schemas (`strings` of the 2.1.311 binary):
 
 Plugins are installed, enabled and disabled with `claude plugin install|enable|disable
 <id> --scope user|project|local --json`.
+- `plugin-list-available.json`: `claude plugin list --json --available`, trimmed to two
+  installed plugins and the two most installed offers of each marketplace:
+  `{installed: [...], available: [{pluginId, name, description, marketplaceName, source,
+  version?, installCount?}]}`.
+- `marketplace-list.json`: `claude plugin marketplace list --json`:
+  `[{name, source: github|git|…, repo|url|path, installLocation}]`.
+
+Changes go through the CLI too, each printing one `--json` result line last:
+`plugin install <id> [--scope project|local]`, `plugin uninstall <id> --scope <s>`,
+`plugin update <id>`, `plugin marketplace add <source>`, `plugin marketplace update|remove
+<name>`, and `edit-skill-overrides --json` with `{name, state, handles?}` on stdin, which
+writes `skillOverrides` into the folder's `.claude/settings.local.json`. A plugin's result is
+`{command, outcome: ok|failed|…, pluginId, scope, message, …}`.

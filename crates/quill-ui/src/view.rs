@@ -88,6 +88,10 @@ pub const SETTINGS_STORAGE_OPEN: &str = "settings:storage:open";
 /// Customize's pages: each agent's skills and plugins.
 pub const SETTINGS_SKILLS: &str = "skills";
 pub const SETTINGS_PLUGINS: &str = "plugins";
+/// Customize's question before removing, and the marketplace's field (`{id}{agent}`).
+pub const EXT_REMOVE_YES: &str = "ext-remove:yes";
+pub const EXT_REMOVE_NO: &str = "ext-remove:no";
+pub const EXT_MKT_FIELD: &str = "ext-mkt-field:";
 /// The session's MCP servers' dialog: closing it, and a server's actions (`{id}{name}`).
 pub const MCP_DONE: &str = "mcp:done";
 pub const MCP_RECONNECT: &str = "mcp:reconnect:";
@@ -494,6 +498,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     };
     let root = settings_dialog(store, ui, root, window, palette);
     let root = mcp_dialog(store, ui, root, window, palette);
+    let root = removing_dialog(ui, root);
     // Desktop's own wording for both closes (Ion `cccc2cf0a`,) and for a delete
     //, less its vendor's servers: quill forgets only its own record.
     let tabs = &ui.terminal.tabs;
@@ -6984,13 +6989,17 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
 }
 
 /// Customize's pages, Desktop's Skills and Plugins: what each agent's program
-/// lists, in a group of its own (its name heads it once there are more agents), read when the
-/// page opens. Plugins switch on and off where they are installed; skills are listed as the
-/// agent offers them (their state is the agent's, per project).
+/// lists for the folder a new session starts in (its name heads its groups once there are
+/// more agents), read when a page opens. Plugins: the folder, the installed ones (a switch,
+/// update, remove), what the marketplaces offer (install, for the person or the project, as
+/// Desktop's menu), and the marketplaces (update, remove, add). Skills: by source, each with
+/// its state (for a project folder) or why it cannot change.
 fn customize_pages(ui: &Ui, palette: ComponentPalette) -> Vec<SettingsPage> {
-    let note = |title: &str, about: &str| {
-        setting(title, about, Element::spacer().size(Some(0.0), Some(0.0)))
-    };
+    let none = || Element::spacer().size(Some(0.0), Some(0.0));
+    let note = |title: &str, about: &str| setting(title, about, none());
+    let folder = crate::customize_folder(ui);
+    let project = crate::is_project(&folder);
+    let query = ui.settings_query.trim().to_lowercase();
     let heading = |agent: &quill_model::AgentInfo, part: &str| {
         if ui.agents.len() > 1 {
             format!("{} \u{203a} {part}", agent.name)
@@ -6998,10 +7007,43 @@ fn customize_pages(ui: &Ui, palette: ComponentPalette) -> Vec<SettingsPage> {
             part.to_owned()
         }
     };
-    let mut plugins = vec![];
-    let mut skills = vec![];
+    let cut = |words: &str, most: usize| {
+        let mut cut: String = words.chars().take(most).collect();
+        if words.chars().count() > most {
+            cut.push('\u{2026}');
+        }
+        cut
+    };
+    let button = |id: String, label: &str| setting_button(&id, label);
+    let folder_row = |about: &str| {
+        setting(
+            &folder.display().to_string(),
+            about,
+            setting_button(PICK_FOLDER, "Change\u{2026}"),
+        )
+    };
+    let mut plugins = vec![(
+        "Folder".to_owned(),
+        vec![folder_row(if project {
+            "Its plugins show with yours, and plugins can be installed for it."
+        } else {
+            "Choose the folder you\u{2019}re working in to see its plugins and install plugins for it."
+        })],
+    )];
+    let mut skills = vec![(
+        "Folder".to_owned(),
+        vec![folder_row(if project {
+            "A skill\u{2019}s state is kept for this folder."
+        } else {
+            "Choose a project folder to change a skill\u{2019}s state there."
+        })],
+    )];
     for agent in &ui.agents {
-        let Some(known) = ui.extensions.get(&agent.id) else {
+        let Some(known) = ui
+            .extensions
+            .get(&agent.id)
+            .filter(|k| !k.list.scopes.is_empty())
+        else {
             plugins.push((
                 heading(agent, "Installed"),
                 vec![note("Looking for plugins\u{2026}", "")],
@@ -7012,64 +7054,178 @@ fn customize_pages(ui: &Ui, palette: ComponentPalette) -> Vec<SettingsPage> {
             ));
             continue;
         };
-        let mut rows: Vec<Setting> = (known.plugins.iter())
-            .map(|plugin| {
-                let mut about = vec![];
-                about.extend(plugin.version.clone());
-                about.push(format!("installed for {}", plugin.scope));
-                let switch = setting_switch(
-                    &format!("plugin:{}:{}", agent.id, plugin.id),
-                    plugin.enabled,
-                    palette,
-                );
-                let control = if known.switching.as_deref() == Some(plugin.id.as_str()) {
-                    muted("Switching\u{2026}").font_size(BODY).centered_y()
-                } else {
-                    switch
-                };
-                setting(&plugin.name, &about.join(" \u{b7} "), control)
-            })
-            .collect();
-        if let Some(error) = &known.error {
-            rows.insert(0, note("Couldn\u{2019}t read the plugins.", error));
+        let id = &agent.id;
+        let busy = |what: &str| known.working.as_deref() == Some(what);
+        let working = || muted("Working\u{2026}").font_size(BODY).centered_y();
+        let said = || {
+            let mut said = vec![];
+            if let Some(error) = &known.error {
+                said.push(note("Couldn\u{2019}t make that change.", error));
+            }
+            if let Some(notice) = &known.notice {
+                said.push(note(notice, ""));
+            }
+            said
+        };
+        // Installed.
+        let mut rows = said();
+        for plugin in &known.list.plugins {
+            let mut about = vec![];
+            about.extend(plugin.version.clone());
+            about.push(format!("installed for {}", plugin.scope));
+            let control = if busy(&plugin.id) {
+                working()
+            } else {
+                Element::row(vec![
+                    button(format!("ext:update:{id}:{}", plugin.id), "Update"),
+                    button(format!("ext:remove:{id}:{}", plugin.id), "Remove"),
+                    setting_switch(
+                        &format!("ext:switch:{id}:{}", plugin.id),
+                        plugin.enabled,
+                        palette,
+                    )
+                    .centered_y(),
+                ])
+                .gap(8.0)
+            };
+            rows.push(setting(&plugin.name, &about.join(" \u{b7} "), control));
         }
-        if rows.is_empty() {
+        if known.list.plugins.is_empty() {
             rows.push(note(
                 "No plugins installed.",
-                "Plugins bundle skills, MCP servers and more; install them with the agent.",
+                "Plugins are bundles of skills and connectors. Add them from Discover below.",
             ));
         }
         plugins.push((heading(agent, "Installed"), rows));
-        // One group per source, in the order the agent lists them.
+        // Discover: what the marketplaces offer, the most installed first (Desktop's `Xe`);
+        // a search reaches all of them.
+        let installed: Vec<&str> = known.list.plugins.iter().map(|p| p.id.as_str()).collect();
+        let mut offers: Vec<&quill_model::PluginOffer> = (known.list.offers.iter())
+            .filter(|o| !installed.contains(&o.id.as_str()))
+            .filter(|o| {
+                query.is_empty()
+                    || o.name.to_lowercase().contains(&query)
+                    || o.description.to_lowercase().contains(&query)
+            })
+            .collect();
+        offers.sort_by(|a, b| b.installs.cmp(&a.installs).then(a.name.cmp(&b.name)));
+        let mut markets: Vec<&str> = vec![];
+        for offer in &offers {
+            if !markets.contains(&offer.marketplace.as_str()) {
+                markets.push(&offer.marketplace);
+            }
+        }
+        let each = if query.is_empty() { 8 } else { 40 };
+        for market in markets {
+            let rows = (offers.iter())
+                .filter(|o| o.marketplace == market)
+                .take(each)
+                .map(|offer| {
+                    let mut about = cut(&offer.description, 140);
+                    if let Some(n) = offer.installs {
+                        about.push_str(&format!(" \u{b7} {} installs", human_count(n)));
+                    }
+                    let control = if busy(&offer.id) {
+                        working()
+                    } else if project {
+                        let choices: Vec<(String, String)> = known.list.scopes.clone();
+                        let menu = format!("ext:install:{id}:{}", offer.id);
+                        let open = ui.settings_menu.as_deref() == Some(menu.as_str());
+                        // The trigger reads "Install"; each scope reports `{menu}={scope}`.
+                        install_menu(&menu, &choices, open)
+                    } else {
+                        button(format!("ext:install:{id}:{}", offer.id), "Install")
+                    };
+                    setting(&offer.name, &about, control)
+                })
+                .collect();
+            plugins.push((heading(agent, &format!("Discover \u{b7} {market}")), rows));
+        }
+        if query.is_empty() && !known.list.offers.is_empty() {
+            plugins.push((
+                heading(agent, "Discover"),
+                vec![note(
+                    "Search Settings to find more.",
+                    &format!("{} plugins are offered in all.", known.list.offers.len()),
+                )],
+            ));
+        }
+        // Marketplaces.
+        let mut rows: Vec<Setting> = (known.list.marketplaces.iter())
+            .map(|market| {
+                let control = if busy(&market.name) {
+                    working()
+                } else {
+                    Element::row(vec![
+                        button(
+                            format!("ext:mkt-update:{id}:{}", market.name),
+                            "Check for updates",
+                        ),
+                        button(format!("ext:mkt-remove:{id}:{}", market.name), "Remove"),
+                    ])
+                    .gap(8.0)
+                };
+                setting(&market.name, &market.source, control)
+            })
+            .collect();
+        let field = limn::TextField::new(
+            format!("{EXT_MKT_FIELD}{id}"),
+            &ui.marketplace_field,
+            "owner/repo or a Git URL",
+            palette,
+        )
+        .render()
+        .size(Some(240.0), Some(32.0));
+        rows.push(setting(
+            "Add marketplace",
+            "A GitHub owner/repo or a Git repository URL. Make sure you trust a plugin before you install it.",
+            Element::row(vec![field, button(format!("ext:mkt-add:{id}"), "Add")]).gap(8.0),
+        ));
+        plugins.push((heading(agent, "Marketplaces"), rows));
+        // Skills, one group per source, in the order the agent lists them.
         let mut sources: Vec<&str> = vec![];
-        for skill in &known.skills {
+        for skill in &known.list.skills {
             if !sources.contains(&skill.source.as_str()) {
                 sources.push(&skill.source);
             }
         }
+        if !said().is_empty() {
+            skills.push((heading(agent, "Skills"), said()));
+        }
         for source in sources {
-            let rows = (known.skills.iter())
+            let group: Vec<&quill_model::Skill> = (known.list.skills.iter())
                 .filter(|s| s.source == source)
-                .map(|skill| {
-                    let mut about: String = skill.description.chars().take(160).collect();
-                    if skill.description.chars().count() > 160 {
-                        about.push('\u{2026}');
-                    }
-                    let state = if skill.enabled { "" } else { "Off" };
-                    setting(
-                        &skill.name,
-                        &about,
-                        muted(state).font_size(BODY).centered_y(),
-                    )
-                })
                 .collect();
+            // A lock every skill of the group shares is said once, over them.
+            let shared = (group.first().and_then(|s| s.locked.clone()))
+                .filter(|lock| group.iter().all(|s| s.locked.as_ref() == Some(lock)));
+            let mut rows: Vec<Setting> = shared.iter().map(|lock| note(lock, "")).collect();
+            rows.extend(group.into_iter().map(|skill| {
+                let label = (known.list.skill_states.iter())
+                    .find(|(state, _)| *state == skill.state)
+                    .map_or(skill.state.clone(), |(_, label)| label.clone());
+                let control = if busy(&skill.name) {
+                    working()
+                } else if skill.locked.is_some() || !project {
+                    muted(label).font_size(BODY).centered_y()
+                } else {
+                    let name = format!("ext:skill:{id}:{}", skill.name);
+                    let open = ui.settings_menu.as_deref() == Some(name.as_str());
+                    select_as(&name, &known.list.skill_states, &skill.state, open)
+                };
+                let about = match (&skill.locked, &shared) {
+                    (Some(why), None) => format!("{} {why}", cut(&skill.description, 100)),
+                    _ => cut(&skill.description, 160),
+                };
+                setting(&skill.name, &about, control)
+            }));
             let mut title = source.to_owned();
             if let Some(first) = title.get_mut(..1) {
                 first.make_ascii_uppercase();
             }
             skills.push((heading(agent, &title), rows));
         }
-        if known.skills.is_empty() {
+        if known.list.skills.is_empty() {
             skills.push((heading(agent, "Skills"), vec![note("No skills found.", "")]));
         }
     }
@@ -7087,6 +7243,98 @@ fn customize_pages(ui: &Ui, palette: ComponentPalette) -> Vec<SettingsPage> {
             groups: plugins,
         },
     ]
+}
+
+/// A Settings select whose trigger and choices report `{name}` and `{name}={value}`
+/// themselves (Customize's ids, not `set:` ones).
+fn select_as(name: &str, choices: &[(String, String)], current: &str, open: bool) -> Element {
+    let label = (choices.iter())
+        .find(|(value, _)| value == current)
+        .map_or_else(|| current.to_owned(), |(_, label)| label.clone());
+    choice_menu(name, label, choices, Some(current), open)
+}
+
+/// Desktop's install menu: "Install" opening the scopes a plugin can be installed for.
+fn install_menu(name: &str, scopes: &[(String, String)], open: bool) -> Element {
+    choice_menu(name, "Install".into(), scopes, None, open)
+}
+
+fn choice_menu(
+    name: &str,
+    label: String,
+    choices: &[(String, String)],
+    current: Option<&str>,
+    open: bool,
+) -> Element {
+    let entries = (choices.iter())
+        .map(|(value, label)| {
+            limn::DropdownMenuItem::new(format!("{name}={value}"), label.clone())
+                .selected(current == Some(value.as_str()))
+                .into()
+        })
+        .collect();
+    let chevron = Element::icon(icons::of(icons::CARET_DOWN))
+        .foreground(look::muted())
+        .size(Some(14.0), Some(14.0))
+        .centered_y();
+    let trigger = Element::row(vec![
+        hgap(8.0),
+        text(label).font_size(BODY).centered_y(),
+        chevron,
+        hgap(6.0),
+    ])
+    .gap(6.0)
+    .size(None, Some(30.0));
+    let trigger = ComponentPalette {
+        hover: look::tool_hover(),
+        ..look::palette()
+    }
+    .interactive_surface(Element::clickable(name.to_owned(), trigger))
+    .radius(8.0);
+    quill_components::pieces::menu(
+        trigger,
+        entries,
+        open,
+        &format!("{name}:dismiss"),
+        260.0,
+        limn::PopoverPlacement::BottomEnd,
+    )
+}
+
+/// 2900 as "2.9K", 1200000 as "1.2M", as Desktop counts installs.
+fn human_count(n: u64) -> String {
+    match n {
+        0..1_000 => n.to_string(),
+        1_000..1_000_000 => format!("{:.1}K", n as f64 / 1e3),
+        _ => format!("{:.1}M", n as f64 / 1e6),
+    }
+}
+
+/// Customize's question before it removes a plugin, or a marketplace with its plugins,
+/// in Desktop's words (2.9939.4 `c6a2a31c4`).
+fn removing_dialog(ui: &Ui, base: Element) -> Element {
+    let (title, words) = match &ui.removing {
+        Some(crate::Removing::Plugin(_, plugin)) => (
+            "Remove plugin?".to_owned(),
+            format!("{} will be uninstalled from this computer.", plugin.name),
+        ),
+        Some(crate::Removing::Marketplace(_, name)) => (
+            "Remove marketplace?".to_owned(),
+            format!(
+                "{name} is removed from this computer. Removing one also uninstalls its plugins."
+            ),
+        ),
+        None => (String::new(), String::new()),
+    };
+    confirm(
+        base,
+        ui.removing.is_some(),
+        &title,
+        &words,
+        "Remove",
+        EXT_REMOVE_YES,
+        EXT_REMOVE_NO,
+    )
 }
 
 /// An agent's page: its program and the version it runs, what new sessions start with, and

@@ -276,11 +276,22 @@ fn skills_and_plugins_are_read_as_the_cli_lists_them() {
     assert_eq!(skills.len(), 6);
     let sources: Vec<&str> = skills.iter().map(|s| s.source.as_str()).collect();
     assert!(sources.contains(&"user") && sources.contains(&"plugin"));
-    assert!(skills.iter().all(|s| s.enabled && !s.name.is_empty()));
+    assert!(skills.iter().all(|s| s.state == "on" && !s.name.is_empty()));
+    // A plugin's skill is the plugin's to switch, as the CLI says.
+    let of_plugin = skills.iter().find(|s| s.source == "plugin").unwrap();
+    assert!(of_plugin
+        .locked
+        .as_deref()
+        .unwrap()
+        .contains("managed with the plugin"));
     let claude = Claude::new();
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/2.1.311/plugin-list.json");
-    let plugins = claude.plugins(&std::fs::read_to_string(path).unwrap());
-    assert_eq!(plugins.len(), 7);
+    let read = |name: &str| {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("fixtures/2.1.311/{name}"));
+        std::fs::read_to_string(path).unwrap()
+    };
+    // A plain list (without --available) and the full one both read.
+    let (plugins, offers) = claude.plugins(&read("plugin-list.json"));
+    assert_eq!((plugins.len(), offers.len()), (7, 0));
     let first = &plugins[0];
     assert_eq!(
         (
@@ -298,19 +309,102 @@ fn skills_and_plugins_are_read_as_the_cli_lists_them() {
             true
         )
     );
+    let (plugins, offers) = claude.plugins(&read("plugin-list-available.json"));
+    assert_eq!((plugins.len(), offers.len()), (2, 6));
+    assert_eq!(offers[0].marketplace, "claude-plugins-official");
+    assert!(offers[0].installs.is_some_and(|n| n > 1_000_000));
+    let markets = claude.marketplaces(&read("marketplace-list.json"));
+    let named: Vec<(&str, &str)> = markets
+        .iter()
+        .map(|m| (m.name.as_str(), m.source.as_str()))
+        .collect();
+    assert!(named.contains(&("better-claude", "midudev/better-claude")));
+    assert!(named.contains(&("ponytail", "https://github.com/DietrichGebert/ponytail.git")));
+    // What it cannot read is nothing, not a crash.
+    assert!(claude.plugins("not json").0.is_empty() && claude.marketplaces("").is_empty());
+}
+
+#[test]
+fn changes_run_the_clis_own_commands() {
+    let claude = Claude::new();
+    let args = |op: ExtensionOp| claude.extension_op(&op).unwrap().args.join(" ");
+    let plugin = Plugin {
+        id: "commit@better-claude".into(),
+        name: "commit".into(),
+        version: None,
+        scope: "project".into(),
+        enabled: true,
+    };
     assert_eq!(
-        claude.plugin_switch(first, false).unwrap(),
-        [
-            "plugin",
-            "disable",
-            "agent-skills@addy-agent-skills",
-            "--scope",
-            "user",
-            "--json"
-        ]
+        args(ExtensionOp::SwitchPlugin {
+            plugin: plugin.clone(),
+            enabled: false
+        }),
+        "plugin disable commit@better-claude --scope project --json"
     );
-    // What it cannot read is no plugins, not a crash.
-    assert!(claude.plugins("not json").is_empty());
+    assert_eq!(
+        args(ExtensionOp::Uninstall(plugin)),
+        "plugin uninstall commit@better-claude --scope project --json"
+    );
+    // The person's own install takes no scope, as Desktop's "Install for me".
+    assert_eq!(
+        args(ExtensionOp::Install {
+            id: "a@m".into(),
+            scope: Some("user".into())
+        }),
+        "plugin install a@m --json"
+    );
+    assert_eq!(
+        args(ExtensionOp::Install {
+            id: "a@m".into(),
+            scope: Some("local".into())
+        }),
+        "plugin install a@m --scope local --json"
+    );
+    // A pasted command or ssh address is cleaned as Desktop's dialog does.
+    assert_eq!(
+        args(ExtensionOp::AddMarketplace(
+            "claude plugin marketplace add git@github.com:o/r.git".into()
+        )),
+        "plugin marketplace add https://github.com/o/r --json"
+    );
+    assert_eq!(
+        args(ExtensionOp::AddMarketplace("  gh repo clone o/r ".into())),
+        "plugin marketplace add o/r --json"
+    );
+    // A skill's state goes on stdin, with the names the CLI resolves it by.
+    let skill = Skill {
+        name: "graphify".into(),
+        description: String::new(),
+        source: "user".into(),
+        state: "on".into(),
+        locked: None,
+        key: json!({"name": "graphify", "handles": {"unqualified_name": "graphify"}}),
+    };
+    let run = claude
+        .extension_op(&ExtensionOp::SkillState {
+            skill,
+            state: "off".into(),
+        })
+        .unwrap();
+    assert_eq!(run.args, ["edit-skill-overrides", "--json"]);
+    let edit: Value = serde_json::from_str(run.stdin.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        edit,
+        json!({"name": "graphify", "state": "off", "handles": {"unqualified_name": "graphify"}})
+    );
+    // A --json result that did not go through says why.
+    assert_eq!(
+        claude.extension_failed(
+            "noise\n{\"outcome\":\"failed\",\"message\":\"not found in any marketplace\"}\n"
+        ),
+        Some("not found in any marketplace".into())
+    );
+    assert_eq!(claude.extension_failed("{\"outcome\":\"ok\"}"), None);
+    assert_eq!(
+        claude.extension_failed("{\"ok\":false,\"error\":\"locked\"}"),
+        Some("locked".into())
+    );
 }
 
 #[test]

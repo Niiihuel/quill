@@ -387,10 +387,11 @@ impl Router {
             .or_else(|| self.settings.agent(agent).program)
     }
 
-    /// An agent's plugins and skills, read from its program outside any session, after
-    /// switching a plugin on or off first when asked; its running sessions then load their
-    /// plugins again, as Desktop's do (2.9939.4 `zC`). Answered by `Event::Extensions`.
-    fn extensions(&self, agent: String, switch: Option<(quill_model::Plugin, bool)>) {
+    /// An agent's plugins, marketplaces and skills for `folder`, read from its program
+    /// outside any session, after making a change first when asked; its running sessions
+    /// then load their plugins or skills again, as Desktop's do (2.9939.4 `zC`). Answered by
+    /// `Event::Extensions`.
+    fn extensions(&self, agent: String, folder: PathBuf, op: Option<quill_model::ExtensionOp>) {
         let Some(adapter) = adapter(&agent) else {
             return;
         };
@@ -402,37 +403,57 @@ impl Router {
             .collect();
         let ui = self.ui.clone();
         tokio::spawn(async move {
-            let home = std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| ".".into());
+            // A folder that went away reads as the person's own.
+            let folder = if folder.is_dir() {
+                folder
+            } else {
+                std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| ".".into())
+            };
             let mut error = None;
-            if let Some((plugin, enabled)) = switch {
-                if let Some(args) = adapter.plugin_switch(&plugin, enabled) {
-                    match run_program(&program, &args, &home).await {
-                        Ok(_) => {
+            if let Some(op) = op {
+                if let Some(run) = adapter.extension_op(&op) {
+                    let ran = run_program(&program, &run, &folder).await;
+                    match ran.map(|out| adapter.extension_failed(&out)) {
+                        Ok(None) => {
+                            let again = match op {
+                                quill_model::ExtensionOp::SkillState { .. } => {
+                                    AgentCommand::ReloadSkills
+                                }
+                                _ => AgentCommand::ReloadPlugins,
+                            };
                             for tx in &reload {
-                                let _ = tx.send(Input::Command(AgentCommand::ReloadPlugins));
+                                let _ = tx.send(Input::Command(again.clone()));
                             }
                         }
-                        Err(e) => error = Some(e),
+                        Ok(Some(e)) | Err(e) => error = Some(e),
                     }
                 }
             }
-            let plugins = match adapter.plugins_query() {
-                Some(args) => match run_program(&program, &args, &home).await {
-                    Ok(listed) => adapter.plugins(&listed),
-                    Err(e) => {
-                        error.get_or_insert(e);
-                        vec![]
-                    }
-                },
-                None => vec![],
+            let mut extensions = quill_model::Extensions::default();
+            let list = |args: Vec<String>, timeout| quill_agent::ProgramRun {
+                args,
+                stdin: None,
+                timeout,
             };
-            let skills = skills_of(adapter, &program, &home).await;
+            if let Some(args) = adapter.plugins_query() {
+                match run_program(&program, &list(args, 60), &folder).await {
+                    Ok(out) => (extensions.plugins, extensions.offers) = adapter.plugins(&out),
+                    Err(e) => drop(error.get_or_insert(e)),
+                }
+            }
+            if let Some(args) = adapter.marketplaces_query() {
+                if let Ok(out) = run_program(&program, &list(args, 30), &folder).await {
+                    extensions.marketplaces = adapter.marketplaces(&out);
+                }
+            }
+            (extensions.scopes, extensions.skill_states) = adapter.extension_words();
+            extensions.skills = skills_of(adapter, &program, &folder).await;
             ui(Event::Extensions {
                 agent,
-                plugins,
-                skills,
+                folder,
+                extensions,
                 error,
             });
         });
@@ -911,16 +932,12 @@ impl Router {
                 self.save_settings(settings).await;
                 return;
             }
-            Intent::Extensions { agent } => {
-                self.extensions(agent, None);
+            Intent::Extensions { agent, folder } => {
+                self.extensions(agent, folder, None);
                 return;
             }
-            Intent::SetPlugin {
-                agent,
-                plugin,
-                enabled,
-            } => {
-                self.extensions(agent, Some((plugin, enabled)));
+            Intent::ExtensionOp { agent, folder, op } => {
+                self.extensions(agent, folder, Some(op));
                 return;
             }
             Intent::MeasureStorage => {
@@ -1886,20 +1903,32 @@ fn start_at_login(on: bool) -> Result<(), String> {
 }
 
 /// The bytes the files under `path` take.
-/// Run an agent's program for one of its own commands, in `cwd`: what it printed, or why it
-/// failed in its last words.
+/// Run an agent's program for one of its own commands, in `cwd`, giving it `run`'s stdin
+/// and at most its time: what it printed, or why it failed in its last words.
 async fn run_program(
     program: &str,
-    args: &[String],
+    run: &quill_agent::ProgramRun,
     cwd: &std::path::Path,
 ) -> Result<String, String> {
-    let out = Command::new(program)
-        .args(args)
+    let mut child = Command::new(program)
+        .args(&run.args)
         .current_dir(cwd)
-        .stdin(Stdio::null())
-        .output()
-        .await
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
         .map_err(|e| format!("could not start {program}: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        if let Some(input) = &run.stdin {
+            let _ = stdin.write_all(input.as_bytes()).await;
+        }
+    }
+    let waited = std::time::Duration::from_secs(run.timeout);
+    let out = match tokio::time::timeout(waited, child.wait_with_output()).await {
+        Ok(out) => out.map_err(|e| e.to_string())?,
+        Err(_) => return Err(format!("{program} took longer than {}s", run.timeout)),
+    };
     if out.status.success() {
         return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
     }

@@ -4,9 +4,10 @@
 
 use quill_agent::{
     AgentAdapter, AgentCapabilities, AgentCommand, AgentEvent, AgentId, CommandRun,
-    ContextCategory, ContextKind, ContextUsage, Decision, Decoded, FileChange, LaunchPlan,
-    McpServer, McpSource, McpStatus, McpTool, ModelInfo, PlanLimits, Plugin, SessionSpec, Skill,
-    Suggestion, ToolContent, Usage, UsageWindow, BROWSER_GUIDE, BROWSER_TOOLS, HOST_TOOLS,
+    ContextCategory, ContextKind, ContextUsage, Decision, Decoded, ExtensionOp, FileChange,
+    LaunchPlan, Marketplace, McpServer, McpSource, McpStatus, McpTool, ModelInfo, PlanLimits,
+    Plugin, PluginOffer, ProgramRun, SessionSpec, Skill, Suggestion, ToolContent, Usage,
+    UsageWindow, BROWSER_GUIDE, BROWSER_TOOLS, HOST_TOOLS,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -333,45 +334,172 @@ impl AgentAdapter for Claude {
         }
     }
 
-    // As Desktop does, through the CLI's own commands (2.9939.4 `DuaKZOPP`: `plugin list
-    // --json`, `plugin install … --scope`), never editing its files.
+    // As Desktop does, through the CLI's own commands (2.9939.4 `DuaKZOPP`, 3.6556.2
+    // `Dcl1UEwM`: `plugin list --json --available`, `plugin install … --scope`), never
+    // editing its files.
     fn plugins_query(&self) -> Option<Vec<String>> {
-        Some(["plugin", "list", "--json"].map(String::from).into())
+        Some(
+            ["plugin", "list", "--json", "--available"]
+                .map(String::from)
+                .into(),
+        )
     }
 
-    fn plugins(&self, stdout: &str) -> Vec<Plugin> {
+    fn plugins(&self, stdout: &str) -> (Vec<Plugin>, Vec<PluginOffer>) {
         let list: Value = serde_json::from_str(stdout).unwrap_or_default();
-        let rows = list.as_array().into_iter().flatten();
-        rows.map(|row| {
-            let id = text(&row["id"]);
-            Plugin {
-                name: id
-                    .split_once('@')
-                    .map_or(id.as_str(), |(name, _)| name)
-                    .to_owned(),
+        // `{installed, available}` with --available, a plain list without.
+        let installed = list["installed"].as_array().or(list.as_array());
+        let plugins = (installed.into_iter().flatten())
+            .map(|row| {
+                let id = text(&row["id"]);
+                Plugin {
+                    name: id
+                        .split_once('@')
+                        .map_or(id.as_str(), |(name, _)| name)
+                        .to_owned(),
+                    version: row["version"].as_str().map(str::to_owned),
+                    scope: text(&row["scope"]),
+                    enabled: row["enabled"] == true,
+                    id,
+                }
+            })
+            .collect();
+        let offers = (list["available"].as_array().into_iter().flatten())
+            .map(|row| PluginOffer {
+                id: text(&row["pluginId"]),
+                name: text(&row["name"]),
+                description: text(&row["description"]),
+                marketplace: text(&row["marketplaceName"]),
                 version: row["version"].as_str().map(str::to_owned),
-                scope: text(&row["scope"]),
-                enabled: row["enabled"] == true,
-                id,
+                installs: row["installCount"].as_u64(),
+            })
+            .collect();
+        (plugins, offers)
+    }
+
+    fn marketplaces_query(&self) -> Option<Vec<String>> {
+        Some(
+            ["plugin", "marketplace", "list", "--json"]
+                .map(String::from)
+                .into(),
+        )
+    }
+
+    fn marketplaces(&self, stdout: &str) -> Vec<Marketplace> {
+        let list: Value = serde_json::from_str(stdout).unwrap_or_default();
+        (list.as_array().into_iter().flatten())
+            .map(|row| Marketplace {
+                name: text(&row["name"]),
+                source: ["repo", "url", "path"]
+                    .iter()
+                    .find_map(|key| row[*key].as_str())
+                    .unwrap_or_default()
+                    .to_owned(),
+            })
+            .collect()
+    }
+
+    // Desktop's install menu (2.9939.4 `caeab6b9d`), and the CLI's own /skills states.
+    fn extension_words(&self) -> (quill_agent::Choices, quill_agent::Choices) {
+        let pairs = |list: &[(&str, &str)]| {
+            (list.iter())
+                .map(|(a, b)| ((*a).to_owned(), (*b).to_owned()))
+                .collect()
+        };
+        (
+            pairs(&[
+                ("user", "Install for me"),
+                ("project", "Install for project (shared)"),
+                ("local", "Install for project (personal)"),
+            ]),
+            pairs(&[
+                ("on", "On"),
+                ("name-only", "Name only"),
+                ("user-invocable-only", "User only"),
+                ("off", "Off"),
+            ]),
+        )
+    }
+
+    fn extension_op(&self, op: &ExtensionOp) -> Option<ProgramRun> {
+        let run = |args: &[&str], timeout| ProgramRun {
+            args: args.iter().map(|a| (*a).to_owned()).collect(),
+            stdin: None,
+            timeout,
+        };
+        Some(match op {
+            ExtensionOp::SwitchPlugin { plugin, enabled } => {
+                let verb = if *enabled { "enable" } else { "disable" };
+                run(
+                    &[
+                        "plugin",
+                        verb,
+                        &plugin.id,
+                        "--scope",
+                        &plugin.scope,
+                        "--json",
+                    ],
+                    30,
+                )
+            }
+            // The person's own takes no scope, as Desktop's "Install for me".
+            ExtensionOp::Install { id, scope } => match scope.as_deref() {
+                None | Some("user") => run(&["plugin", "install", id, "--json"], 120),
+                Some(scope) => run(&["plugin", "install", id, "--scope", scope, "--json"], 120),
+            },
+            ExtensionOp::Uninstall(plugin) => run(
+                &[
+                    "plugin",
+                    "uninstall",
+                    &plugin.id,
+                    "--scope",
+                    &plugin.scope,
+                    "--json",
+                ],
+                30,
+            ),
+            ExtensionOp::Update(id) => run(&["plugin", "update", id, "--json"], 120),
+            ExtensionOp::AddMarketplace(source) => run(
+                &[
+                    "plugin",
+                    "marketplace",
+                    "add",
+                    &marketplace_source(source),
+                    "--json",
+                ],
+                180,
+            ),
+            ExtensionOp::UpdateMarketplace(name) => {
+                run(&["plugin", "marketplace", "update", name, "--json"], 180)
+            }
+            ExtensionOp::RemoveMarketplace(name) => {
+                run(&["plugin", "marketplace", "remove", name, "--json"], 60)
+            }
+            // The CLI writes it into the folder's local settings (`skillOverrides`).
+            ExtensionOp::SkillState { skill, state } => {
+                let mut edit = skill.key.clone();
+                edit["state"] = json!(state);
+                ProgramRun {
+                    stdin: Some(edit.to_string()),
+                    ..run(&["edit-skill-overrides", "--json"], 30)
+                }
             }
         })
-        .collect()
     }
 
-    fn plugin_switch(&self, plugin: &Plugin, enabled: bool) -> Option<Vec<String>> {
-        let verb = if enabled { "enable" } else { "disable" };
-        Some(
-            [
-                "plugin",
-                verb,
-                &plugin.id,
-                "--scope",
-                &plugin.scope,
-                "--json",
-            ]
-            .map(String::from)
-            .into(),
-        )
+    // Their --json result is the last line: `{outcome: ok|failed|…, message}` for plugins,
+    // `{ok, error}` for a skill's state.
+    fn extension_failed(&self, stdout: &str) -> Option<String> {
+        let last = stdout.lines().rev().find(|l| !l.trim().is_empty())?;
+        let result: Value = serde_json::from_str(last).ok()?;
+        let failed =
+            (result["outcome"].as_str()).is_some_and(|o| o != "ok") || result["ok"] == false;
+        failed.then(|| {
+            (result["message"].as_str())
+                .or(result["error"].as_str())
+                .unwrap_or("it failed")
+                .to_owned()
+        })
     }
 
     fn encode(&mut self, command: AgentCommand) -> Vec<String> {
@@ -471,6 +599,7 @@ impl AgentAdapter for Claude {
             AgentCommand::ReloadPlugins => {
                 vec![self.request(json!({ "subtype": "reload_plugins" }))]
             }
+            AgentCommand::ReloadSkills => vec![self.request(json!({ "subtype": "reload_skills" }))],
             AgentCommand::HostToolResult {
                 id,
                 content,
@@ -891,9 +1020,38 @@ fn skills(body: &Value) -> Vec<Skill> {
         name: text(&row["display_name"]),
         description: text(&row["description"]),
         source: text(&row["source"]),
-        enabled: row["state"] != "off",
+        state: row["state"].as_str().unwrap_or("on").to_owned(),
+        // The CLI's own words for each lock (2.1.311 `runSkillOverrideEdit`).
+        locked: row["locked_by"].as_str().map(|lock| {
+            match lock {
+                "plugin" => "A plugin skill is managed with the plugin, not here.",
+                "author" => "This skill's own file turns model invocation off; its state cannot be changed here.",
+                "reserved-name" => "Settings can't store an entry with this skill's name; rename its folder or file to configure it.",
+                _ => "A higher-priority configuration sets this skill's state; it cannot be changed here.",
+            }
+            .to_owned()
+        }),
+        key: json!({ "name": row["name"], "handles": row["handles"] }),
     })
     .collect()
+}
+
+/// A marketplace's source as a person may paste it, cleaned as Desktop's add dialog does
+/// (2.9939.4 `caeab6b9d` `Ge`): the command around it dropped, and an ssh address of GitHub
+/// made https.
+fn marketplace_source(pasted: &str) -> String {
+    let mut source = pasted.trim();
+    for lead in [
+        "claude plugin marketplace add",
+        "git clone",
+        "gh repo clone",
+    ] {
+        source = source.strip_prefix(lead).map_or(source, str::trim);
+    }
+    match source.strip_prefix("git@github.com:") {
+        Some(repo) => format!("https://github.com/{}", repo.trim_end_matches(".git")),
+        None => source.to_owned(),
+    }
 }
 
 /// The answer to `mcp_status` (CLI 2.1.311): each server with its status, where it came
