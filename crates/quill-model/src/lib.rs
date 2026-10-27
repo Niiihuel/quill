@@ -76,6 +76,18 @@ pub struct Repo {
     pub base: Option<String>,
 }
 
+/// How quill shows an event that needs the person while its session is not in view. Desktop's
+/// choices are Off, Badge only and Banners (3.6556.2 `c8b630735`); its badge is the dock count,
+/// quill's is its own marks in the sidebar and on the window (inferred).
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NotifyLevel {
+    Off,
+    Badge,
+    #[default]
+    Banner,
+}
+
 /// What the person chose in Settings, as the engine keeps it in `settings.json`. A key it
 /// does not know is dropped and a missing one takes its default, so an older or newer file
 /// still reads.
@@ -111,6 +123,16 @@ pub struct Settings {
     /// Ask the desktop to draw attention to quill when a session finishes or waits on the
     /// person while quill is not in front.
     pub attention: bool,
+    /// How a permission request is shown when its session is not in view (Desktop's
+    /// "Permission requests", 3.6556.2 registry `cc7db14f1`).
+    pub notify_permission: NotifyLevel,
+    /// How a question is shown when its session is not in view (Desktop's "Questions").
+    pub notify_question: NotifyLevel,
+    /// How a finished turn is shown when its session is not in view (Desktop's "Task
+    /// complete"); it has no badge, so `Badge` reads as `Banner`.
+    pub notify_done: NotifyLevel,
+    /// Whether a banner plays the system's sound (Desktop's "Notification sound").
+    pub notification_sound: bool,
     /// A pull request opens as a draft unless the person picks otherwise.
     pub pr_draft: bool,
     /// The prefix of the branch names agents are asked to create, without its `/` (Desktop's
@@ -154,11 +176,14 @@ impl Default for Settings {
             archive_after_days: 0,
             motion: Motion::System,
             // Desktop keeps the computer awake by default and does not flash the app icon
-            //; quill has no notifications yet, so drawing attention is
-            // its only signal and starts on (inferred).
+            //; attention starts on with the banners (inferred).
             keep_awake: true,
             keep_awake_on_battery: true,
             attention: true,
+            notify_permission: NotifyLevel::Banner,
+            notify_question: NotifyLevel::Banner,
+            notify_done: NotifyLevel::Banner,
+            notification_sound: true,
             pr_draft: false,
             branch_prefix: String::new(),
             prs_in_browser: false,
@@ -370,6 +395,12 @@ pub enum Intent {
     Rename {
         session: SessionId,
         title: String,
+    },
+    /// Show an OS banner, from the computer's own notifier; nothing waits on it.
+    Notify {
+        title: String,
+        body: String,
+        sound: bool,
     },
     /// Keep the session at the top of the list, or stop keeping it there.
     Pin {

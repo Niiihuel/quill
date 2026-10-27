@@ -12,7 +12,8 @@ pub use view::{menu_digit, view};
 
 use quill_model::{
     AgentCapabilities, AgentEvent, BrowserOp, Decision, Event, FileEffect, Intent, NewSession,
-    ProposalAnswer, RequestId, SessionId, SessionStatus, Settings, Suggestion, TranscriptView,
+    NotifyLevel, ProposalAnswer, RequestId, SessionId, SessionStatus, Settings, Suggestion,
+    TranscriptView,
 };
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -808,6 +809,51 @@ fn line_changes(before: Option<&str>, after: Option<&str>) -> (usize, usize) {
 }
 
 /// The folder the terminal and new sessions work in: the selected session's, else the chosen one.
+/// The texts of the notices, which Settings' descriptions of the same events show too.
+pub const NOTICE_PERMISSION: &str = "An agent needs your approval to use a tool.";
+pub const NOTICE_QUESTION: &str = "An agent is asking you to choose between options.";
+pub const NOTICE_DONE: &str = "An agent finished and is waiting for your input.";
+
+/// The banner an engine event earns, when its session is not in view: the level from
+/// Settings, the session's title and the notice's text. A permission request, a question
+/// or a finished turn of a session the person is not looking at; a side chat's turn is not.
+pub fn notice(
+    store: &Store,
+    ui: &Ui,
+    event: &Event,
+    focused: bool,
+) -> Option<(NotifyLevel, String, String)> {
+    let Event::Agent { session, event, .. } = event else {
+        return None;
+    };
+    let s = store.session(*session);
+    let (level, text) = match event {
+        AgentEvent::PermissionRequest {
+            interactive: false, ..
+        } => (ui.settings.notify_permission, NOTICE_PERMISSION),
+        AgentEvent::PermissionRequest {
+            interactive: true, ..
+        } => (ui.settings.notify_question, NOTICE_QUESTION),
+        // Desktop's "Task complete" has no badge, so it reads as a banner.
+        AgentEvent::TurnFinished { .. } if !s.is_some_and(|s| s.aside) => (
+            match ui.settings.notify_done {
+                NotifyLevel::Badge => NotifyLevel::Banner,
+                level => level,
+            },
+            NOTICE_DONE,
+        ),
+        _ => return None,
+    };
+    if level == NotifyLevel::Off || (focused && ui.selected == Some(*session)) {
+        return None;
+    }
+    let title = s
+        .map(|s| s.title.clone())
+        .filter(|title| !title.is_empty())
+        .unwrap_or_else(|| "quill".into());
+    Some((level, title, text.into()))
+}
+
 pub fn folder(store: &Store, ui: &Ui) -> PathBuf {
     ui.selected
         .and_then(|id| store.session(id))
@@ -3881,6 +3927,15 @@ pub enum McpPhase {
 /// Settings' own clicks: open and close, pick a page, and change a
 /// setting, which the engine keeps before the UI shows it. `None` when `id` is none of
 /// them. A select reports its trigger, `set:{name}`, then a choice, `set:{name}={value}`.
+/// A notification level from its select's value; an unknown one is the default.
+fn notify_level(value: &str) -> NotifyLevel {
+    match value {
+        "off" => NotifyLevel::Off,
+        "badge" => NotifyLevel::Badge,
+        _ => NotifyLevel::Banner,
+    }
+}
+
 fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
     use quill_model::{InterfaceFont, Motion, TextSize, Theme, TranscriptView};
     if id == view::ACCOUNT_MENU {
@@ -3950,6 +4005,10 @@ fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
             ("theme", "dark") => settings.theme = Theme::Dark,
             ("interface_font", "system") => settings.interface_font = InterfaceFont::System,
             ("interface_font", "ubuntu") => settings.interface_font = InterfaceFont::Ubuntu,
+            ("notify_permission", value) => settings.notify_permission = notify_level(value),
+            ("notify_question", value) => settings.notify_question = notify_level(value),
+            ("notify_done", value) => settings.notify_done = notify_level(value),
+            ("notification_sound", value) => settings.notification_sound = value == "system",
             ("text_size", "small") => settings.text_size = TextSize::Small,
             ("text_size", "medium") => settings.text_size = TextSize::Medium,
             ("text_size", "large") => settings.text_size = TextSize::Large,

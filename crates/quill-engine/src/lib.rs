@@ -970,6 +970,10 @@ impl Router {
                 (self.sink)(Event::Pinned { session, pinned });
                 return;
             }
+            Intent::Notify { title, body, sound } => {
+                notify(&title, &body, sound);
+                return;
+            }
             Intent::ChooseView { session, view } => {
                 (self.sink)(Event::ViewChosen { session, view });
                 return;
@@ -2326,6 +2330,115 @@ fn start_at_login(on: bool) -> Result<(), String> {
 }
 
 /// The bytes the files under `path` take.
+/// Show a banner with the computer's own notifier. Nothing waits on it: a missing notifier
+/// (none installed) just shows nothing.
+fn notify(title: &str, body: &str, sound: bool) {
+    let spawn = |(program, args, env): (&str, Vec<String>, Vec<(&str, String)>)| {
+        Command::new(program)
+            .args(args)
+            .envs(env)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+    };
+    // Without `notify-send`, the same server is asked over D-Bus.
+    if spawn(notifier(title, body, sound)).is_err() && cfg!(unix) && !cfg!(target_os = "macos") {
+        let _ = spawn(bus_notifier(title, body, sound));
+    }
+}
+
+/// `notify-send`'s request made with `busctl`: the freedesktop Notifications server's
+/// `Notify`, for a desktop that has the server but not the program.
+fn bus_notifier(
+    title: &str,
+    body: &str,
+    sound: bool,
+) -> (&'static str, Vec<String>, Vec<(&'static str, String)>) {
+    let mut args: Vec<String> = [
+        "--user",
+        "call",
+        // What follows is the call's own, a `-1` timeout included, not busctl's options.
+        "--",
+        "org.freedesktop.Notifications",
+        "/org/freedesktop/Notifications",
+        "org.freedesktop.Notifications",
+        "Notify",
+        "susssasa{sv}i",
+        "quill",
+        "0",
+        "",
+        title,
+        body,
+        "0",
+    ]
+    .map(String::from)
+    .to_vec();
+    if sound {
+        args.extend(["1", "sound-name", "s", "message-new-instant"].map(String::from));
+    } else {
+        args.push("0".into());
+    }
+    args.push("-1".into());
+    ("busctl", args, vec![])
+}
+
+/// The program, arguments and environment that show a banner on this OS. The text reaches
+/// the notifier as an argument or an environment variable, never as script text.
+fn notifier(
+    title: &str,
+    body: &str,
+    sound: bool,
+) -> (&'static str, Vec<String>, Vec<(&'static str, String)>) {
+    if cfg!(target_os = "macos") {
+        let quoted = |text: &str| text.replace('\\', "\\\\").replace('"', "\\\"");
+        let mut script = format!(
+            "display notification \"{}\" with title \"{}\"",
+            quoted(body),
+            quoted(title)
+        );
+        if sound {
+            script.push_str(" sound name \"default\"");
+        }
+        ("osascript", vec!["-e".into(), script], vec![])
+    } else if cfg!(windows) {
+        // shortcut: the toast carries PowerShell's own AppUserModelID, so it is titled as
+        // PowerShell; upgrade when quill registers its own.
+        let silent = if sound {
+            ""
+        } else {
+            "$a=$x.CreateElement('audio');$a.SetAttribute('silent','true');[void]$x.DocumentElement.AppendChild($a);"
+        };
+        let script = format!(
+            "[void][Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime];\
+             $x=[Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02);\
+             $t=$x.GetElementsByTagName('text');\
+             [void]$t.Item(0).AppendChild($x.CreateTextNode($env:QUILL_TITLE));\
+             [void]$t.Item(1).AppendChild($x.CreateTextNode($env:QUILL_BODY));\
+             {silent}\
+             [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}}\\WindowsPowerShell\\v1.0\\powershell.exe').Show([Windows.UI.Notifications.ToastNotification]::new($x))"
+        );
+        (
+            "powershell",
+            vec![
+                "-NoProfile".into(),
+                "-NonInteractive".into(),
+                "-Command".into(),
+                script,
+            ],
+            vec![("QUILL_TITLE", title.into()), ("QUILL_BODY", body.into())],
+        )
+    } else {
+        // Linux and the BSDs: the desktop's notification server, through `notify-send`.
+        let mut args = vec!["--app-name=quill".into()];
+        if sound {
+            args.push("--hint=string:sound-name:message-new-instant".into());
+        }
+        args.extend(["--".into(), title.into(), body.into()]);
+        ("notify-send", args, vec![])
+    }
+}
+
 /// Run an agent's program for one of its own commands, in `cwd`, giving it `run`'s stdin
 /// and at most its time: what it printed, or why it failed in its last words.
 async fn run_program(
@@ -2716,5 +2829,84 @@ mod tests {
         assert!(!on_battery(&[supply("Mains", "0")]));
         assert!(!on_battery(&[]));
         assert!(!on_battery(&[supply("Battery", ""), supply("USB", "1")]));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_banner_goes_through_notify_send_with_or_without_its_sound() {
+        let (program, args, env) = notifier("Fix the bug", "Body", true);
+        assert_eq!(program, "notify-send");
+        assert_eq!(
+            args,
+            [
+                "--app-name=quill",
+                "--hint=string:sound-name:message-new-instant",
+                "--",
+                "Fix the bug",
+                "Body"
+            ]
+        );
+        assert!(env.is_empty());
+        let (_, args, _) = notifier("Fix the bug", "Body", false);
+        assert_eq!(args, ["--app-name=quill", "--", "Fix the bug", "Body"]);
+    }
+
+    #[test]
+    fn without_notify_send_a_banner_goes_over_d_bus() {
+        let (program, args, _) = bus_notifier("Fix the bug", "Body", true);
+        assert_eq!(program, "busctl");
+        assert_eq!(
+            args[7..],
+            [
+                "susssasa{sv}i",
+                "quill",
+                "0",
+                "",
+                "Fix the bug",
+                "Body",
+                "0",
+                "1",
+                "sound-name",
+                "s",
+                "message-new-instant",
+                "-1"
+            ]
+        );
+        let (_, args, _) = bus_notifier("t", "b", false);
+        assert_eq!(args[args.len() - 2..], ["0", "-1"]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_banner_goes_through_osascript_with_escaped_text() {
+        let (program, args, _) = notifier("a \"b\"\\", "Body", true);
+        assert_eq!(program, "osascript");
+        assert_eq!(
+            args,
+            [
+                "-e",
+                "display notification \"Body\" with title \"a \\\"b\\\"\\\\\" sound name \"default\""
+            ]
+        );
+        let (_, args, _) = notifier("Fix", "Body", false);
+        assert_eq!(args[1], "display notification \"Body\" with title \"Fix\"");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_banner_passes_its_text_in_the_environment_not_the_script() {
+        let (program, args, env) = notifier("Fix'; calc", "Body", false);
+        assert_eq!(program, "powershell");
+        assert!(args[3].contains("silent"));
+        assert!(!args[3].contains("Fix"));
+        assert_eq!(
+            env,
+            [
+                ("QUILL_TITLE", "Fix'; calc".to_owned()),
+                ("QUILL_BODY", "Body".to_owned())
+            ]
+        );
+        let (_, args, _) = notifier("Fix", "Body", true);
+        assert!(!args[3].contains("silent"));
     }
 }

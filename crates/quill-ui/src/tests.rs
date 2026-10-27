@@ -2781,6 +2781,13 @@ fn settings_save_through_the_engine_and_shape_what_comes_next() {
     assert!(
         matches!(saved.as_slice(), [Intent::SaveSettings(s)] if s.text_size == TextSize::Large)
     );
+    // Each notification select keeps its choice, and the sound its own.
+    let saved = click(&store, &mut ui, "set:notify_permission=off");
+    assert!(
+        matches!(saved.as_slice(), [Intent::SaveSettings(s)] if s.notify_permission == quill_model::NotifyLevel::Off)
+    );
+    let saved = click(&store, &mut ui, "set:notification_sound=none");
+    assert!(matches!(saved.as_slice(), [Intent::SaveSettings(s)] if !s.notification_sound));
     // The interface font is a select; the code font is a field, saved by Enter.
     let saved = click(&store, &mut ui, "set:interface_font=ubuntu");
     assert!(
@@ -3407,4 +3414,91 @@ fn the_session_menu_chooses_a_view_and_makes_it_the_default() {
         saved.as_slice(),
         [Intent::SaveSettings(s)] if s.transcript_view == TranscriptView::Thinking
     ));
+}
+
+#[test]
+fn a_notice_is_a_banner_only_while_its_session_is_out_of_view() {
+    use quill_model::NotifyLevel;
+    let (store, mut ui) = store_with_session();
+    let asked = Event::Agent {
+        session: 1,
+        request: Some("r1".into()),
+        event: AgentEvent::PermissionRequest {
+            id: "p1".into(),
+            call: None,
+            tool: "Bash".into(),
+            input: serde_json::json!({"command": "ls"}),
+            title: None,
+            interactive: false,
+            suggestions: vec![],
+        },
+    };
+    // In view and focused there is nothing; out of focus, a banner titled with the session.
+    assert_eq!(notice(&store, &ui, &asked, true), None);
+    assert_eq!(
+        notice(&store, &ui, &asked, false),
+        Some((
+            NotifyLevel::Banner,
+            "Fix the bug".into(),
+            NOTICE_PERMISSION.into()
+        ))
+    );
+    // Focused on another session, it is still a banner.
+    ui.selected = None;
+    assert!(notice(&store, &ui, &asked, true).is_some());
+    // Off says nothing.
+    ui.settings.notify_permission = NotifyLevel::Off;
+    assert_eq!(notice(&store, &ui, &asked, false), None);
+}
+
+#[test]
+fn each_notice_says_its_own_text_and_a_status_alone_is_none() {
+    use quill_model::NotifyLevel;
+    let (mut store, mut ui) = store_with_session();
+    ui.selected = None;
+    let asked = |interactive: bool| Event::Agent {
+        session: 1,
+        request: Some("r1".into()),
+        event: AgentEvent::PermissionRequest {
+            id: "q1".into(),
+            call: None,
+            tool: "AskUserQuestion".into(),
+            input: serde_json::json!({}),
+            title: None,
+            interactive,
+            suggestions: vec![],
+        },
+    };
+    let text = |event: &Event, ui: &Ui| notice(&store, ui, event, false).map(|n| n.2);
+    assert_eq!(text(&asked(true), &ui), Some(NOTICE_QUESTION.into()));
+    assert_eq!(text(&asked(false), &ui), Some(NOTICE_PERMISSION.into()));
+    let finished = Event::Agent {
+        session: 1,
+        request: None,
+        event: AgentEvent::TurnFinished {
+            ok: true,
+            interrupted: false,
+            usage: Usage::default(),
+            error: None,
+        },
+    };
+    assert_eq!(text(&finished, &ui), Some(NOTICE_DONE.into()));
+    // Desktop's "Task complete" has no badge: a badge reads as a banner.
+    ui.settings.notify_done = NotifyLevel::Badge;
+    assert_eq!(
+        notice(&store, &ui, &finished, false).map(|n| n.0),
+        Some(NotifyLevel::Banner)
+    );
+    ui.settings.notify_done = NotifyLevel::Off;
+    assert_eq!(notice(&store, &ui, &finished, false), None);
+    // A side chat's turn is not a top-level one, so it is no notice.
+    ui.settings.notify_done = NotifyLevel::Banner;
+    store.session_mut(1).unwrap().aside = true;
+    assert_eq!(notice(&store, &ui, &finished, false), None);
+    // The waiting status alone is no notice: the permission request is what asks.
+    let waiting = Event::Status {
+        session: 1,
+        status: SessionStatus::Awaiting,
+    };
+    assert_eq!(notice(&store, &ui, &waiting, false), None);
 }

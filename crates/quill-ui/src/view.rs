@@ -2,7 +2,9 @@
 
 use crate::icons;
 use crate::look::{self, chat, BODY, SMALL};
-use crate::{Item, Pane, Session, Store, ToolResult, Ui};
+use crate::{
+    Item, Pane, Session, Store, ToolResult, Ui, NOTICE_DONE, NOTICE_PERMISSION, NOTICE_QUESTION,
+};
 use limn::{
     Button, ButtonGroup, ButtonSize, ButtonVariant, Component, ComponentPalette, Composer,
     ControlSize, Element, FontFamily, Markdown, OutputBlock, Size, Spinner, TextShimmer,
@@ -14,7 +16,7 @@ use quill_components::pieces::{
 use quill_components::settings::{
     self, choices, setting, setting_button, setting_switch, Setting, SettingsPage,
 };
-use quill_model::{ChangeKind, FileEffect, SessionStatus, TranscriptView};
+use quill_model::{ChangeKind, FileEffect, NotifyLevel, SessionStatus, TranscriptView};
 use serde_json::Value;
 use std::time::Instant;
 
@@ -7684,6 +7686,15 @@ fn side_pane(
     .size(Some(width), Some(height))
 }
 
+/// The value of a notification select: its choice's name.
+fn notify_value(level: NotifyLevel) -> &'static str {
+    match level {
+        NotifyLevel::Off => "off",
+        NotifyLevel::Badge => "badge",
+        NotifyLevel::Banner => "banner",
+    }
+}
+
 /// A select of Settings, open while its menu is.
 fn setting_select(
     ui: &Ui,
@@ -7841,11 +7852,6 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
                             "",
                             setting_switch("keep_awake_battery", s.keep_awake_on_battery, palette),
                         ),
-                        setting(
-                            "Draw attention",
-                            "Ask the desktop to flag quill when a session finishes or needs you while quill isn't in front.",
-                            setting_switch("attention", s.attention, palette),
-                        ),
                         // Desktop's own words and choices (3.6556.2 registry `cc7db14f1`).
                         setting(
                             "Archive inactive sessions",
@@ -7857,6 +7863,66 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
                                 &s.archive_after_days.to_string(),
                                 palette,
                             ),
+                        ),
+                    ],
+                ),
+                (
+                    // Desktop's own words and choices (3.6556.2 registry `cc7db14f1`, group
+                    // "local-sessions"); its levels are `c8b630735`. quill has no dock badge,
+                    // so Badge is its own marks in the sidebar and on the window (inferred).
+                    "Notifications".into(),
+                    vec![
+                        setting(
+                            "Permission requests",
+                            NOTICE_PERMISSION,
+                            setting_select(
+                                ui,
+                                "notify_permission",
+                                &choices(&[("off", "Off"), ("badge", "Badge only"), ("banner", "Banners")]),
+                                notify_value(s.notify_permission),
+                                palette,
+                            ),
+                        ),
+                        setting(
+                            "Questions",
+                            NOTICE_QUESTION,
+                            setting_select(
+                                ui,
+                                "notify_question",
+                                &choices(&[("off", "Off"), ("badge", "Badge only"), ("banner", "Banners")]),
+                                notify_value(s.notify_question),
+                                palette,
+                            ),
+                        ),
+                        setting(
+                            "Task complete",
+                            NOTICE_DONE,
+                            setting_select(
+                                ui,
+                                "notify_done",
+                                &choices(&[("off", "Off"), ("banner", "Banners")]),
+                                match s.notify_done {
+                                    NotifyLevel::Off => "off",
+                                    _ => "banner",
+                                },
+                                palette,
+                            ),
+                        ),
+                        setting(
+                            "Notification sound",
+                            "Played when an OS banner is shown.",
+                            setting_select(
+                                ui,
+                                "notification_sound",
+                                &choices(&[("system", "System sound"), ("none", "None")]),
+                                if s.notification_sound { "system" } else { "none" },
+                                palette,
+                            ),
+                        ),
+                        setting(
+                            "Draw attention",
+                            "Ask the desktop to flag quill when a session finishes or needs you while quill isn't in front.",
+                            setting_switch("attention", s.attention, palette),
                         ),
                     ],
                 ),

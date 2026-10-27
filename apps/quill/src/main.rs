@@ -558,22 +558,21 @@ impl eframe::App for App {
         let events = std::mem::take(&mut *self.inbox.lock().unwrap());
         let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
         for event in events {
-            // A session that finished or waits on the person flags quill while it is behind
-            // other windows, as Desktop's "Draw attention on notifications".
-            let calls = matches!(
-                &event,
-                Event::Agent {
-                    event: quill_model::AgentEvent::TurnFinished { .. },
-                    ..
-                } | Event::Status {
-                    status: quill_model::SessionStatus::Awaiting,
-                    ..
+            // A session that needs the person, or finished, while it is not in view shows a
+            // banner and flags quill, as Desktop's notifications and "Draw attention on
+            // notifications".
+            if let Some((level, title, body)) =
+                quill_ui::notice(&self.store, &self.ui, &event, focused)
+            {
+                if level == quill_model::NotifyLevel::Banner {
+                    let sound = self.ui.settings.notification_sound;
+                    self.dispatch(vec![Intent::Notify { title, body, sound }]);
                 }
-            );
-            if calls && !focused && self.ui.settings.attention {
-                ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
-                    egui::UserAttentionType::Informational,
-                ));
+                if self.ui.settings.attention {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                        egui::UserAttentionType::Informational,
+                    ));
+                }
             }
             // What the page had selected goes on the clipboard.
             if let Event::Browser {
