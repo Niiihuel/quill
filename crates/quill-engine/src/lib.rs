@@ -168,12 +168,57 @@ enum Internal {
     Busy { session: SessionId, busy: bool },
     /// A turn ended; `text` is the last thing the agent said in it.
     TurnEnded { session: SessionId, text: String },
+    /// Time to look at the power source again.
+    Power,
+}
+
+/// Whether the computer runs on battery: a battery and no mains or USB supply online. Each
+/// supply is its (type, online) from /sys/class/power_supply.
+fn on_battery(supplies: &[(String, String)]) -> bool {
+    let battery = supplies.iter().any(|(kind, _)| kind == "Battery");
+    let plugged = supplies
+        .iter()
+        .any(|(kind, online)| (kind == "Mains" || kind == "USB") && online == "1");
+    battery && !plugged
+}
+
+/// Each power supply the kernel lists, as its (type, online); empty off Linux.
+fn power_supplies() -> Vec<(String, String)> {
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(dir) = std::fs::read_dir("/sys/class/power_supply") else {
+            return vec![];
+        };
+        dir.flatten()
+            .map(|entry| {
+                let read = |file: &str| {
+                    std::fs::read_to_string(entry.path().join(file))
+                        .unwrap_or_default()
+                        .trim()
+                        .to_owned()
+                };
+                (read("type"), read("online"))
+            })
+            .collect()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        vec![]
+    }
 }
 
 /// Hands each intent to its session's actor, creating sessions as asked. Sessions kept
 /// from earlier runs come back first, ready to continue their conversation.
 async fn route(mut rx: UnboundedReceiver<Intent>, ui: Sink, config: Config) {
     let (internal, mut internal_rx) = unbounded_channel();
+    // The power source is looked at again every minute, since a turn can run on battery.
+    let tick = internal.clone();
+    tokio::spawn(async move {
+        let mut every = tokio::time::interval(std::time::Duration::from_secs(60));
+        while tick.send(Internal::Power).is_ok() {
+            every.tick().await;
+        }
+    });
     let mut router = Router::new(ui, config, internal);
     let path = router.config.settings.clone();
     router.settings = tokio::task::spawn_blocking(move || read_settings(path.as_deref()))
@@ -516,7 +561,11 @@ impl Router {
     /// off, the display may still turn off and the lid still sleeps (logind ignores
     /// inhibitors for the lid by default).
     fn hold_awake(&mut self) {
-        let want = self.settings.keep_awake && !self.busy.is_empty();
+        // The power is read only when it can matter: a turn running and the switch for
+        // battery off.
+        let want = self.settings.keep_awake
+            && !self.busy.is_empty()
+            && (self.settings.keep_awake_on_battery || !on_battery(&power_supplies()));
         match (want, self.awake.is_some()) {
             (true, false) => {
                 self.awake = Command::new("systemd-inhibit")
@@ -1354,6 +1403,7 @@ impl Router {
                 }
                 self.hold_awake();
             }
+            Internal::Power => self.hold_awake(),
             Internal::TurnEnded { session, text } => {
                 self.busy.remove(&session);
                 self.hold_awake();
@@ -2450,5 +2500,17 @@ mod tests {
             assert!(write_text(&root, outside, "x").is_err(), "{outside}");
         }
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn on_battery_needs_a_battery_and_no_plug_online() {
+        let supply = |kind: &str, online: &str| (kind.to_owned(), online.to_owned());
+        assert!(on_battery(&[supply("Battery", "")]));
+        assert!(!on_battery(&[supply("Battery", ""), supply("Mains", "1")]));
+        assert!(on_battery(&[supply("Battery", ""), supply("Mains", "0")]));
+        // A desktop PC has no battery, so it is never on battery.
+        assert!(!on_battery(&[supply("Mains", "0")]));
+        assert!(!on_battery(&[]));
+        assert!(!on_battery(&[supply("Battery", ""), supply("USB", "1")]));
     }
 }

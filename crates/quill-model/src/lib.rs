@@ -97,6 +97,9 @@ pub struct Settings {
     pub motion: Motion,
     /// Keep the computer from idle sleep while an agent works.
     pub keep_awake: bool,
+    /// Keep the computer awake while it runs on battery too (Desktop's `keepAwakeOnBattery`);
+    /// off, quill lets it sleep on battery.
+    pub keep_awake_on_battery: bool,
     /// Ask the desktop to draw attention to quill when a session finishes or waits on the
     /// person while quill is not in front.
     pub attention: bool,
@@ -134,6 +137,7 @@ impl Default for Settings {
             //; quill has no notifications yet, so drawing attention is
             // its only signal and starts on (inferred).
             keep_awake: true,
+            keep_awake_on_battery: true,
             attention: true,
             pr_draft: false,
             open_at_login: false,

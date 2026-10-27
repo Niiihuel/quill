@@ -7627,6 +7627,11 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
                             setting_switch("keep_awake", s.keep_awake, palette),
                         ),
                         setting(
+                            "Keep awake on battery power",
+                            "",
+                            setting_switch("keep_awake_battery", s.keep_awake_on_battery, palette),
+                        ),
+                        setting(
                             "Draw attention",
                             "Ask the desktop to flag quill when a session finishes or needs you while quill isn't in front.",
                             setting_switch("attention", s.attention, palette),

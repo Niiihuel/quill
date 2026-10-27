@@ -3868,6 +3868,7 @@ fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
     }
     match rest {
         "keep_awake" => settings.keep_awake = !settings.keep_awake,
+        "keep_awake_battery" => settings.keep_awake_on_battery = !settings.keep_awake_on_battery,
         "attention" => settings.attention = !settings.attention,
         "login" => settings.open_at_login = !settings.open_at_login,
         "browser_native" => settings.browser_native = !settings.browser_native,

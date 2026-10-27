@@ -2580,6 +2580,11 @@ fn settings_save_through_the_engine_and_shape_what_comes_next() {
         panic!("{saved:?}");
     };
     assert!(!settings.keep_awake && ui.settings.keep_awake);
+    let saved = click(&store, &mut ui, "set:keep_awake_battery");
+    let [Intent::SaveSettings(settings)] = saved.as_slice() else {
+        panic!("{saved:?}");
+    };
+    assert!(!settings.keep_awake_on_battery && ui.settings.keep_awake_on_battery);
     // Not kept, it says so over the page until the next change.
     ui.applied(&Event::SettingsNotSaved {
         error: "read-only file system".into(),
