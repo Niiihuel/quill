@@ -6456,6 +6456,8 @@ fn effort_menu(store: &Store, ui: &Ui) -> Element {
         track.push(
             Element::spacer()
                 .horizontal_gradient(look::ultra_track())
+                // As the track: its clip keeps corners square.
+                .radius(6.0)
                 .size(Some(width), Some(24.0)),
         );
         track.push(pixel_field(ui, width, 24.0));
@@ -6584,14 +6586,27 @@ fn pixel_field(ui: &Ui, width: f32, height: f32) -> Element {
     let reveal = t * t * (3.0 - 2.0 * t);
     let left = look::ultra_left();
     let (columns, cells) = crate::pixels::field(width, height, elapsed, reveal, left);
+    // The track is rounded and its clip is not: a cell in a corner, outside the 6 px arc,
+    // would show beside the thumb's rounded corner, so it is left out.
+    const RADIUS: f32 = 6.0;
+    let inside = |x: f32, y: f32| {
+        let dx = (RADIUS - x).max(x - (width - RADIUS)).max(0.0);
+        let dy = (RADIUS - y).max(y - (height - RADIUS)).max(0.0);
+        dx * dx + dy * dy <= RADIUS * RADIUS
+    };
+    let cell = crate::pixels::CELL;
     let rows = cells
         .chunks(columns)
-        .map(|row| {
+        .enumerate()
+        .map(|(i, row)| {
             Element::row(
                 row.iter()
-                    .map(|cell| {
-                        match cell {
-                            Some(color) => Element::panel(Element::spacer().background(*color))
+                    .enumerate()
+                    .map(|(j, cell_color)| {
+                        let middle = (j as f32 * cell + cell / 2.0, i as f32 * cell + cell / 2.0);
+                        let cell_color = cell_color.filter(|_| inside(middle.0, middle.1));
+                        match cell_color {
+                            Some(color) => Element::panel(Element::spacer().background(color))
                                 .padding(crate::pixels::INSET),
                             None => Element::spacer(),
                         }
