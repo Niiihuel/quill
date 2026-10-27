@@ -4958,6 +4958,7 @@ fn composer(
     .card_radius(14.0)
     .context(composer_footer(store, session, ui, palette))
     .render();
+    let box_ = crate::slash::list(store, ui, box_, column, palette);
     if let Some(session) = session {
         return match branch_bar(session, ui, column, palette) {
             Some(bar) => Element::column(vec![bar, box_]).gap(8.0),
@@ -5638,7 +5639,7 @@ fn folder_menu(store: &Store, ui: &Ui) -> Element {
 
 /// The modes the menu lists, in its order: those the agent offers, then those the chosen
 /// model adds (Auto), that quill can name.
-fn offered_modes(session: Option<&Session>, ui: &Ui) -> Vec<String> {
+pub(crate) fn offered_modes(session: Option<&Session>, ui: &Ui) -> Vec<String> {
     let capabilities = session.and_then(|s| s.capabilities.as_ref());
     let mut modes = capabilities
         .map(|c| c.modes.clone())

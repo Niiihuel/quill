@@ -3509,3 +3509,176 @@ fn each_notice_says_its_own_text_and_a_status_alone_is_none() {
     };
     assert_eq!(notice(&store, &ui, &waiting, false), None);
 }
+
+fn slash_command(name: &str, aliases: &[&str]) -> quill_model::AgentSlashCommand {
+    quill_model::AgentSlashCommand {
+        name: name.into(),
+        description: format!("{name} it"),
+        argument_hint: String::new(),
+        aliases: aliases.iter().map(|a| a.to_string()).collect(),
+    }
+}
+
+/// The session's agent offers these commands, as its `Ready` says.
+fn with_commands(store: &mut Store) {
+    agent(
+        store,
+        AgentEvent::Ready {
+            version: "2.1.310".into(),
+            capabilities: quill_model::AgentCapabilities {
+                commands: vec![
+                    slash_command("compact", &["cp"]),
+                    slash_command("cp-tool", &[]),
+                    slash_command("cpx", &[]),
+                    slash_command("ship-cp", &[]),
+                    slash_command("zzz", &[]),
+                ],
+                ..Default::default()
+            },
+            mode: None,
+        },
+    );
+}
+
+fn slash_ids(store: &Store, ui: &Ui) -> Vec<String> {
+    crate::slash::open(store, ui)
+        .map(|(_, rows)| rows.into_iter().map(|(id, _)| id).collect())
+        .unwrap_or_default()
+}
+
+fn key(key: limn::Key) -> limn::UiEvent {
+    limn::UiEvent::Key {
+        key,
+        ctrl: false,
+        shift: false,
+    }
+}
+
+#[test]
+fn slash_query_takes_the_word_at_the_end() {
+    assert_eq!(slash_query("/"), Some((0, "")));
+    assert_eq!(slash_query("fix it /mo"), Some((7, "mo")));
+    // Inside a word, or with a space after the query, the palette stays shut.
+    assert_eq!(slash_query("a/b"), None);
+    assert_eq!(slash_query("/mo "), None);
+    assert_eq!(slash_query("/mo x"), None);
+    let longest = "a".repeat(50);
+    assert_eq!(
+        slash_query(&format!("/{longest}")),
+        Some((0, longest.as_str()))
+    );
+    assert_eq!(slash_query(&format!("/{longest}a")), None);
+}
+
+#[test]
+fn slash_rows_rank_exact_then_prefix_then_substring() {
+    let (mut store, mut ui) = store_with_session();
+    with_commands(&mut store);
+    ui.prompt = "/cp".into();
+    // The exact alias, then the name prefixes in their order, then the substring.
+    assert_eq!(
+        slash_ids(&store, &ui),
+        [
+            "slash:agent:compact",
+            "slash:agent:cp-tool",
+            "slash:agent:cpx",
+            // quill's "mcp" holds the substring too, and comes first among equal ranks.
+            "slash:quill:plus:connectors:manage",
+            "slash:agent:ship-cp",
+        ]
+    );
+}
+
+#[test]
+fn slash_typed_mo_lists_model_first() {
+    let (mut store, mut ui) = store_with_session();
+    with_commands(&mut store);
+    ui.prompt = "/mo".into();
+    let ids = slash_ids(&store, &ui);
+    assert_eq!(
+        ids.first().map(String::as_str),
+        Some(format!("slash:quill:{}", view::MODEL_MENU).as_str())
+    );
+}
+
+#[test]
+fn slash_enter_on_an_agent_command_writes_its_name() {
+    let (mut store, mut ui) = store_with_session();
+    with_commands(&mut store);
+    ui.prompt = "look /cp".into();
+    assert_eq!(
+        slash_key(
+            &store,
+            &mut ui,
+            Some(view::COMPOSER),
+            &key(limn::Key::Enter)
+        ),
+        Some(vec![])
+    );
+    assert_eq!(ui.restore_prompt.as_deref(), Some("look /compact "));
+}
+
+#[test]
+fn slash_escape_shuts_it_until_the_slash_is_typed_again() {
+    let (mut store, mut ui) = store_with_session();
+    with_commands(&mut store);
+    ui.prompt = "/mo".into();
+    assert_eq!(
+        slash_key(
+            &store,
+            &mut ui,
+            Some(view::COMPOSER),
+            &key(limn::Key::Escape)
+        ),
+        Some(vec![])
+    );
+    assert!(slash_ids(&store, &ui).is_empty());
+    // Typing on the same `/` keeps it shut.
+    let type_text = |store: &Store, ui: &mut Ui, text: &str| {
+        update(
+            store,
+            ui,
+            &UiAction::InputChanged {
+                id: view::COMPOSER.into(),
+                value: text.into(),
+            },
+        )
+    };
+    type_text(&store, &mut ui, "/mom");
+    assert!(slash_ids(&store, &ui).is_empty());
+    // Deleting the `/` and typing it again opens it.
+    type_text(&store, &mut ui, "mo");
+    type_text(&store, &mut ui, "/mo");
+    assert!(!slash_ids(&store, &ui).is_empty());
+}
+
+#[test]
+fn slash_with_no_match_leaves_enter_to_send() {
+    let (store, mut ui) = store_with_session();
+    ui.prompt = "/zq".into();
+    assert_eq!(
+        slash_key(
+            &store,
+            &mut ui,
+            Some(view::COMPOSER),
+            &key(limn::Key::Enter)
+        ),
+        None
+    );
+}
+
+#[test]
+fn slash_quill_command_clears_the_token_and_runs_its_action() {
+    let (store, mut ui) = store_with_session();
+    ui.prompt = "/diff".into();
+    assert_eq!(
+        slash_key(
+            &store,
+            &mut ui,
+            Some(view::COMPOSER),
+            &key(limn::Key::Enter)
+        ),
+        Some(vec![Intent::WorkingTree { session: 1 }])
+    );
+    assert_eq!(ui.restore_prompt.as_deref(), Some(""));
+}

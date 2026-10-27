@@ -880,8 +880,15 @@ impl eframe::App for App {
                     continue;
                 }
             }
-            // On a row of the Files pane, the arrows and nvim-tree's letters walk and change it.
             let focused = self.tree.focused_id().map(str::to_owned);
+            // The "/" palette over the composer takes the arrows, Enter, Tab and Escape while open.
+            if let Some(intents) =
+                quill_ui::slash_key(&self.store, &mut self.ui, focused.as_deref(), &event)
+            {
+                self.dispatch(intents);
+                continue;
+            }
+            // On a row of the Files pane, the arrows and nvim-tree's letters walk and change it.
             if let Some(intents) = quill_ui::files_key(&mut self.ui, focused.as_deref(), &event) {
                 self.dispatch(intents);
                 continue;

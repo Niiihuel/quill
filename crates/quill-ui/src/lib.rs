@@ -4,10 +4,12 @@
 
 mod files;
 mod pixels;
+mod slash;
 pub use quill_components::{icons, look};
 pub mod view;
 
 pub use files::key as files_key;
+pub use slash::{key as slash_key, slash_query};
 pub use view::{menu_digit, view};
 
 use quill_model::{
@@ -1035,8 +1037,12 @@ pub struct Ui {
     pub account_menu: bool,
     /// A fork was asked for: the session the engine makes next is it, and opens.
     pub waiting_fork: bool,
-    /// Words the host puts back in the message box: a message rewound or forked from.
+    /// Words the host puts back in the message box: a message rewound or forked from, or a
+    /// slash command picked.
     pub restore_prompt: Option<String>,
+    /// The slash palette's highlighted row, and the `/` (its byte index) Escape shut it at.
+    pub slash_selected: usize,
+    pub slash_dismissed: Option<usize>,
     /// The Completed group shows every session, not its first few.
     pub show_more: bool,
     /// The side chat its pane shows, one asked for that the engine is making, and what its
@@ -1679,6 +1685,8 @@ impl Ui {
             diff_menu: None,
             waiting_fork: false,
             restore_prompt: None,
+            slash_selected: 0,
+            slash_dismissed: None,
             show_more: false,
             side_chat: None,
             side_waiting: false,
@@ -2283,6 +2291,11 @@ fn update_action(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Int
         }
         UiAction::InputChanged { id, value } if id == view::COMPOSER => {
             ui.prompt = value.clone();
+            // The highlight starts at the top with each keystroke; a `/` that went away can open again.
+            ui.slash_selected = 0;
+            if slash_query(&ui.prompt).is_none() {
+                ui.slash_dismissed = None;
+            }
             vec![]
         }
         UiAction::InputChanged { id, value } if id == view::SETTINGS_SEARCH => {
@@ -2382,6 +2395,7 @@ fn update_action(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Int
                 return vec![];
             }
             ui.prompt.clear();
+            ui.slash_dismissed = None;
             // "/mcp" shows the session's MCP servers, as Desktop's does (3.6556.2 `cff0db614`).
             if text == "/mcp" {
                 if let Some(session) = ui.selected {
@@ -2839,6 +2853,9 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         return vec![];
     }
     if let Some(intents) = plus_clicked(ui, id) {
+        return intents;
+    }
+    if let Some(intents) = slash::clicked(store, ui, id) {
         return intents;
     }
     for menu in [
