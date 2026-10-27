@@ -43,6 +43,9 @@ pub struct ModelInfo {
     pub id: String,
     pub name: String,
     pub efforts: Vec<String>,
+    /// Permission modes only this model offers, after the agent's own.
+    #[serde(default)]
+    pub modes: Vec<String>,
 }
 
 /// What this agent can do; the UI offers only what is here.

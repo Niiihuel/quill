@@ -1320,6 +1320,7 @@ fn the_effort_thumb_follows_a_drag_and_springs_to_the_level_let_go_at() {
                     id: "opus".into(),
                     name: "Opus 5.5".into(),
                     efforts: vec!["low".into(), "medium".into(), "high".into()],
+                    modes: vec![],
                 }],
                 ..Default::default()
             },
@@ -2172,6 +2173,7 @@ fn settings_save_through_the_engine_and_shape_what_comes_next() {
                     id: "haiku".into(),
                     name: "Haiku".into(),
                     efforts: vec!["low".into(), "high".into()],
+                    modes: vec!["auto".into()],
                 }],
                 modes: vec!["default".into(), "plan".into()],
                 unsafe_modes: vec!["bypassPermissions".into()],
@@ -2265,7 +2267,11 @@ fn settings_save_through_the_engine_and_shape_what_comes_next() {
         .iter()
         .any(|r| r.id == "set:agent:claude:unsafe"));
     ui.selected = Some(1);
-    assert!(view::menu_modes(store.session(1), &ui).contains(&"bypassPermissions".to_string()));
+    // The agent's modes, the model's Auto, then Bypass once allowed, Desktop's order.
+    assert_eq!(
+        view::menu_modes(store.session(1), &ui),
+        ["default", "plan", "auto", "bypassPermissions"]
+    );
     assert_eq!(click(&store, &mut ui, view::SETTINGS_CLOSE), vec![]);
     assert!(ui.settings_page.is_none());
 }

@@ -4039,7 +4039,7 @@ fn plan_card(
             .centered_y(),
     ])
     .size(Some(inner), None);
-    let modes = offered_modes(session);
+    let modes = offered_modes(session, ui);
     let trusting = if modes.iter().any(|m| m == "auto") {
         ("auto", "Accept and auto mode")
     } else {
@@ -4903,22 +4903,30 @@ fn folder_menu(store: &Store, ui: &Ui) -> Element {
     )
 }
 
-/// The modes the menu lists, in its order: those the agent offers that quill can name.
-fn offered_modes(session: Option<&Session>) -> Vec<String> {
-    session
-        .and_then(|s| s.capabilities.as_ref())
+/// The modes the menu lists, in its order: those the agent offers, then those the chosen
+/// model adds (Auto), that quill can name.
+fn offered_modes(session: Option<&Session>, ui: &Ui) -> Vec<String> {
+    let capabilities = session.and_then(|s| s.capabilities.as_ref());
+    let mut modes = capabilities
         .map(|c| c.modes.clone())
         .filter(|m| !m.is_empty())
-        .unwrap_or_else(|| vec!["default".into(), "acceptEdits".into(), "plan".into()])
-        .into_iter()
-        .filter(|m| mode_entry(m).is_some())
-        .collect()
+        .unwrap_or_else(|| vec!["default".into(), "acceptEdits".into(), "plan".into()]);
+    // The chosen model, or the agent's first, its default.
+    let models = capabilities.map_or(&[][..], |c| c.models.as_slice());
+    let model = ui
+        .model
+        .as_deref()
+        .and_then(|id| (models.iter()).find(|m| m.id == id || m.name.to_lowercase().contains(id)))
+        .or(models.first());
+    modes.extend(model.into_iter().flat_map(|m| m.modes.iter().cloned()));
+    modes.retain(|m| mode_entry(m).is_some());
+    modes
 }
 
 /// The modes the mode menu lists: those offered, and those that skip every approval once the
 /// person allowed them for the agent in Settings.
 pub(crate) fn menu_modes(session: Option<&Session>, ui: &Ui) -> Vec<String> {
-    let mut modes = offered_modes(session);
+    let mut modes = offered_modes(session, ui);
     let agent = session.map_or(ui.agent.as_str(), |s| s.agent.as_str());
     if ui.settings.agent(agent).allow_unsafe {
         modes.extend(
@@ -5003,17 +5011,28 @@ pub fn menu_digit(store: &Store, ui: &Ui, typed: &str) -> Option<String> {
     }
 }
 
-/// What each mode does, in Desktop's words.
+/// What each mode does, in Desktop's words, with its mark (3.6556.2 `shared-8` `zG`).
+/// Auto's says who decides without naming the agent.
 fn mode_entry(mode: &str) -> Option<(&'static str, &'static str)> {
     Some(match mode {
-        "auto" => ("Auto", "Claude handles permission decisions"),
         "default" => ("Manual", "Always ask before making changes"),
         "acceptEdits" => ("Accept edits", "Automatically accept all file edits"),
         "plan" => ("Plan", "Create a plan before making changes"),
-        // Desktop's "Allow bypass permissions mode".
-        "bypassPermissions" => ("Bypass permissions", "Skip every permission check"),
+        "auto" => ("Auto", "The agent handles permission decisions"),
+        // Offered once Settings allows it, Desktop's "Allow bypass permissions mode".
+        "bypassPermissions" => ("Bypass permissions", "Accepts all permissions"),
         _ => return None,
     })
+}
+
+fn mode_icon(mode: &str) -> &'static str {
+    match mode {
+        "acceptEdits" => icons::CODE,
+        "plan" => icons::SCROLL,
+        "auto" => icons::LIGHTNING,
+        "bypassPermissions" => icons::WARNING,
+        _ => icons::HAND,
+    }
 }
 
 /// The permission mode: Manual reads amber, as Desktop's chip does.
@@ -5021,10 +5040,11 @@ fn mode_menu(session: Option<&Session>, ui: &Ui) -> Element {
     let open = ui.open_menu == Some(MODE_MENU);
     let current = session.map_or(ui.mode.as_str(), |s| s.mode.as_str());
     let label = mode_entry(current).map_or("Manual", |(label, _)| label);
-    let ink = if current == "default" {
-        look::manual()
-    } else {
-        look::palette().text
+    // Bypass reads as the warning it is, as Desktop marks it (`isWarning`).
+    let ink = match current {
+        "default" => look::manual(),
+        "bypassPermissions" => look::failed(),
+        _ => look::palette().text,
     };
     // Desktop's tooltip says what the mode does.
     let about = mode_entry(current).map_or("", |(_, about)| about);
@@ -5041,6 +5061,7 @@ fn mode_menu(session: Option<&Session>, ui: &Ui) -> Element {
         let n = i + 1;
         entries.push(
             limn::DropdownMenuItem::new(format!("mode:{mode}"), label)
+                .icon(icons::of(mode_icon(mode)))
                 .description(about)
                 .shortcut(n.to_string())
                 .selected(mode == current)
@@ -5052,7 +5073,8 @@ fn mode_menu(session: Option<&Session>, ui: &Ui) -> Element {
         entries,
         open,
         MODE_MENU,
-        256.0,
+        // Wide enough for the longest words, "The agent handles permission decisions".
+        340.0,
         limn::PopoverPlacement::TopStart,
     )
 }

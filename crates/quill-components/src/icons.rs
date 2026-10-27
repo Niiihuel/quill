@@ -87,6 +87,15 @@ pub const FILE: &str = icon!(
 pub const LAPTOP: &str = icon!(
     "<rect x='3.5' y='3.75' width='13' height='9.25' rx='1.75'/><path d='M1.75 16.25h16.5'/>"
 );
+/// The permission modes' marks, as Desktop's menu gives each one (3.6556.2 `shared-8` `zG`):
+/// a raised hand to ask, a scroll to plan, a bolt to decide alone.
+pub const HAND: &str = icon!(
+    "<path d='M6.5 10.5V5a1.25 1.25 0 0 1 2.5 0v4.5M9 9V3.75a1.25 1.25 0 0 1 2.5 0V9M11.5 9V4.75a1.25 1.25 0 0 1 2.5 0v5.5c0 4-2.25 7-6 7-2.5 0-3.75-1.25-5-3.5L1.75 11a1.2 1.2 0 0 1 2-1.25L6.5 13'/>"
+);
+pub const SCROLL: &str = icon!(
+    "<path d='M5 3.25h9.5a1.75 1.75 0 0 1 1.75 1.75v1.25H13.5M5 3.25a1.75 1.75 0 0 0-1.75 1.75v1.25H5M5 3.25v12a1.75 1.75 0 0 0 1.75 1.75h8.5a1.75 1.75 0 0 0 1.75-1.75v-1H8.5v1A1.75 1.75 0 0 1 6.75 17M8 7.5h4.5M8 10.5h4.5'/>"
+);
+pub const LIGHTNING: &str = icon!("<path d='M11 2.5 4.5 11h5l-1 6.5L15 9h-5z'/>");
 pub const BRIEFCASE: &str = icon!(
     "<rect x='2.75' y='6' width='14.5' height='10.5' rx='2'/><path d='M7 6V4.75a1.5 1.5 0 0 1 1.5-1.5h3a1.5 1.5 0 0 1 1.5 1.5V6'/>"
 );
@@ -210,6 +219,9 @@ pub const ALL: &[(&str, &str)] = &[
     ("file", FILE),
     ("laptop", LAPTOP),
     ("briefcase", BRIEFCASE),
+    ("hand", HAND),
+    ("scroll", SCROLL),
+    ("lightning", LIGHTNING),
     ("cloud", CLOUD),
     ("globe", GLOBE),
     ("eye", EYE),

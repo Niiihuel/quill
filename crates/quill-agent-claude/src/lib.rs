@@ -985,6 +985,13 @@ fn ready(body: &Value, ultracode: bool) -> AgentEvent {
                 }
                 efforts
             },
+            // Auto mode is the model's to offer (CLI 2.1.311 `supportsAutoMode`), as Desktop
+            // lists it only for a model that has it (3.6556.2 `shared-8` `IG`).
+            modes: if m["supportsAutoMode"].as_bool() == Some(true) {
+                vec!["auto".into()]
+            } else {
+                vec![]
+            },
         });
     AgentEvent::Ready {
         version: text(&body["claude_code_version"]),
