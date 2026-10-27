@@ -7834,7 +7834,8 @@ fn right_panel(
     height: f32,
     _palette: ComponentPalette,
 ) -> Element {
-    let inner = width - 16.0;
+    // The cards leave the scrollbar a gutter of its own at the right, off their edges.
+    let inner = width - 26.0;
     let open = |key: &str, default: bool| ui.expanded.iter().any(|k| k == key) != default;
     let mut environment = vec![
         panel_row(icons::of(icons::LAPTOP), text("This computer")),
@@ -7851,7 +7852,7 @@ fn right_panel(
     let share = (session.context_window > 0)
         .then(|| session.context_tokens as f32 / session.context_window as f32);
     let mut context_head = vec![];
-    if let Some(share) = share.filter(|_| !open(CONTEXT_CARD, false)) {
+    if let Some(share) = share.filter(|_| !open(CONTEXT_CARD, true)) {
         context_head.push(
             muted(format!("{}%", (share * 100.0).round() as u32))
                 .font_size(SMALL)
@@ -7921,7 +7922,7 @@ fn right_panel(
         panel_card(
             "Context",
             CONTEXT_CARD,
-            open(CONTEXT_CARD, false),
+            open(CONTEXT_CARD, true),
             context_head,
             context_rows,
             inner,
@@ -8057,7 +8058,7 @@ fn outputs(session: &Session) -> Vec<String> {
     paths
 }
 
-/// The right panel's Context card, folded until opened.
+/// The right panel's Context card, open until folded, as Desktop's rail shows it.
 pub const CONTEXT_CARD: &str = "panel:context";
 
 /// A count of tokens as Desktop writes it: "254", "15.8K", "1M" (3.6556.2 `shared-8` `cX`).

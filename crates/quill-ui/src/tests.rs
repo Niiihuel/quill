@@ -2888,8 +2888,9 @@ fn settings_save_through_the_engine_and_shape_what_comes_next() {
 }
 
 #[test]
-fn the_context_breakdown_is_asked_for_when_its_card_opens_and_after_each_turn() {
+fn the_context_breakdown_is_asked_for_while_its_card_is_open_and_after_each_turn() {
     let (store, mut ui) = store_with_session();
+    // Open from the start; folded, then opened again, it asks.
     let click = |ui: &mut Ui| {
         update(
             &store,
@@ -2899,6 +2900,8 @@ fn the_context_breakdown_is_asked_for_when_its_card_opens_and_after_each_turn() 
             },
         )
     };
+    assert!(ui.context_open());
+    assert_eq!(click(&mut ui), vec![]);
     assert_eq!(click(&mut ui), vec![Intent::ContextUsage { session: 1 }]);
     let finished = Event::Agent {
         session: 1,

@@ -2084,9 +2084,10 @@ impl Ui {
         }
     }
 
-    /// Whether the right panel's Context card is open (it starts folded).
+    /// Whether the right panel's Context card is open (it starts open; `expanded` lists it
+    /// once folded).
     pub fn context_open(&self) -> bool {
-        self.expanded.iter().any(|k| k == view::CONTEXT_CARD)
+        !self.expanded.iter().any(|k| k == view::CONTEXT_CARD)
     }
 
     /// The Files pane of the session on screen.
