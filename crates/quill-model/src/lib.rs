@@ -161,6 +161,9 @@ pub struct Settings {
     pub editor: String,
     /// Each agent's own, by its id.
     pub agents: std::collections::BTreeMap<String, AgentSettings>,
+    /// Look up logos of connectors and plugins (svgl.app, then the server's own site); off,
+    /// quill asks for none and shows its icons.
+    pub logos: bool,
 }
 
 impl Default for Settings {
@@ -195,6 +198,7 @@ impl Default for Settings {
             browser_native: false,
             editor: "quill-ide".into(),
             agents: Default::default(),
+            logos: true,
         }
     }
 }
@@ -332,6 +336,15 @@ pub struct QueuedMessage {
     /// Restored from an earlier run: it is not sent until the person sends it.
     #[serde(default)]
     pub held: bool,
+}
+
+/// A connector or plugin whose logo is wanted: its key (`mcp:<name>` or `plugin:<name>`), the
+/// name to look up, and the server's address when it has one.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LogoWanted {
+    pub key: String,
+    pub name: String,
+    pub url: Option<String>,
 }
 
 /// What the UI asks of the engine.
@@ -534,6 +547,11 @@ pub enum Intent {
     SaveSettings(Settings),
     /// How much room quill's own data takes; answered by `Event::Storage`.
     MeasureStorage,
+    /// Logos for connectors and plugins not yet kept, each by its key; answered by one
+    /// `Event::Logo` per key, when it is found or not.
+    Logos {
+        wanted: Vec<LogoWanted>,
+    },
     /// An agent's plugins, marketplaces and skills for a folder, outside any session;
     /// answered by `Event::Extensions`.
     Extensions {
@@ -996,6 +1014,13 @@ pub enum Event {
     },
     /// Every kept session has been told again: what follows is new, not history.
     Restored,
+    /// The logo kept for a connector or plugin `key`, as light and dark PNG files under quill's
+    /// data folder; `None` where none was found. Not session state: never stored.
+    Logo {
+        key: String,
+        light: Option<PathBuf>,
+        dark: Option<PathBuf>,
+    },
     /// Where quill keeps its data and how many bytes it takes.
     Storage {
         path: PathBuf,
@@ -1113,6 +1138,7 @@ impl Event {
             // quill's own, not a session's: no session has id 0.
             Event::Settings { .. }
             | Event::Restored
+            | Event::Logo { .. }
             | Event::Storage { .. }
             | Event::SettingsNotSaved { .. }
             | Event::Extensions { .. }

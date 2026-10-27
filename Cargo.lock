@@ -3503,8 +3503,10 @@ dependencies = [
  "quill-git",
  "quill-model",
  "quill-store",
+ "resvg",
  "serde_json",
  "tokio",
+ "ureq",
  "uuid",
 ]
 

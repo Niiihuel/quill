@@ -1289,8 +1289,15 @@ fn configured_server(line: &str) -> Option<quill_agent::ConfiguredServer> {
     let target = target
         .trim_end_matches(" (HTTP)")
         .trim_end_matches(" (SSE)");
+    let name = name.trim();
+    // "plugin:vercel:vercel" is its plugin's server "vercel"; "claude.ai Figma" the account's.
+    let label = (name.strip_prefix("plugin:"))
+        .and_then(|rest| rest.split_once(':').map(|(_, server)| server))
+        .or_else(|| name.strip_prefix("claude.ai "))
+        .unwrap_or(name);
     Some(quill_agent::ConfiguredServer {
-        name: name.trim().to_owned(),
+        label: label.to_owned(),
+        name: name.to_owned(),
         target: target.trim().to_owned(),
         status,
         source,

@@ -175,15 +175,40 @@ pub fn item(
     more: Option<Element>,
     width: f32,
 ) -> Element {
-    let tile = Element::row(vec![Element::icon(icons::of(icon))
+    let picture = Element::icon(icons::of(icon))
         .foreground(look::palette().text)
-        .size(Some(16.0), Some(16.0))
-        .centered()
-        .flex(1.0)])
-    .size(Some(36.0), Some(36.0))
-    .background(look::customize_tile())
-    .radius(8.0)
-    .centered_y();
+        .size(Some(16.0), Some(16.0));
+    item_with(picture, name, words, end, more, width)
+}
+
+/// [`item`] with its logo, 24 px on the same tile, in place of the icon. The tile keeps its
+/// background, so a dark logo shows in the dark theme too.
+pub fn item_logo(
+    logo: &limn::RasterImage,
+    name: &str,
+    words: &str,
+    end: Option<Element>,
+    more: Option<Element>,
+    width: f32,
+) -> Element {
+    let picture = Element::raster_image(logo.clone()).size(Some(24.0), Some(24.0));
+    item_with(picture, name, words, end, more, width)
+}
+
+/// The item over `picture`, centered on its 36 px tile.
+fn item_with(
+    picture: Element,
+    name: &str,
+    words: &str,
+    end: Option<Element>,
+    more: Option<Element>,
+    width: f32,
+) -> Element {
+    let tile = Element::row(vec![picture.centered().flex(1.0)])
+        .size(Some(36.0), Some(36.0))
+        .background(look::customize_tile())
+        .radius(8.0)
+        .centered_y();
     let copy = Element::column(vec![
         Element::truncated_text(name.to_owned())
             .font_family(FontFamily::Sans)

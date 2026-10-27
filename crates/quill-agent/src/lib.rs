@@ -255,6 +255,10 @@ pub enum ExtensionOp {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ConfiguredServer {
     pub name: String,
+    /// The name without what the agent prefixes to tell servers apart, as the server's own
+    /// product is called (its logo is looked up by it).
+    #[serde(default)]
+    pub label: String,
     pub target: String,
     pub status: McpStatus,
     pub source: McpSource,

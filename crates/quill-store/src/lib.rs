@@ -49,6 +49,7 @@ impl Store {
             | Event::Listed { .. }
             | Event::FileOpDone { .. }
             | Event::Settings { .. }
+            | Event::Logo { .. }
             | Event::Storage { .. }
             | Event::Restored
             | Event::SettingsNotSaved { .. }
@@ -141,6 +142,17 @@ impl Store {
 mod tests {
     use super::*;
     use quill_model::Usage;
+
+    #[test]
+    fn a_logo_is_quills_own_and_never_kept_in_a_session() {
+        let logo = Event::Logo {
+            key: "mcp:figma".into(),
+            light: None,
+            dark: None,
+        };
+        assert!(!Store::keeps(&logo));
+        assert_eq!(logo.session(), 0);
+    }
 
     #[test]
     fn sessions_come_back_in_order_without_deltas() {

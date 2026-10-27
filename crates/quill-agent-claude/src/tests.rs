@@ -450,6 +450,9 @@ fn mcp_servers_are_listed_added_and_removed_with_the_clis_own_commands() {
             ),
         ]
     );
+    // Each is labelled as its own product is called, for its logo.
+    let labels: Vec<_> = listed.iter().map(|s| s.label.as_str()).collect();
+    assert_eq!(labels, ["Gmail", "vercel", "rea"]);
     let args = |server| {
         claude
             .extension_op(&ExtensionOp::AddServer(server))

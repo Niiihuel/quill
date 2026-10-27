@@ -13,6 +13,7 @@ use std::process::Stdio;
 
 mod bridge;
 mod images;
+mod logos;
 mod registry;
 mod servers;
 
@@ -79,6 +80,8 @@ pub struct Config {
     pub snapshots: Option<PathBuf>,
     /// Where the person's settings are kept; `None` keeps them in memory only.
     pub settings: Option<PathBuf>,
+    /// Where the logos of connectors and plugins are kept; `None` looks none up.
+    pub logos: Option<PathBuf>,
     /// The built-in browser's Chromium profile; `None` puts one in the temporary folder.
     pub browser: Option<PathBuf>,
     /// Where the browser leaves its pages' frames for the window to present.
@@ -104,6 +107,7 @@ impl Config {
             database: Some(data.join("quill/quill.db")),
             snapshots: Some(data.join("quill/snapshots")),
             settings: Some(config.join("quill/settings.json")),
+            logos: Some(data.join("quill/logos")),
             browser: Some(data.join("quill/browser")),
             ..Self::default()
         }
@@ -1223,6 +1227,20 @@ impl Router {
                     self.server_op(agent, folder, op);
                 } else {
                     self.extensions(agent, folder, Some(op));
+                }
+                return;
+            }
+            // Each logo on a thread of its own: a lookup can wait on the network for ten seconds.
+            Intent::Logos { wanted } => {
+                if let Some(dir) = self.config.logos.clone() {
+                    for want in wanted {
+                        let (ui, dir) = (self.ui.clone(), dir.clone());
+                        tokio::task::spawn_blocking(move || {
+                            let key = want.key.clone();
+                            let (light, dark) = logos::logo(&dir, &want);
+                            ui(Event::Logo { key, light, dark });
+                        });
+                    }
                 }
                 return;
             }

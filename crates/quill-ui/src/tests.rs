@@ -4881,3 +4881,53 @@ fn only_a_turns_last_reply_has_its_actions_once_the_turn_ended() {
     // The reply between the steps has none; the last one, after the step, has its row.
     assert_eq!(actions(&store), ["copy:1:3"]);
 }
+
+#[test]
+fn the_logos_of_connectors_and_plugins_are_asked_once_and_only_while_shown() {
+    use quill_model::{AgentInfo, ConfiguredServer, LogoWanted, McpSource, McpStatus};
+    let (store, mut ui) = store_with_session();
+    ui.applied(&Event::Settings {
+        settings: Default::default(),
+        agents: vec![AgentInfo {
+            id: "claude".into(),
+            name: "Claude Code".into(),
+            tested: vec![],
+            options: vec![],
+            icon: None,
+        }],
+    });
+    ui.applied(&Event::Servers {
+        agent: "claude".into(),
+        folder: "/work".into(),
+        servers: vec![ConfiguredServer {
+            name: "figma".into(),
+            label: String::new(),
+            target: "https://mcp.figma.com/mcp".into(),
+            status: McpStatus::Connected,
+            source: McpSource::User,
+        }],
+        scopes: vec![],
+        error: None,
+    });
+    // Nothing is shown yet, so nothing is asked.
+    assert!(ui.logos_due(&store).is_empty());
+    let page = format!("settings:page:{}", view::SETTINGS_CONNECTORS);
+    click(&store, &mut ui, view::SETTINGS_OPEN);
+    click(&store, &mut ui, &page);
+    let wanted = LogoWanted {
+        key: "mcp:figma".into(),
+        name: "figma".into(),
+        url: Some("https://mcp.figma.com/mcp".into()),
+    };
+    assert_eq!(
+        ui.logos_due(&store),
+        vec![Intent::Logos {
+            wanted: vec![wanted]
+        }]
+    );
+    assert!(ui.logos_due(&store).is_empty());
+    // Logos off, none is asked for.
+    ui.settings.logos = false;
+    click(&store, &mut ui, &page);
+    assert!(ui.logos_due(&store).is_empty());
+}

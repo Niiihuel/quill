@@ -837,7 +837,8 @@ impl eframe::App for App {
             .map(|p| limn::Point::new(p.x - area.min.x, p.y - area.min.y));
         self.ui.hovered = self.tree.hovered_id().map(str::to_owned);
         self.ui.tick(&self.store);
-        let due = self.ui.due();
+        let mut due = self.ui.due();
+        due.extend(self.ui.logos_due(&self.store));
         self.dispatch(due);
         // Inactive sessions are put away every ten minutes, as Settings asks; not before it
         // asks, which may come a moment after start.

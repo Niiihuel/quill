@@ -17,8 +17,8 @@ pub use view::{menu_digit, view};
 
 use quill_model::{
     AgentCapabilities, AgentEvent, BrowserOp, Decision, Event, FileEffect, Intent, Lane,
-    NewSession, NotifyLevel, ProposalAnswer, QueuedMessage, RequestId, SessionId, SessionStatus,
-    Settings, Suggestion, TranscriptView,
+    LogoWanted, NewSession, NotifyLevel, ProposalAnswer, QueuedMessage, RequestId, SessionId,
+    SessionStatus, Settings, Suggestion, TranscriptView,
 };
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -574,6 +574,7 @@ impl Store {
             | Event::FileOpDone { .. }
             | Event::FilesFound { .. }
             | Event::Settings { .. }
+            | Event::Logo { .. }
             | Event::Storage { .. }
             | Event::Restored
             | Event::SettingsNotSaved { .. }
@@ -1013,6 +1014,10 @@ pub struct Ui {
     /// The composer's Enter that is being handled had Ctrl: its message queues rather than steers.
     pub queue_submit: bool,
     pub thumbs: std::collections::HashMap<PathBuf, limn::RasterImage>,
+    /// The logos of connectors and plugins by key, as the engine found them (`None`: none), and
+    /// the keys asked for, each once.
+    pub logos: std::collections::HashMap<String, (Option<PathBuf>, Option<PathBuf>)>,
+    pub logo_asked: std::collections::HashSet<String>,
     /// The image the viewer shows, if any.
     pub viewer: Option<Viewer>,
     /// The images at up to 2048 px for the viewer, decoded off the window's thread once it opens
@@ -1776,6 +1781,8 @@ impl Ui {
             images: vec![],
             queue_submit: false,
             thumbs: Default::default(),
+            logos: Default::default(),
+            logo_asked: Default::default(),
             viewer: None,
             full: Default::default(),
             annotating: None,
@@ -1951,6 +1958,62 @@ impl Ui {
             folder: folder.clone(),
         });
         agents.collect()
+    }
+
+    /// The logos the open Connectors or Plugins page, or MCP dialog, shows and nothing asked for
+    /// yet, asked for once each; none while logos are off.
+    pub fn logos_due(&mut self, store: &Store) -> Vec<Intent> {
+        if !self.settings.logos {
+            return vec![];
+        }
+        let page = self.settings_page.as_deref();
+        let mut wanted = vec![];
+        if page == Some(view::SETTINGS_CONNECTORS) && !self.connectors.discover {
+            for server in self
+                .connectors
+                .listed
+                .values()
+                .flat_map(|l| l.servers.iter().flatten())
+            {
+                let name = server_logo_name(self, &server.name, &server.label);
+                wanted.push(LogoWanted {
+                    key: format!("mcp:{name}"),
+                    name,
+                    url: https_address(&server.target),
+                });
+            }
+        }
+        if page == Some(view::SETTINGS_PLUGINS) {
+            for plugin in self.extensions.values().flat_map(|k| &k.list.plugins) {
+                wanted.push(LogoWanted {
+                    key: format!("plugin:{}", plugin.name),
+                    name: plugin.name.clone(),
+                    url: None,
+                });
+            }
+        }
+        if let Some(mcp) = &self.mcp {
+            let servers = store.session(mcp.session).and_then(|s| s.mcp.as_ref());
+            for server in servers.into_iter().flatten() {
+                // The address is the one the Connectors page lists under the same name.
+                let url = (self.connectors.listed.values())
+                    .flat_map(|l| l.servers.iter().flatten())
+                    .find(|c| c.name == server.name)
+                    .and_then(|c| https_address(&c.target));
+                let name = server_logo_name(self, &server.name, &server.label);
+                wanted.push(LogoWanted {
+                    key: format!("mcp:{name}"),
+                    name,
+                    url,
+                });
+            }
+        }
+        wanted.retain(|w| self.logo_asked.insert(w.key.clone()));
+        if wanted.is_empty() {
+            vec![]
+        } else {
+            vec![Intent::Logos { wanted }]
+        }
     }
 
     /// What is due to be asked on its own: the open MCP dialog's servers, every
@@ -2198,6 +2261,11 @@ impl Ui {
             }
             return vec![];
         }
+        if let Event::Logo { key, light, dark } = event {
+            self.logos
+                .insert(key.clone(), (light.clone(), dark.clone()));
+            return vec![];
+        }
         if let Event::Storage { path, bytes } = event {
             self.storage = Some((path.clone(), *bytes));
             return vec![];
@@ -2380,6 +2448,20 @@ pub fn add_images(ui: &mut Ui, paths: Vec<PathBuf>) {
 
 /// The images the host decodes thumbnails for: the composer's and those of the shown session's
 /// messages.
+/// The name a server's logo is looked up and kept by: the Connectors page's label for the
+/// server called `name`, else `label`, else `name` itself.
+pub(crate) fn server_logo_name(ui: &Ui, name: &str, label: &str) -> String {
+    let listed = (ui.connectors.listed.values())
+        .flat_map(|l| l.servers.iter().flatten())
+        .find(|c| c.name == name)
+        .map(|c| c.label.as_str());
+    [listed.unwrap_or_default(), label, name]
+        .into_iter()
+        .find(|n| !n.is_empty())
+        .unwrap_or_default()
+        .to_owned()
+}
+
 pub fn image_paths(store: &Store, ui: &Ui) -> Vec<PathBuf> {
     let items = ui
         .selected
@@ -2389,7 +2471,28 @@ pub fn image_paths(store: &Store, ui: &Ui) -> Vec<PathBuf> {
         Item::User { images, .. } => images.clone(),
         _ => vec![],
     });
-    ui.images.iter().cloned().chain(shown).collect()
+    // The logos of this theme, while they are on.
+    let logos = (ui.logos.values())
+        .filter(|_| ui.settings.logos)
+        .filter_map(|(light, dark)| {
+            if look::is_dark() {
+                dark.clone()
+            } else {
+                light.clone()
+            }
+        });
+    ui.images
+        .iter()
+        .cloned()
+        .chain(shown)
+        .chain(logos)
+        .collect()
+}
+
+/// A server's address, when it is an https one: the only kind a logo is looked up at.
+fn https_address(target: &str) -> Option<String> {
+    let target = target.trim();
+    target.starts_with("https://").then(|| target.to_owned())
 }
 
 /// A queue row's button or menu item, by its id (`queue:send:<id>` and so on), for the
@@ -4429,6 +4532,7 @@ fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
         "links_in_browser" => settings.links_in_browser = !settings.links_in_browser,
         "prs_in_browser" => settings.prs_in_browser = !settings.prs_in_browser,
         "archive_on_merge" => settings.archive_on_merge = !settings.archive_on_merge,
+        "logos" => settings.logos = !settings.logos,
         other => match other
             .strip_prefix("agent:")
             .and_then(|r| r.strip_suffix(":unsafe"))

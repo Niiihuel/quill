@@ -5827,6 +5827,29 @@ fn image_tile(id: &str, path: &Path, ui: &Ui, palette: ComponentPalette) -> Atta
     }
 }
 
+/// The logo of the connector or plugin `key`, once the host has decoded it, for the light or
+/// dark theme; `None` while it is not, or logos are off, and the caller shows its icon.
+fn logo_picture<'a>(ui: &'a Ui, key: &str) -> Option<&'a limn::RasterImage> {
+    if !ui.settings.logos {
+        return None;
+    }
+    let (light, dark) = ui.logos.get(key)?;
+    let path = if look::is_dark() { dark } else { light };
+    ui.thumbs.get(path.as_ref()?)
+}
+
+/// A logo on a square tile of the item's colour, as the Connectors rows show one.
+fn logo_tile(logo: &limn::RasterImage, side: f32) -> Element {
+    Element::row(vec![Element::raster_image(logo.clone())
+        .size(Some(side * 0.75), Some(side * 0.75))
+        .centered()
+        .flex(1.0)])
+    .size(Some(side), Some(side))
+    .background(look::customize_tile())
+    .radius(8.0)
+    .centered_y()
+}
+
 /// A count with commas between its thousands, as the branch bar writes them.
 pub(crate) fn thousands(n: u32) -> String {
     let digits = n.to_string();
@@ -8876,6 +8899,14 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
                 ],
             ),
             (
+                "Logos".into(),
+                vec![setting(
+                    "Logos of connectors and plugins",
+                    "Looked up by name on svgl.app, else the server's own site, and kept on this computer.",
+                    setting_switch("logos", s.logos, palette),
+                )],
+            ),
+            (
                 "Code".into(),
                 vec![setting(
                     "Code font",
@@ -9288,14 +9319,19 @@ fn connectors_page(ui: &Ui, window: Size) -> Element {
                         ui.settings_menu.as_deref() == Some(menu.as_str()),
                     )
                 });
-                column.push(customize::item(
-                    icons::PLUG,
-                    &server.name,
-                    &words,
-                    None,
-                    more,
-                    width,
-                ));
+                let logo = logo_picture(
+                    ui,
+                    &format!(
+                        "mcp:{}",
+                        crate::server_logo_name(ui, &server.name, &server.label)
+                    ),
+                );
+                column.push(match logo {
+                    Some(logo) => {
+                        customize::item_logo(logo, &server.name, &words, None, more, width)
+                    }
+                    None => customize::item(icons::PLUG, &server.name, &words, None, more, width),
+                });
             }
         }
     } else {
@@ -9713,14 +9749,12 @@ fn plugins_page(ui: &Ui, window: Size) -> Element {
             ];
             let menu = format!("cz:more:{id}:{}", plugin.id);
             let open = ui.settings_menu.as_deref() == Some(menu.as_str());
-            customize::item(
-                icons::PLUG,
-                &plugin.name,
-                &words.join(" \u{b7} "),
-                end,
-                Some(customize::more(&menu, entries, open)),
-                width,
-            )
+            let words = words.join(" \u{b7} ");
+            let more = Some(customize::more(&menu, entries, open));
+            match logo_picture(ui, &format!("plugin:{}", plugin.name)) {
+                Some(logo) => customize::item_logo(logo, &plugin.name, &words, end, more, width),
+                None => customize::item(icons::PLUG, &plugin.name, &words, end, more, width),
+            }
         };
         let here: Vec<&quill_model::Plugin> = (known.list.plugins.iter())
             .filter(|p| p.scope != "user")
@@ -10366,9 +10400,19 @@ fn mcp_dialog(
         }
     };
     let words = |s: String| muted(s).font_size(BODY);
-    // Desktop shows each server's favicon; quill, which shows no one's logo, its initial.
-    let avatar =
-        |name: &str, side: f32| limn::Avatar::new(name, look::palette()).size(side).render();
+    // Desktop shows each server's favicon; quill shows the logo it found, else the initial.
+    let avatar = |server: &quill_model::McpServer, side: f32| match logo_picture(
+        ui,
+        &format!(
+            "mcp:{}",
+            crate::server_logo_name(ui, &server.name, &server.label)
+        ),
+    ) {
+        Some(logo) => logo_tile(logo, side),
+        None => limn::Avatar::new(&server.label, look::palette())
+            .size(side)
+            .render(),
+    };
     // Where it was configured, as Desktop's outlined pill beside the type (`ye`).
     let chip = |label: &str| {
         Element::row(vec![
@@ -10475,7 +10519,7 @@ fn mcp_dialog(
             }
             body.push(
                 Element::row(vec![
-                    avatar(&server.label, 32.0).centered_y(),
+                    avatar(server, 32.0).centered_y(),
                     Element::column(who).gap(4.0).flex(1.0),
                     Element::row(buttons).gap(8.0).centered_y(),
                 ])
@@ -10568,7 +10612,7 @@ fn mcp_dialog(
                         );
                     }
                     let who = vec![
-                        avatar(&server.label, 24.0).centered_y(),
+                        avatar(server, 24.0).centered_y(),
                         Element::column(copy).gap(2.0).flex(1.0).centered_y(),
                     ];
                     let note = |said: String, why: Option<&str>| {
