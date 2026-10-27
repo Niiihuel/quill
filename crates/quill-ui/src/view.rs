@@ -85,6 +85,9 @@ pub const SIDE_OPEN: &str = "side:open";
 pub use quill_components::settings::{SETTINGS_CLOSE, SETTINGS_OPEN, SETTINGS_SEARCH};
 pub const SETTINGS_FIRST: &str = "general";
 pub const SETTINGS_STORAGE_OPEN: &str = "settings:storage:open";
+/// The sidebar's Customize, and the person's button at its foot with its menu.
+pub const CUSTOMIZE_OPEN: &str = "customize:open";
+pub const ACCOUNT_MENU: &str = "account:menu";
 /// Customize's pages: each agent's skills and plugins.
 pub const SETTINGS_SKILLS: &str = "skills";
 pub const SETTINGS_PLUGINS: &str = "plugins";
@@ -1470,6 +1473,7 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
             ui.selected.is_none(),
         ),
         nav(SEARCH, icons::SEARCH, "Search", "Ctrl+K", false),
+        nav(CUSTOMIZE_OPEN, icons::BRIEFCASE, "Customize", "", false),
         Element::spacer().size(None, Some(16.0)),
     ];
     // Sessions another one started are listed under it, not on their own.
@@ -1492,7 +1496,10 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
         // "Pinned" folds under the empty folder, which no session works in.
         let key = std::path::PathBuf::new();
         let open = !ui.collapsed.contains(&key);
-        rows.push(group_header("Pinned", &key, open, None, ui, palette));
+        let waiting = !open && pinned.iter().any(|s| s.status == SessionStatus::Awaiting);
+        rows.push(group_header(
+            "Pinned", &key, open, waiting, None, ui, palette,
+        ));
         if open {
             for s in &pinned {
                 rows.extend(with_children(store, s, ui, palette));
@@ -1530,10 +1537,6 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
         if at > 0 {
             rows.push(Element::spacer().size(None, Some(8.0)));
         }
-        rows.push(group_header(&label, &key, open, folder, ui, palette));
-        if !open {
-            continue;
-        }
         let members: Vec<&&Session> = rest
             .iter()
             .filter(|s| match ui.group_by {
@@ -1542,6 +1545,13 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
                 crate::GroupBy::None => true,
             })
             .collect();
+        let waiting = !open && members.iter().any(|s| s.status == SessionStatus::Awaiting);
+        rows.push(group_header(
+            &label, &key, open, waiting, folder, ui, palette,
+        ));
+        if !open {
+            continue;
+        }
         // Completed shows its first few until "Show more" (inferred: five, as the videos
         // show four or five before it).
         let limited = ui.group_by == crate::GroupBy::Status
@@ -1569,33 +1579,59 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
             ));
         }
     }
-    // At its foot, the person and Settings, where Desktop keeps its profile and its menu
-    //.
-    let foot = Element::row(vec![
-        hgap(10.0),
-        Element::truncated_text(ui.name.clone().unwrap_or_default())
-            .font_family(FontFamily::Sans)
-            .font_size(BODY)
-            .foreground(look::palette().text)
-            .flex(1.0)
+    // At its foot over a line, the person: their initial, name and plan, opening the menu
+    // that holds Settings, as Desktop's (3.6556.2, captured 2026-10-27). Its other entries
+    // are claude.ai's pages; quill keeps none.
+    let name = ui.name.clone().unwrap_or_default();
+    let initial = name.chars().next().map(|c| c.to_uppercase().to_string());
+    let mut account = vec![hgap(0.0)];
+    account.extend(initial.map(|initial| {
+        Element::row(vec![muted(initial).font_size(10.0).centered().flex(1.0)])
+            .size(Some(20.0), Some(20.0))
+            .background(look::active())
+            .radius(10.0)
+            .centered_y()
+    }));
+    account.push(text(name).centered_y());
+    if let Some(plan) = account_plan(store, None) {
+        account.push(muted(format!("\u{b7} {plan}")).font_size(12.0).centered_y());
+    }
+    account.push(
+        Element::icon(icons::of(icons::CARET_DOWN))
+            .foreground(look::muted())
+            .size(Some(12.0), Some(12.0))
             .centered_y(),
-        tool_surface(
-            SETTINGS_OPEN,
-            icons::of(icons::SETTINGS),
-            "Settings",
-            28.0,
-            None,
-            look::tool_hover(),
-            Some("Ctrl+,"),
-        )
-        .centered_y(),
-    ])
-    .size(None, Some(36.0));
+    );
+    account.push(hgap(0.0));
+    let account = ComponentPalette {
+        hover: look::row_hover(),
+        ..palette
+    }
+    .interactive_surface(Element::clickable(
+        ACCOUNT_MENU,
+        Element::row(account).gap(6.0).size(None, Some(32.0)),
+    ))
+    .radius(8.0);
+    let account = menu(
+        account,
+        vec![limn::DropdownMenuItem::new(SETTINGS_OPEN, "Settings")
+            .icon(icons::of(icons::SETTINGS))
+            .shortcut("Ctrl+,")
+            .into()],
+        ui.account_menu,
+        ACCOUNT_MENU,
+        260.0,
+        limn::PopoverPlacement::TopStart,
+    );
     Element::column(vec![
-        Element::column(rows).gap(2.0).flex(1.0).clip_children(),
-        foot,
+        Element::column(rows)
+            .gap(2.0)
+            .padding(8.0)
+            .flex(1.0)
+            .clip_children(),
+        hline(look::SIDEBAR_WIDTH - 1.0, look::divider()),
+        Element::row(vec![account, Element::spacer().flex(1.0)]).padding(8.0),
     ])
-    .padding(8.0)
     .background(look::sidebar())
     .size(Some(look::SIDEBAR_WIDTH - 1.0), Some(height))
 }
@@ -1667,6 +1703,22 @@ fn sorted<'a>(mut list: Vec<&'a Session>, ui: &Ui) -> Vec<&'a Session> {
         list.reverse();
     }
     list
+}
+
+/// The person's plan as `session`'s agent, or the last one that said, reports it.
+fn account_plan(store: &Store, session: Option<&Session>) -> Option<String> {
+    session
+        .and_then(|s| s.capabilities.as_ref())
+        .or_else(|| {
+            store
+                .sessions
+                .iter()
+                .rev()
+                .find_map(|s| s.capabilities.as_ref())
+        })
+        .and_then(|c| c.plan.clone())
+        // The agent says "Claude Max"; Desktop's popover says "Max".
+        .map(|p| effort_label(p.trim_start_matches("Claude ").trim()))
 }
 
 /// The filter menu of a group's header: Group by, Sort by and Reset to
@@ -1757,35 +1809,38 @@ fn group_header(
     label: &str,
     key: &std::path::Path,
     open: bool,
+    waiting: bool,
     folder: Option<&std::path::Path>,
     ui: &Ui,
     palette: ComponentPalette,
 ) -> Element {
     let folder_key = key;
+    // Solid, as Desktop's (3.6556.2, captured 2026-10-27).
     let caret = Element::icon(if open {
-        icons::of(icons::CARET_DOWN)
+        icons::of(icons::TRIANGLE_DOWN)
     } else {
-        icons::of(icons::CARET_RIGHT)
+        icons::of(icons::TRIANGLE_RIGHT)
     })
     .foreground(look::muted())
-    .size(Some(10.0), Some(10.0))
+    .size(Some(12.0), Some(12.0))
     .centered_y();
     // Status groups read as plain words, Folder ones as small gray names with a caret.
     let status = key.to_string_lossy().starts_with("status:");
     let mut items = if status {
-        vec![
-            hgap(4.0),
-            text(label).centered_y(),
-            Element::spacer().flex(1.0),
-        ]
+        vec![hgap(4.0), text(label).centered_y()]
     } else {
-        vec![
-            hgap(4.0),
-            muted(label).font_size(SMALL).centered_y(),
-            caret,
-            Element::spacer().flex(1.0),
-        ]
+        vec![hgap(4.0), muted(label).font_size(SMALL).centered_y(), caret]
     };
+    // Folded, a group that holds a session waiting on the person says so beside its name.
+    if waiting {
+        items.push(
+            Element::icon(icons::of(icons::WARNING))
+                .foreground(look::palette().text)
+                .size(Some(14.0), Some(14.0))
+                .centered_y(),
+        );
+    }
+    items.push(Element::spacer().flex(1.0));
     // Every header but Pinned's offers the list's filter menu.
     if !key.as_os_str().is_empty() {
         items.push(filter_menu(&key.display().to_string(), ui));
@@ -1906,7 +1961,10 @@ fn session_row(session: &Session, depth: usize, ui: &Ui, palette: ComponentPalet
     let indicator = match session.status {
         SessionStatus::Awaiting => mark(icons::WARNING, look::palette().text),
         SessionStatus::Failed(_) => status_dot(session),
-        _ if depth == 0 && !working => mark(icons::LAPTOP, look::muted()),
+        // Grouped by folder Desktop marks no place (3.6556.2, captured 2026-10-27).
+        _ if depth == 0 && !working && ui.group_by != crate::GroupBy::Folder => {
+            mark(icons::LAPTOP, look::muted())
+        }
         _ => hgap(0.0),
     };
     side_row_with(
@@ -4758,18 +4816,7 @@ fn usage_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
     } else {
         tokens.to_string()
     };
-    let plan = session
-        .and_then(|s| s.capabilities.as_ref())
-        .or_else(|| {
-            store
-                .sessions
-                .iter()
-                .rev()
-                .find_map(|s| s.capabilities.as_ref())
-        })
-        .and_then(|c| c.plan.clone())
-        // The agent says "Claude Max"; Desktop's popover says "Max".
-        .map(|p| effort_label(p.trim_start_matches("Claude ").trim()));
+    let plan = account_plan(store, session);
     let mut rows = vec![
         usage_row("Context window", tokens.clone(), share, width, true),
         hline(width, look::divider()),

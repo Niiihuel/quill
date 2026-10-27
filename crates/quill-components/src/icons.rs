@@ -51,6 +51,9 @@ pub const STOP: &str = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 
 pub const STOP_CIRCLE: &str = icon!(
     "<circle cx='10' cy='10' r='7.5'/><rect x='7.5' y='7.5' width='5' height='5' rx='0.75' fill='currentColor' stroke='none'/>"
 );
+/// The small solid triangles a sidebar group's name points with, open and folded.
+pub const TRIANGLE_DOWN: &str = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='currentColor'><path d='M5.5 7.5h9L10 13z'/></svg>";
+pub const TRIANGLE_RIGHT: &str = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='currentColor'><path d='M7.5 5.5v9L13 10z'/></svg>";
 pub const DOTS_HORIZONTAL: &str = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='currentColor'><circle cx='4' cy='10' r='1.4'/><circle cx='10' cy='10' r='1.4'/><circle cx='16' cy='10' r='1.4'/></svg>";
 pub const DOTS_VERTICAL: &str = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='currentColor'><circle cx='10' cy='4' r='1.4'/><circle cx='10' cy='10' r='1.4'/><circle cx='10' cy='16' r='1.4'/></svg>";
 
@@ -86,6 +89,9 @@ pub const FILE: &str = icon!(
 );
 pub const LAPTOP: &str = icon!(
     "<rect x='3.5' y='3.75' width='13' height='9.25' rx='1.75'/><path d='M1.75 16.25h16.5'/>"
+);
+pub const BRIEFCASE: &str = icon!(
+    "<rect x='2.75' y='6' width='14.5' height='10.5' rx='2'/><path d='M7 6V4.75a1.5 1.5 0 0 1 1.5-1.5h3a1.5 1.5 0 0 1 1.5 1.5V6'/>"
 );
 pub const CLOUD: &str = icon!(
     "<path d='M5.75 16a3.75 3.75 0 0 1-.5-7.47A5.25 5.25 0 0 1 15.3 7.4 4.3 4.3 0 0 1 14.5 16z'/>"
@@ -200,12 +206,15 @@ pub const ALL: &[(&str, &str)] = &[
     ("caret_left", CARET_LEFT),
     ("caret_down", CARET_DOWN),
     ("caret_up", CARET_UP),
+    ("triangle_down", TRIANGLE_DOWN),
+    ("triangle_right", TRIANGLE_RIGHT),
     ("expand", EXPAND),
     ("collapse", COLLAPSE),
     ("folder", FOLDER),
     ("folder_open", FOLDER_OPEN),
     ("file", FILE),
     ("laptop", LAPTOP),
+    ("briefcase", BRIEFCASE),
     ("cloud", CLOUD),
     ("globe", GLOBE),
     ("eye", EYE),

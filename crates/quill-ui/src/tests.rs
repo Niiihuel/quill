@@ -1297,7 +1297,7 @@ fn the_list_groups_by_status_and_sorts_by_name() {
     click(&store, &mut ui, view::FILTER_RESET);
     assert_eq!(
         (ui.group_by, ui.sort_by, ui.ascending),
-        (GroupBy::Status, SortBy::Updated, false)
+        (GroupBy::Folder, SortBy::Updated, false)
     );
 }
 
@@ -1379,6 +1379,8 @@ fn a_started_session_is_nested_under_its_parent_and_completed_shows_five_first()
         side: false,
     });
     let mut ui = Ui::new("/work".into());
+    // Completed's "Show more" is the status groups'.
+    ui.group_by = GroupBy::Status;
     let window = limn::Size::new(1408.0, 844.0);
     let regions = |store: &Store, ui: &Ui| {
         let mut tree = UiTree::new(view(store, ui, window));
@@ -1515,6 +1517,35 @@ fn a_started_session_opens_beside_and_says_when_it_waits() {
     click(&store, &mut ui, view::SIDE_OPEN);
     assert_eq!(ui.selected, Some(2));
     assert!(!ui.pane_open(Pane::Side));
+}
+
+#[test]
+fn the_sidebars_customize_and_the_persons_menu_open_settings() {
+    use quill_model::AgentInfo;
+    let (store, mut ui) = store_with_session();
+    ui.applied(&Event::Settings {
+        settings: Default::default(),
+        agents: vec![AgentInfo {
+            id: "claude".into(),
+            name: "Claude Code".into(),
+            tested: vec![],
+        }],
+    });
+    ui.cwd = "/work".into();
+    assert_eq!(
+        click(&store, &mut ui, view::CUSTOMIZE_OPEN),
+        vec![Intent::Extensions {
+            agent: "claude".into(),
+            folder: "/work".into()
+        }]
+    );
+    assert_eq!(ui.settings_page.as_deref(), Some(view::SETTINGS_SKILLS));
+    click(&store, &mut ui, view::SETTINGS_CLOSE);
+    click(&store, &mut ui, view::ACCOUNT_MENU);
+    assert!(ui.account_menu);
+    click(&store, &mut ui, view::SETTINGS_OPEN);
+    assert!(!ui.account_menu);
+    assert_eq!(ui.settings_page.as_deref(), Some(view::SETTINGS_FIRST));
 }
 
 #[test]

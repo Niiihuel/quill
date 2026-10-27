@@ -853,6 +853,8 @@ pub struct Ui {
     pub live: std::collections::HashSet<SessionId>,
     /// The group header whose filter menu is open.
     pub filter_menu: Option<String>,
+    /// Whether the menu of the sidebar's foot, the person's, is open.
+    pub account_menu: bool,
     /// A fork was asked for: the session the engine makes next is it, and opens.
     pub waiting_fork: bool,
     /// The Completed group shows every session, not its first few.
@@ -918,13 +920,13 @@ pub struct Ui {
     pub ultra_since: Option<std::time::Instant>,
 }
 
-/// The sidebar's groups: by folder, Desktop's default, by status, or one list.
+/// The sidebar's groups: by folder, Desktop's default (3.6556.2's "Reset to defaults" stays
+/// off on Folder, captured 2026-10-27), by status, or one list.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum GroupBy {
-    Folder,
-    /// Needs input, Working and Completed, as the person's newer Desktop lists sessions by
-    /// default [videos of 2026-10-25].
     #[default]
+    Folder,
+    /// Needs input, Working and Completed [videos of 2026-10-25].
     Status,
     None,
 }
@@ -1455,6 +1457,7 @@ impl Ui {
             settings: Default::default(),
             agents: vec![],
             settings_page: None,
+            account_menu: false,
             settings_query: String::new(),
             settings_menu: None,
             storage: None,
@@ -1564,7 +1567,7 @@ impl Ui {
             on_toggle: self.hovered.as_deref() == Some(view::SIDEBAR_TOGGLE),
             // Its edges count, as `x <= 48` did.
             toggle_zone: limn::Rect::new(0.0, 0.0, 48f32.next_up(), look::TOP_BAR.next_up()),
-            held: self.open_menu.is_some(),
+            held: self.open_menu.is_some() || self.account_menu,
         };
         self.sidebar
             .tick(&pointer, motion, self.reduced_motion, now);
@@ -3239,10 +3242,26 @@ pub enum McpPhase {
 /// them. A select reports its trigger, `set:{name}`, then a choice, `set:{name}={value}`.
 fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
     use quill_model::{Motion, TextSize, Theme};
+    if id == view::ACCOUNT_MENU {
+        ui.account_menu = !ui.account_menu;
+        return Some(vec![]);
+    }
+    if id.strip_suffix(":dismiss") == Some(view::ACCOUNT_MENU) {
+        ui.account_menu = false;
+        return Some(vec![]);
+    }
     if id == view::SETTINGS_OPEN {
+        ui.account_menu = false;
         ui.settings_page = Some(view::SETTINGS_FIRST.into());
         ui.settings_query.clear();
         return Some(vec![Intent::MeasureStorage]);
+    }
+    // The sidebar's Customize opens Settings on its first page of them, as Desktop's opens
+    // its Customize.
+    if id == view::CUSTOMIZE_OPEN {
+        ui.settings_page = Some(view::SETTINGS_SKILLS.into());
+        ui.settings_query.clear();
+        return Some(ui.ask_extensions());
     }
     ui.settings_page.as_ref()?;
     if id == view::SETTINGS_CLOSE {
