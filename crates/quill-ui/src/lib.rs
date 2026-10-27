@@ -893,6 +893,14 @@ pub struct Ui {
     pub removing: Option<Removing>,
     /// The marketplace being typed in Customize › Plugins.
     pub marketplace_field: String,
+    /// What Customize's page searches for, and Discover's directory.
+    pub customize_query: String,
+    pub directory_query: String,
+    /// Discover's directory of plugins, while open, by agent; the marketplace it shows.
+    pub directory: Option<String>,
+    pub directory_market: Option<String>,
+    /// The marketplaces' dialog over Customize, while open, by agent.
+    pub marketplaces: Option<MarketDialog>,
     /// Things quill moves itself jump to where they go, as limn's do under reduced motion.
     pub reduced_motion: bool,
     /// How many of each session's items the person has had in view.
@@ -1454,6 +1462,11 @@ impl Ui {
             extensions: std::collections::HashMap::new(),
             removing: None,
             marketplace_field: String::new(),
+            customize_query: String::new(),
+            directory_query: String::new(),
+            directory: None,
+            directory_market: None,
+            marketplaces: None,
             reduced_motion: false,
             seen: Default::default(),
             new_from: Default::default(),
@@ -1982,6 +1995,14 @@ fn update_action(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Int
         }
         UiAction::InputChanged { id, value } if id == view::SETTINGS_SEARCH => {
             ui.settings_query = value.clone();
+            vec![]
+        }
+        UiAction::InputChanged { id, value } if id == view::CZ_SEARCH => {
+            ui.customize_query = value.clone();
+            vec![]
+        }
+        UiAction::InputChanged { id, value } if id == view::CZ_DIR_SEARCH => {
+            ui.directory_query = value.clone();
             vec![]
         }
         UiAction::InputChanged { id, value } if id.starts_with(view::EXT_MKT_FIELD) => {
@@ -2858,6 +2879,61 @@ pub fn is_project(folder: &std::path::Path) -> bool {
     std::env::var_os("HOME").is_none_or(|home| folder != std::path::Path::new(&home))
 }
 
+/// The marketplaces' dialogs: adding one, and the list of them to update or remove.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MarketDialog {
+    Add(String),
+    Manage(String),
+}
+
+/// Customize's own clicks, around the changes: its menus (Add, an item's "⋯", Discover's
+/// filter) open and close; Discover's directory and the marketplaces' dialogs open and close.
+/// `None` when `id` is none of them.
+fn customize_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
+    let rest = id.strip_prefix("cz:")?;
+    let toggle = |ui: &mut Ui, menu: &str| {
+        let open = ui.settings_menu.as_deref() == Some(menu);
+        ui.settings_menu = (!open).then(|| menu.to_owned());
+    };
+    if let Some(menu) = rest.strip_suffix(":dismiss") {
+        if ui.settings_menu.as_deref() == Some(&format!("cz:{menu}")) {
+            ui.settings_menu = None;
+        }
+        return Some(vec![]);
+    }
+    let (verb, arg) = rest.split_once(':').unwrap_or((rest, ""));
+    match verb {
+        "add" | "more" | "filter-menu" => toggle(ui, id),
+        "discover" => {
+            ui.settings_menu = None;
+            ui.directory = Some(arg.to_owned());
+            ui.directory_query.clear();
+        }
+        "filter" => {
+            ui.settings_menu = None;
+            ui.directory_market = (!arg.is_empty()).then(|| arg.to_owned());
+        }
+        "add-marketplace" => {
+            ui.settings_menu = None;
+            ui.marketplace_field.clear();
+            ui.marketplaces = Some(MarketDialog::Add(arg.to_owned()));
+        }
+        "manage" => {
+            ui.settings_menu = None;
+            ui.marketplaces = Some(MarketDialog::Manage(arg.to_owned()));
+        }
+        "close" => {
+            ui.settings_menu = None;
+            // The dialog over the directory goes first.
+            if ui.marketplaces.take().is_none() {
+                ui.directory = None;
+            }
+        }
+        _ => return None,
+    }
+    Some(vec![])
+}
+
 /// Customize's clicks: a plugin's switch, install (for a scope from its menu),
 /// update and removal (after asking); a marketplace's update, removal (after asking) and
 /// adding one; a skill's state from its menu. Each sends the change with the folder, and
@@ -2870,6 +2946,7 @@ fn extensions_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
         return Some(vec![]);
     }
     let send = |ui: &mut Ui, agent: &str, working: String, done: Option<String>, op| {
+        ui.settings_menu = None;
         if let Some(known) = ui.extensions.get_mut(agent) {
             known.working = Some(working);
             known.error = None;
@@ -2899,6 +2976,13 @@ fn extensions_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
                 ExtensionOp::RemoveMarketplace(name),
             ),
         };
+    }
+    // A menu of Customize's (a skill's states, where to install) closing on its own.
+    if let Some(menu) = id.strip_prefix("ext:").and(id.strip_suffix(":dismiss")) {
+        if ui.settings_menu.as_deref() == Some(menu) {
+            ui.settings_menu = None;
+        }
+        return Some(vec![]);
     }
     let (verb, rest) = id.strip_prefix("ext:")?.split_once(':')?;
     let (agent, name) = rest.split_once(':').unwrap_or((rest, ""));
@@ -2944,6 +3028,7 @@ fn extensions_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
                 return Some(vec![]);
             }
             ui.marketplace_field.clear();
+            ui.marketplaces = None;
             send(
                 ui,
                 agent,
@@ -3174,6 +3259,9 @@ fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
             return Some(ui.ask_extensions());
         }
         return Some(vec![]);
+    }
+    if let Some(intents) = customize_clicked(ui, id) {
+        return Some(intents);
     }
     if let Some(intents) = extensions_clicked(ui, id) {
         return Some(intents);

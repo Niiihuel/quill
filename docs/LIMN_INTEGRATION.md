@@ -16,7 +16,7 @@ When they are all merged, point `Cargo.toml` back at `../lienzo` and drop the br
 | [#130](https://github.com/Niiihuel/limn/pull/130) | `feat/stream-fade` | the reply fading in as it streams | open |
 | — | `feat/rolling-number` | the branch bar's +N −M rolling to each new count | local, not pushed |
 | — | `fix/submenu-gap` | the composer's submenus | local, not pushed |
-| — | `feat/modal-flush-body` | Settings' modal, a body without padding | local, not pushed |
+| — | `feat/modal-flush-body` | Settings' modal, a body without padding inside a whole outline, colored apart (`outline`) | local, not pushed |
 | — | `feat/select-plain` | Settings' plain selects | local, not pushed |
 | — | `feat/switch-off-ink` | Settings' off switches on Desktop's pale gray track | local, not pushed |
 | — | `feat/segmented-icons` | Settings' theme picker: 26 px icon segments and the chosen one outlined | local, not pushed |

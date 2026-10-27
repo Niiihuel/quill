@@ -88,6 +88,20 @@ tones! {
     /// rows, the page in view, the search field, a button's fill, the theme's track and a
     /// switch that is on.
     settings_page = hex(0xffffff), hex(0x1f1f1f);
+    /// The card's outline: none to see in light (only its shadow), #2A2A2A in dark, quieter
+    /// than the hairline under its title (3.6556.2, captured 2026-10-26).
+    settings_outline = hex(0xffffff), hex(0x2a2a2a);
+    /// Customize's pages (3.6556.2 Skills and Plugins, captured dark at 1× on 2026-10-26;
+    /// light inferred): a card's fill, an item's icon tile, the line between items, a count's
+    /// pill, an outlined button's edge, a tab's chip and its edge, a filled button.
+    customize_card = hex(0xf4f4f4), hex(0x2a2a2a);
+    customize_tile = hex(0xefefef), hex(0x0b0b0b);
+    customize_line = hex(0xf0f0f0), hex(0x272727);
+    customize_count = hex(0xe8e8e8), hex(0x333333);
+    customize_edge = hex(0xd9d9d9), hex(0x4b4b4b);
+    customize_tab = hex(0xe9e9e9), hex(0x3f3f3f);
+    customize_tab_edge = hex(0xdadada), hex(0x4a4a4a);
+    customize_button = hex(0xececec), hex(0x404040);
     settings_nav = hex(0xffffff), hex(0x191919);
     settings_nav_edge = hex(0xe5e5e5), hex(0x303030);
     settings_title_line = hex(0xe0e0e0), hex(0x3a3a3a);

@@ -1596,7 +1596,9 @@ fn customize_lists_and_changes_an_agents_plugins_marketplaces_and_skills() {
         })
     };
     heard(&mut ui, None);
-    assert!(shows(&ui, "0.2.0 \u{b7} installed for user") && shows(&ui, "968.6K installs"));
+    // Desktop's page: the project's plugins under its folder, then the person's own.
+    assert!(shows(&ui, "In this project") && shows(&ui, "Your plugins"));
+    assert!(shows(&ui, "v0.2.0 \u{b7} from better"));
     let op = |op| Intent::ExtensionOp {
         agent: "claude".into(),
         folder: folder.clone(),
@@ -1610,10 +1612,16 @@ fn customize_lists_and_changes_an_agents_plugins_marketplaces_and_skills() {
             enabled: false
         })]
     );
-    assert!(shows(&ui, "Working"));
+    assert_eq!(
+        ui.extensions["claude"].working.as_deref(),
+        Some("commit@better")
+    );
     heard(&mut ui, Some("could not reach the marketplace"));
     assert!(shows(&ui, "could not reach the marketplace"));
-    // In a project, Install opens Desktop's menu of where; a choice installs there.
+    // Discover's directory lists what the marketplaces offer; in a project, "+" opens
+    // Desktop's menu of where, and a choice installs there.
+    click(&store, &mut ui, "cz:discover:claude");
+    assert!(shows(&ui, "Directory") && shows(&ui, "968.6K installs"));
     assert!(click(&store, &mut ui, "ext:install:claude:figma@official").is_empty());
     assert!(shows(&ui, "Install for project (shared)"));
     assert_eq!(
@@ -1632,7 +1640,9 @@ fn customize_lists_and_changes_an_agents_plugins_marketplaces_and_skills() {
         click(&store, &mut ui, view::EXT_REMOVE_YES),
         vec![op(ExtensionOp::Uninstall(plugin))]
     );
-    // A marketplace from its field.
+    // A marketplace from its dialog.
+    click(&store, &mut ui, "cz:add-marketplace:claude");
+    assert!(shows(&ui, "A GitHub owner/repo or a Git repository URL."));
     update(
         &store,
         &mut ui,
@@ -1645,6 +1655,9 @@ fn customize_lists_and_changes_an_agents_plugins_marketplaces_and_skills() {
         click(&store, &mut ui, "ext:mkt-add:claude"),
         vec![op(ExtensionOp::AddMarketplace("o/r".into()))]
     );
+    assert!(ui.marketplaces.is_none());
+    click(&store, &mut ui, "cz:close");
+    assert!(ui.directory.is_none());
     // A skill's state, from its menu.
     click(
         &store,
@@ -1652,7 +1665,10 @@ fn customize_lists_and_changes_an_agents_plugins_marketplaces_and_skills() {
         &format!("settings:page:{}", view::SETTINGS_SKILLS),
     );
     heard(&mut ui, None);
-    assert!(shows(&ui, "graphify"));
+    assert!(shows(&ui, "graphify") && shows(&ui, "from user"));
+    // Its "⋯" holds its states.
+    click(&store, &mut ui, "cz:more:claude:graphify");
+    assert!(shows(&ui, "Off"));
     assert_eq!(
         click(&store, &mut ui, "ext:skill:claude:graphify=off"),
         vec![op(ExtensionOp::SkillState {
@@ -1716,8 +1732,8 @@ fn mcp_lists_the_sessions_servers_and_reconnects_or_turns_one_on() {
             server("off", McpStatus::Disabled, None),
         ]),
     );
-    assert!(shows(&store, &ui, "Connected \u{b7} 2 tools"));
-    assert!(shows(&store, &ui, "Provided by the vercel plugin"));
+    // The list says where each comes from; how many tools, in its details.
+    assert!(shows(&store, &ui, "Provided by the vercel plugin") && shows(&store, &ui, "Plugin"));
     // Each action asks for the servers again, to show what it did.
     assert_eq!(
         click(
@@ -1751,7 +1767,9 @@ fn mcp_lists_the_sessions_servers_and_reconnects_or_turns_one_on() {
             name: vercel.into()
         }]
     );
-    assert!(shows(&store, &ui, "Opening sign-in"));
+    // Its row waits on a spinner, as Desktop's "Opening sign-in…".
+    let phase = |ui: &Ui| ui.mcp.as_ref().unwrap().phases.get(vercel).copied();
+    assert_eq!(phase(&ui), Some(crate::McpPhase::Opening));
     let heard = |ui: &mut Ui, event: AgentEvent| {
         ui.applied(&Event::Agent {
             session: 1,
@@ -1767,8 +1785,9 @@ fn mcp_lists_the_sessions_servers_and_reconnects_or_turns_one_on() {
             error: None,
         },
     );
-    assert!(shows(&store, &ui, "Complete sign-in in your browser"));
+    assert_eq!(phase(&ui), Some(crate::McpPhase::InBrowser));
     click(&store, &mut ui, &format!("{}{vercel}", view::MCP_ROW));
+    assert!(shows(&store, &ui, "Complete sign-in in your browser"));
     assert!(shows(&store, &ui, "Finished signing in from your browser?"));
     let mut connected = server(vercel, McpStatus::Connected, Some("vercel"));
     connected.tools[0] = quill_model::McpTool {

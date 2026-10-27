@@ -155,10 +155,20 @@ fn unreachable_page(key: &str) -> SettingsPage {
     }
 }
 
+/// The width a page of its own is laid out in (see [`dialog`]'s `own`), its 21 and 22 px of
+/// margin taken off, as Desktop's Customize pages.
+pub fn own_page_width(window: Size) -> f32 {
+    limn::Modal::fit_width(window.width, 1024.0) - NAV_WIDTH - 1.0 - 2.0 - 21.0 - 22.0
+}
+
+const NAV_WIDTH: f32 = 211.0;
+
 /// Settings over `base`, on the page `current`, or what `query` finds on every page. The
 /// column lists `pages` under each of `groups`' headings, by key; a page reports
-/// `settings:page:{key}` when picked. `failed` is why the last change was not kept, said
+/// `settings:page:{key}` when picked. A page in `own` draws itself (Desktop's Customize
+/// pages) and its search is its own. `failed` is why the last change was not kept, said
 /// over the page in Desktop's words.
+#[allow(clippy::too_many_arguments)]
 pub fn dialog(
     base: Element,
     pages: Vec<SettingsPage>,
@@ -166,13 +176,15 @@ pub fn dialog(
     current: &str,
     query: &str,
     failed: Option<&str>,
+    mut own: Vec<(String, Element)>,
     window: Size,
 ) -> Element {
     let palette = look::palette();
     let width = limn::Modal::fit_width(window.width, 1024.0);
     let height = (window.height - 72.0).clamp(320.0, 772.0);
-    let body_height = height - 45.0;
-    let nav_width = 211.0;
+    // Inside the card's outline, under its 44-high title and hairline.
+    let body_height = height - 45.0 - 2.0;
+    let nav_width = NAV_WIDTH;
     let inner = nav_width - 32.0;
     // The column: the search, then each group's pages.
     let search = limn::SearchField::new(
@@ -244,7 +256,7 @@ pub fn dialog(
             .size(Some(1.0), Some(body_height)),
     ]);
     // The page: its sections, or what the search found on every page.
-    let content_width = width - nav_width - 1.0;
+    let content_width = width - 2.0 - nav_width - 1.0;
     let rows_width = content_width - 6.0 - 16.0;
     let section = |title: String, rows: Vec<Setting>| {
         // The rows keep their own 10 px inset; the title takes it too, as Desktop aligns them.
@@ -288,7 +300,13 @@ pub fn dialog(
     };
     let query = query.trim().to_lowercase();
     let mut content = vec![];
-    if query.is_empty() {
+    let drawn = own
+        .iter()
+        .position(|(key, _)| key == current && query.is_empty());
+    if let Some(at) = drawn {
+        let (_, page) = own.swap_remove(at);
+        content.push(page);
+    } else if query.is_empty() {
         let page = pages
             .into_iter()
             .find(|p| p.key == current)
@@ -332,12 +350,18 @@ pub fn dialog(
         );
     }
     // Each page keeps its own place, and opens at its top.
+    // A page of its own sits 21 px in and 16 down, as Desktop's Customize pages.
+    let (inset, top) = if drawn.is_some() {
+        (21.0, 16.0)
+    } else {
+        (6.0, 18.0)
+    };
     let content = Element::scroll(
         format!("settings:content:{current}"),
         Element::row(vec![
-            hgap(6.0),
+            hgap(inset),
             Element::column(vec![
-                Element::spacer().size(None, Some(18.0)),
+                Element::spacer().size(None, Some(top)),
                 Element::column(content).gap(40.0),
                 Element::spacer().size(None, Some(24.0)),
             ]),
@@ -345,7 +369,7 @@ pub fn dialog(
     )
     .size(Some(content_width), Some(body_height))
     .background(look::settings_page());
-    let body = Element::row(vec![nav, content]).size(Some(width), Some(body_height));
+    let body = Element::row(vec![nav, content]).size(Some(width - 2.0), Some(body_height));
     limn::Modal::new(
         base,
         true,
@@ -360,6 +384,7 @@ pub fn dialog(
     )
     .width(width)
     .height(height)
+    .outline(look::settings_outline())
     .flush_body(true)
     .body(body)
     .render()
