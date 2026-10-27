@@ -3605,8 +3605,147 @@ fn slash_typed_mo_lists_model_first() {
     let ids = slash_ids(&store, &ui);
     assert_eq!(
         ids.first().map(String::as_str),
-        Some(format!("slash:quill:{}", view::MODEL_MENU).as_str())
+        Some("slash:quill:argument:model")
     );
+}
+
+#[test]
+fn the_pointer_over_a_palette_row_chooses_it() {
+    let (mut store, mut ui) = store_with_session();
+    with_commands(&mut store);
+    ui.prompt = "/".into();
+    let ids = slash_ids(&store, &ui);
+    crate::palette_hover(&store, &mut ui, &ids[2]);
+    assert_eq!(ui.slash_selected, 2);
+    // Something else under the pointer leaves the choice alone.
+    crate::palette_hover(&store, &mut ui, view::COMPOSER);
+    assert_eq!(ui.slash_selected, 2);
+}
+
+/// The session's agent offers two models; the first is the one the efforts and modes come from.
+fn with_models(store: &mut Store) {
+    agent(
+        store,
+        AgentEvent::Ready {
+            version: "2.1.310".into(),
+            capabilities: quill_model::AgentCapabilities {
+                models: vec![
+                    quill_model::ModelInfo {
+                        id: "opus".into(),
+                        name: "Opus 5.5".into(),
+                        efforts: vec!["low".into(), "medium".into(), "high".into()],
+                        modes: vec![],
+                    },
+                    quill_model::ModelInfo {
+                        id: "haiku".into(),
+                        name: "Haiku".into(),
+                        efforts: vec!["low".into(), "high".into()],
+                        modes: vec!["auto".into()],
+                    },
+                ],
+                modes: vec!["default".into(), "plan".into()],
+                ..Default::default()
+            },
+            mode: None,
+        },
+    );
+}
+
+#[test]
+fn slash_model_writes_its_argument_and_lists_the_models() {
+    let (mut store, mut ui) = store_with_session();
+    with_models(&mut store);
+    ui.prompt = "/mo".into();
+    assert_eq!(
+        slash_key(
+            &store,
+            &mut ui,
+            Some(view::COMPOSER),
+            &key(limn::Key::Enter)
+        ),
+        Some(vec![])
+    );
+    // The menu does not open: the prompt gets `/model `, and the palette lists the models.
+    assert_eq!(ui.restore_prompt.as_deref(), Some("/model "));
+    assert_eq!(ui.open_menu, None);
+    ui.prompt = "/model ".into();
+    assert_eq!(
+        slash_ids(&store, &ui),
+        ["slash:option:model:opus", "slash:option:model:haiku"]
+    );
+}
+
+#[test]
+fn slash_effort_argument_applies_the_first_match() {
+    let (mut store, mut ui) = store_with_session();
+    with_models(&mut store);
+    ui.model = Some("opus".into());
+    ui.prompt = "/effort hi".into();
+    assert_eq!(
+        slash_key(
+            &store,
+            &mut ui,
+            Some(view::COMPOSER),
+            &key(limn::Key::Enter)
+        ),
+        Some(vec![Intent::SetEffort {
+            session: 1,
+            effort: "high".into()
+        }])
+    );
+    assert_eq!(ui.effort.as_deref(), Some("high"));
+    // The token goes; the palette has nothing left to show.
+    assert_eq!(ui.restore_prompt.as_deref(), Some(""));
+}
+
+#[test]
+fn slash_tab_completes_a_command_that_takes_an_argument() {
+    let (store, mut ui) = store_with_session();
+    ui.prompt = "/mod".into();
+    assert_eq!(
+        slash_key(&store, &mut ui, Some(view::COMPOSER), &key(limn::Key::Tab)),
+        Some(vec![])
+    );
+    assert_eq!(ui.restore_prompt.as_deref(), Some("/model "));
+}
+
+#[test]
+fn slash_permissions_lists_the_offered_modes() {
+    let (mut store, mut ui) = store_with_session();
+    with_models(&mut store);
+    ui.model = Some("haiku".into());
+    ui.prompt = "/permissions ".into();
+    assert_eq!(
+        slash_ids(&store, &ui),
+        [
+            "slash:option:mode:default",
+            "slash:option:mode:plan",
+            "slash:option:mode:auto"
+        ]
+    );
+    ui.prompt = "/permissions pl".into();
+    assert_eq!(slash_ids(&store, &ui), ["slash:option:mode:plan"]);
+}
+
+#[test]
+fn a_menu_picked_from_the_palette_keeps_the_palette_shut_until_it_closes() {
+    let (store, mut ui) = store_with_session();
+    ui.prompt = "/usage".into();
+    assert!(slash_key(
+        &store,
+        &mut ui,
+        Some(view::COMPOSER),
+        &key(limn::Key::Enter)
+    )
+    .is_some());
+    assert_eq!(ui.open_menu, Some(view::USAGE_MENU));
+    // The composer keeps its text and the palette stays shut under the menu.
+    assert_eq!(ui.restore_prompt, None);
+    assert!(slash_ids(&store, &ui).is_empty());
+    // Closing the menu gives the prompt back without the token.
+    click(&store, &mut ui, view::USAGE_MENU);
+    assert_eq!(ui.open_menu, None);
+    assert_eq!(ui.restore_prompt.as_deref(), Some(""));
 }
 
 #[test]

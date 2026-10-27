@@ -829,11 +829,24 @@ fn line_changes(before: Option<&str>, after: Option<&str>) -> (usize, usize) {
     (added, left.len())
 }
 
-/// The folder the terminal and new sessions work in: the selected session's, else the chosen one.
 /// The texts of the notices, which Settings' descriptions of the same events show too.
 pub const NOTICE_PERMISSION: &str = "An agent needs your approval to use a tool.";
 pub const NOTICE_QUESTION: &str = "An agent is asking you to choose between options.";
 pub const NOTICE_DONE: &str = "An agent finished and is waiting for your input.";
+
+/// The pointer over a row of the open "/" or "@" list: that row becomes the chosen one, so the
+/// list has one highlight, as Desktop's palettes (the pointer moves the selection, the arrow
+/// keys move it from there).
+pub fn palette_hover(store: &Store, ui: &mut Ui, id: &str) {
+    let at = |rows: Option<(usize, Vec<(String, limn::SuggestionItem)>)>| {
+        rows.and_then(|(_, rows)| rows.iter().position(|(row, _)| row == id))
+    };
+    if let Some(index) = at(slash::open(store, ui)) {
+        ui.slash_selected = index;
+    } else if let Some(index) = at(mention::open(store, ui)) {
+        ui.mention_selected = index;
+    }
+}
 
 /// The banner an engine event earns, when its session is not in view: the level from
 /// Settings, the session's title and the notice's text. A permission request, a question
@@ -875,6 +888,7 @@ pub fn notice(
     Some((level, title, text.into()))
 }
 
+/// The folder the terminal and new sessions work in: the selected session's, else the chosen one.
 pub fn folder(store: &Store, ui: &Ui) -> PathBuf {
     ui.selected
         .and_then(|id| store.session(id))
@@ -1070,6 +1084,9 @@ pub struct Ui {
     /// Words the host puts back in the message box: a message rewound or forked from, or a
     /// slash command picked.
     pub restore_prompt: Option<String>,
+    /// A menu the "/" palette opened (`/usage`): when it closes, by a choice or Escape, the
+    /// prompt loses its `/` token and the composer takes the keys again.
+    pub menu_from_palette: bool,
     /// The slash palette's highlighted row, and the `/` (its byte index) Escape shut it at.
     pub slash_selected: usize,
     pub slash_dismissed: Option<usize>,
@@ -1727,6 +1744,7 @@ impl Ui {
             diff_menu: None,
             waiting_fork: false,
             restore_prompt: None,
+            menu_from_palette: false,
             slash_selected: 0,
             slash_dismissed: None,
             mention_selected: 0,
@@ -2274,6 +2292,12 @@ pub fn update(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Intent
         None => update_action(store, ui, action),
     };
     intents.extend(files::shown(store, ui));
+    if ui.menu_from_palette && ui.open_menu.is_none() {
+        ui.menu_from_palette = false;
+        ui.slash_dismissed = None;
+        ui.restore_prompt
+            .get_or_insert_with(|| slash::without_token(&ui.prompt));
+    }
     intents
 }
 

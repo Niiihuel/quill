@@ -5740,7 +5740,7 @@ pub(crate) fn menu_modes(session: Option<&Session>, ui: &Ui) -> Vec<String> {
 
 /// The models the menu lists: the session's agent's, or for a new session the last
 /// session's.
-fn offered_models<'a>(
+pub(crate) fn offered_models<'a>(
     store: &'a Store,
     session: Option<&'a Session>,
 ) -> &'a [quill_model::ModelInfo] {
@@ -5759,7 +5759,7 @@ fn offered_models<'a>(
 
 /// The models Desktop lists by number, the newest of each family, and the rest it keeps
 /// under "More models". The agent lists each family newest first.
-fn split_models(
+pub(crate) fn split_models(
     models: &[quill_model::ModelInfo],
 ) -> (Vec<&quill_model::ModelInfo>, Vec<&quill_model::ModelInfo>) {
     let mut families: Vec<&str> = vec![];
@@ -5810,7 +5810,7 @@ pub fn menu_digit(store: &Store, ui: &Ui, typed: &str) -> Option<String> {
 
 /// What each mode does, in Desktop's words, with its mark (3.6556.2 `shared-8` `zG`).
 /// Auto's says who decides without naming the agent.
-fn mode_entry(mode: &str) -> Option<(&'static str, &'static str)> {
+pub(crate) fn mode_entry(mode: &str) -> Option<(&'static str, &'static str)> {
     Some(match mode {
         "default" => ("Manual", "Always ask before making changes"),
         "acceptEdits" => ("Accept edits", "Automatically accept all file edits"),
@@ -5877,7 +5877,7 @@ fn mode_menu(session: Option<&Session>, ui: &Ui) -> Element {
 }
 
 /// Desktop's names for effort levels.
-fn effort_label(effort: &str) -> String {
+pub(crate) fn effort_label(effort: &str) -> String {
     match effort {
         "xhigh" => "Extra".into(),
         "medium" => "Medium".into(),
@@ -5949,7 +5949,7 @@ fn model_menu(
 }
 
 /// The model the composer runs: the one picked, matched by id or by name.
-fn current_model<'a>(
+pub(crate) fn current_model<'a>(
     store: &'a Store,
     session: Option<&'a Session>,
     ui: &Ui,

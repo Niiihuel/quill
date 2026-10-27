@@ -23,17 +23,37 @@ struct Own {
     action: String,
 }
 
-/// The `/` the caret is in, as its byte index and the query after it. The caret is taken to be
-/// at the end of the prompt, since limn's composer does not report it. The `/` must start the
-/// prompt or follow whitespace; the query has no whitespace and at most 50 characters.
-pub fn slash_query(prompt: &str) -> Option<(usize, &str)> {
-    let start = prompt
+/// The commands whose argument the palette completes, as their menus list it: a pick writes
+/// `/name ` and the rows are the options.
+const TAKES_ARGUMENT: [&str; 3] = ["model", "effort", "permissions"];
+
+/// The last whitespace-delimited token of `text`, as its byte index and the token.
+fn last_token(text: &str) -> (usize, &str) {
+    let start = text
         .char_indices()
         .rev()
         .find(|(_, c)| c.is_whitespace())
         .map_or(0, |(at, c)| at + c.len_utf8());
-    let query = prompt[start..].strip_prefix('/')?;
+    (start, &text[start..])
+}
+
+/// The `/` the caret is in, as its byte index and the query after it. The caret is taken to be
+/// at the end of the prompt, since limn's composer does not report it. The `/` must start the
+/// prompt or follow whitespace; the query has no whitespace and at most 50 characters.
+pub fn slash_query(prompt: &str) -> Option<(usize, &str)> {
+    let (start, token) = last_token(prompt);
+    let query = token.strip_prefix('/')?;
     (query.chars().count() <= MAX_QUERY).then_some((start, query))
+}
+
+/// The argument the prompt ends with, `/<command> <query>` for one of [`TAKES_ARGUMENT`]: the
+/// `/`'s byte index, the command and the query.
+fn argument(prompt: &str) -> Option<(usize, &str, &str)> {
+    let (start, query) = last_token(prompt);
+    let (at, word) = last_token(prompt[..start].trim_end());
+    let command = word.strip_prefix('/')?;
+    (TAKES_ARGUMENT.contains(&command) && query.chars().count() <= MAX_QUERY)
+        .then_some((at, command, query))
 }
 
 /// Desktop's rank (`BE`): 0 exact name, 1 exact alias, 2 name prefix, 3 alias prefix, 4 a
@@ -78,24 +98,25 @@ fn own_commands(session: Option<&Session>, ui: &Ui) -> Vec<Own> {
         description,
         action: action.to_owned(),
     };
+    // Their picks complete the argument instead of opening the menu (`argument:`).
     let mut commands = vec![
         own(
             "model",
             &[],
             "Set the model for this session",
-            view::MODEL_MENU,
+            "argument:model",
         ),
         own(
             "effort",
             &[],
             "Set the effort level for this session",
-            view::EFFORT_MENU,
+            "argument:effort",
         ),
         own(
             "permissions",
             &["allowed-tools"],
             "Change the permission mode",
-            view::MODE_MENU,
+            "argument:permissions",
         ),
     ];
     if view::offered_modes(session, ui).iter().any(|m| m == "plan") {
@@ -191,15 +212,109 @@ fn rows(store: &Store, ui: &Ui, query: &str) -> Vec<Row> {
     found.into_iter().map(|(_, row)| row).collect()
 }
 
-/// The palette while it is open: the `/`'s byte index and its rows. Shut when the `/` was
-/// dismissed, or when nothing matches.
+/// The options of the argument `command` that match `query`, as its menu lists them: the
+/// models, the effort levels or the permission modes. Each row's id is the id of the menu item
+/// a click on it reports, so a pick does what the click does.
+fn options(store: &Store, ui: &Ui, command: &str, query: &str) -> Vec<Row> {
+    let session = ui.selected.and_then(|id| store.session(id));
+    // The menu item's id, the value the query matches, the label, the description, and whether
+    // it is the one in use.
+    let options: Vec<(String, String, String, String, bool)> = match command {
+        "model" => {
+            let current = view::current_model(store, session, ui).map(|m| m.id.clone());
+            let (latest, more) = view::split_models(view::offered_models(store, session));
+            latest
+                .into_iter()
+                .chain(more)
+                .map(|m| {
+                    let in_use = current.as_ref() == Some(&m.id);
+                    (
+                        format!("model:{}", m.id),
+                        m.id.clone(),
+                        m.name.clone(),
+                        String::new(),
+                        in_use,
+                    )
+                })
+                .collect()
+        }
+        "effort" => view::efforts(store, ui)
+            .into_iter()
+            .map(|e| {
+                let about = if e == "medium" { "Recommended" } else { "" };
+                let in_use = ui.effort.as_ref() == Some(&e);
+                (
+                    format!("effort:{e}"),
+                    e.clone(),
+                    view::effort_label(&e),
+                    about.to_owned(),
+                    in_use,
+                )
+            })
+            .collect(),
+        _ => {
+            let current = session.map_or(ui.mode.as_str(), |s| s.mode.as_str());
+            view::menu_modes(session, ui)
+                .into_iter()
+                .filter_map(|m| {
+                    let (label, about) = view::mode_entry(&m)?;
+                    let in_use = m == current;
+                    Some((
+                        format!("mode:{m}"),
+                        m.clone(),
+                        label.to_owned(),
+                        about.to_owned(),
+                        in_use,
+                    ))
+                })
+                .collect()
+        }
+    };
+    let mut found: Vec<(u8, Row)> = Vec::new();
+    for (click, value, label, about, in_use) in options {
+        if let Some((rank, matched)) = rank(query, &label, &[value]) {
+            let id = format!("slash:option:{click}");
+            let item = SuggestionItem::new(id.clone(), label)
+                .description(about)
+                .detail(if in_use { "current" } else { "" })
+                .matched(matched.into_iter().collect());
+            found.push((rank, (id, item)));
+        }
+    }
+    found.sort_by_key(|(rank, _)| *rank);
+    found.into_iter().map(|(_, row)| row).collect()
+}
+
+/// The palette while it is open: the `/`'s byte index and its rows. In argument mode the rows
+/// are the command's options, and an empty list shuts it. Shut when the `/` was dismissed, or
+/// when nothing matches.
 pub(crate) fn open(store: &Store, ui: &Ui) -> Option<(usize, Vec<Row>)> {
-    let (at, query) = slash_query(&ui.prompt)?;
+    let (at, rows) = match argument(&ui.prompt) {
+        Some((at, command, query)) => (at, options(store, ui, command, query)),
+        None => {
+            let (at, query) = slash_query(&ui.prompt)?;
+            (at, rows(store, ui, query))
+        }
+    };
     if ui.slash_dismissed == Some(at) {
         return None;
     }
-    let rows = rows(store, ui, query);
     (!rows.is_empty()).then_some((at, rows))
+}
+
+/// The title of an argument's list: its command's name and description.
+fn argument_title(store: &Store, ui: &Ui) -> Option<String> {
+    let (_, command, _) = argument(&ui.prompt)?;
+    let session = ui.selected.and_then(|id| store.session(id));
+    own_commands(session, ui)
+        .into_iter()
+        .find(|own| own.name == command)
+        .map(|own| format!("{} — {}", own.name, own.description))
+}
+
+/// The prompt without the `/` token it ends with: where a menu the palette opened returns it.
+pub(crate) fn without_token(prompt: &str) -> String {
+    prompt[..last_token(prompt).0].trim_end().to_owned()
 }
 
 /// The composer `anchor` with the palette above it while it is open. Rows and width are
@@ -225,8 +340,11 @@ pub fn list(store: &Store, ui: &Ui, anchor: Element, width: f32) -> Element {
     .max_width(320.0)
     .width(width)
     .placement(limn::PopoverPlacement::TopStart);
-    // Until the session runs, the agent's commands are not known.
-    if ui
+    // An argument's list is titled by its command; until the session runs, the agent's
+    // commands are not known.
+    if let Some(title) = argument_title(store, ui) {
+        list = list.title(title);
+    } else if ui
         .selected
         .and_then(|id| store.session(id))
         .is_none_or(|s| s.capabilities.is_none())
@@ -262,8 +380,8 @@ pub fn key(
     match key {
         Key::ArrowDown => ui.slash_selected = (selected + 1).min(last),
         Key::ArrowUp => ui.slash_selected = selected.saturating_sub(1),
-        Key::Enter if !shift => return Some(pick(store, ui, &rows[selected].0)),
-        Key::Tab => return Some(pick(store, ui, &rows[selected].0)),
+        Key::Enter if !shift => return Some(pick(store, ui, at, &rows[selected].0)),
+        Key::Tab => return Some(pick(store, ui, at, &rows[selected].0)),
         Key::Escape => ui.slash_dismissed = Some(at),
         _ => return None,
     }
@@ -276,32 +394,47 @@ pub fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
         ui.slash_dismissed = slash_query(&ui.prompt).map(|(at, _)| at);
         return Some(vec![]);
     }
-    (id.starts_with("slash:agent:") || id.starts_with("slash:quill:")).then(|| pick(store, ui, id))
+    let row = ["slash:agent:", "slash:quill:", "slash:option:"]
+        .iter()
+        .any(|prefix| id.starts_with(prefix));
+    let (at, _) = open(store, ui)?;
+    row.then(|| pick(store, ui, at, id))
 }
 
-/// Picks row `id` in place of the `/query`. An agent command becomes `/name ` for the agent to
-/// read; a quill command leaves the prompt without the token and runs its action, as its
-/// button or menu item would.
-fn pick(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
-    let Some((at, _)) = slash_query(&ui.prompt) else {
-        return vec![];
-    };
+/// Picks row `id` for the `/` at `at`, in place of its token. An agent command, or a command
+/// that takes an argument, writes `/name ` for the agent or the options to read. An option or
+/// an action leaves the prompt without the token and runs what its button or menu item would.
+/// A menu with nothing to choose opens over the composer, which keeps out of its way until the
+/// menu closes and then gets the prompt back.
+fn pick(store: &Store, ui: &mut Ui, at: usize, id: &str) -> Vec<Intent> {
     let head = ui.prompt[..at].to_owned();
     ui.slash_selected = 0;
     ui.slash_dismissed = None;
-    if let Some(name) = id.strip_prefix("slash:agent:") {
+    let name = id
+        .strip_prefix("slash:agent:")
+        .or_else(|| id.strip_prefix("slash:quill:argument:"));
+    if let Some(name) = name {
         ui.restore_prompt = Some(format!("{head}/{name} "));
         return vec![];
     }
-    let Some(action) = id.strip_prefix("slash:quill:") else {
+    let Some(click) = id
+        .strip_prefix("slash:option:")
+        .or_else(|| id.strip_prefix("slash:quill:"))
+    else {
         return vec![];
     };
-    ui.restore_prompt = Some(head.trim_end().to_owned());
-    crate::update(
+    let intents = crate::update(
         store,
         ui,
         &UiAction::Clicked {
-            id: action.to_owned(),
+            id: click.to_owned(),
         },
-    )
+    );
+    if ui.open_menu.is_some() {
+        ui.slash_dismissed = Some(at);
+        ui.menu_from_palette = true;
+    } else {
+        ui.restore_prompt = Some(head.trim_end().to_owned());
+    }
+    intents
 }

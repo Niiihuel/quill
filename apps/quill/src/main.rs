@@ -858,6 +858,12 @@ impl eframe::App for App {
                 continue;
             }
             let event = item.event;
+            // The pointer over a row of the "/" or "@" list chooses it, as Desktop's.
+            if let limn::UiEvent::PointerMove(position) = &event {
+                if let Some(id) = self.tree.frame().hit_test(*position) {
+                    quill_ui::palette_hover(&self.store, &mut self.ui, id);
+                }
+            }
             // A right-click on a link of the conversation opens its own menu there.
             if let limn::UiEvent::ContextMenu { position } = &event {
                 let url = (self.tree.frame().hit_test(*position))
