@@ -724,6 +724,16 @@ impl eframe::App for App {
                 continue;
             }
             let event = item.event;
+            // A right-click on a link of the conversation opens its own menu there.
+            if let limn::UiEvent::ContextMenu { position } = &event {
+                let url = (self.tree.frame().hit_test(*position))
+                    .and_then(quill_ui::view::link_url)
+                    .map(str::to_owned);
+                if let Some(url) = url {
+                    self.ui.link_menu = Some((url, *position));
+                    continue;
+                }
+            }
             // Permission keys work wherever the focus is, the composer included.
             // Ctrl+U adds files; a digit picks that row of an open composer menu, as in Desktop.
             if matches!(
@@ -842,6 +852,23 @@ impl eframe::App for App {
                 if let Some(words) = quill_ui::copied_text(&self.store, id) {
                     ctx.copy_text(words);
                 }
+                // A link: its address copied, or opened on the computer, from its menu or, for
+                // what quill's browser and Files do not open (mail, another app's), its click.
+                if let Some(url) = id.strip_prefix(quill_ui::view::LINK_COPY) {
+                    ctx.copy_text(url.to_owned());
+                }
+                let elsewhere = quill_ui::view::link_url(id)
+                    .filter(|url| {
+                        url.contains("://")
+                            && !url.starts_with("http")
+                            && !url.starts_with("file://")
+                    })
+                    .or_else(|| {
+                        quill_ui::view::link_url(id).filter(|url| url.starts_with("mailto:"))
+                    });
+                if let Some(url) = id.strip_prefix(quill_ui::view::LINK_EXTERNAL).or(elsewhere) {
+                    open_external(url);
+                }
                 if let Some(code) = id.strip_prefix(quill_ui::view::COPY_CODE) {
                     ctx.copy_text(code.to_owned());
                 }
@@ -865,7 +892,7 @@ impl eframe::App for App {
                             std::thread::spawn(move || show_in_file_manager(&folder));
                         }
                         "default" => {
-                            let _ = std::process::Command::new("xdg-open").arg(&folder).spawn();
+                            open_external(&folder);
                         }
                         editor => {
                             open_in_editor(editor, self.handlers.get(editor), &folder, None, None)
@@ -887,7 +914,7 @@ impl eframe::App for App {
                             std::thread::spawn(move || show_in_file_manager(&folder));
                         }
                         "default" => {
-                            let _ = std::process::Command::new("xdg-open").arg(&path).spawn();
+                            open_external(&path);
                         }
                         editor => open_in_editor(
                             editor,
@@ -911,7 +938,7 @@ impl eframe::App for App {
                 // Settings' data folder shows in the desktop's own file manager.
                 if id == quill_ui::view::SETTINGS_STORAGE_OPEN {
                     if let Some((path, _)) = &self.ui.storage {
-                        let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+                        open_external(path);
                     }
                 }
                 match id.as_str() {
@@ -922,9 +949,7 @@ impl eframe::App for App {
                     }
                     // Desktop's "See all" opens the plan's usage page.
                     quill_ui::view::USAGE_ALL => {
-                        let _ = std::process::Command::new("xdg-open")
-                            .arg("https://claude.ai/settings/usage")
-                            .spawn();
+                        open_external("https://claude.ai/settings/usage");
                     }
                     quill_ui::view::SCROLL_END => {
                         if let Some(session) = self.ui.selected {
@@ -1080,6 +1105,29 @@ fn first_name() -> Option<String> {
     Some(chars.next()?.to_uppercase().chain(chars).collect())
 }
 
+/// A page, a file or a folder in what the computer opens it with: its default browser for
+/// an address, on Linux, Windows and macOS alike.
+fn open_external(target: impl AsRef<std::ffi::OsStr>) {
+    let target = target.as_ref();
+    let command = if cfg!(target_os = "windows") {
+        // `start`'s first quoted word is a window title; the empty one leaves the target alone.
+        std::process::Command::new("cmd")
+            .args(["/C", "start", ""])
+            .arg(target)
+            .spawn()
+    } else if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(target).spawn()
+    } else {
+        std::process::Command::new("xdg-open").arg(target).spawn()
+    };
+    if let Err(error) = command {
+        eprintln!(
+            "quill: could not open {}: {error}",
+            target.to_string_lossy()
+        );
+    }
+}
+
 /// `quill --open-url URL`: the agents' `$BROWSER` (the engine's bridge). A local page opens in
 /// the session's browser; anything else, or no quill to answer, in the desktop's own.
 fn open_url(url: &str) -> bool {
@@ -1182,9 +1230,7 @@ fn show_in_file_manager(folder: &std::path::Path) {
         .status()
         .is_ok_and(|s| s.success());
     if !shown {
-        let _ = std::process::Command::new("xdg-open")
-            .arg(folder.parent().unwrap_or(folder))
-            .spawn();
+        open_external(folder.parent().unwrap_or(folder));
     }
 }
 

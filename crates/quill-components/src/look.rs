@@ -7,17 +7,18 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 static DARK: AtomicBool = AtomicBool::new(false);
 /// The conversation's text size and column, as Settings chose them; read every frame.
-static CHAT: AtomicU32 = AtomicU32::new(16);
+static CHAT: AtomicU32 = AtomicU32::new(14);
 static WIDE: AtomicBool = AtomicBool::new(false);
 
-/// The conversation's words at Settings' "Transcript text size": Desktop's Medium is 16
-///; Small and Large are inferred.
+/// The conversation's words at Settings' "Transcript text size", as Desktop sizes them.
 pub fn set_text_size(size: quill_model::TextSize) {
     use quill_model::TextSize::*;
+    // Desktop 3.6556.2's `--chat-body` for `data-chat-text-size` s, m and l (`.875rem` the
+    // default), the transcript's and the composer's.
     let px = match size {
-        Small => 15,
-        Medium => 16,
-        Large => 18,
+        Small => 13,
+        Medium => 14,
+        Large => 15,
     };
     CHAT.store(px, Ordering::Relaxed);
 }

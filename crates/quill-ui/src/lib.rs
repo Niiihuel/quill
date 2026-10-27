@@ -828,6 +828,8 @@ pub struct Ui {
     /// The effort new sessions start with and the selected one runs at.
     pub effort: Option<String>,
     pub open_menu: Option<&'static str>,
+    /// A link right-clicked in the conversation: its address and where the menu opens.
+    pub link_menu: Option<(String, limn::Point)>,
     /// The editors found on the computer, for Open in.
     pub editors: Vec<Editor>,
     pub expanded: Vec<String>,
@@ -1477,6 +1479,7 @@ impl Ui {
             model: None,
             effort: None,
             open_menu: None,
+            link_menu: None,
             editors: vec![],
             expanded: vec![],
             waiting: None,
@@ -2689,6 +2692,44 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
                 ..ui.settings.clone()
             })];
         }
+        return vec![];
+    }
+    // A link in the conversation: a page opens in the session's browser, a file of its folder
+    // in Files; the host opens what else it names (mail, another app's) on the computer.
+    if let Some(url) = view::link_url(id).or_else(|| id.strip_prefix(view::LINK_BROWSER)) {
+        ui.link_menu = None;
+        let Some(session) = ui.selected.and_then(|s| store.session(s)) else {
+            return vec![];
+        };
+        if url.starts_with("http://") || url.starts_with("https://") {
+            ui.open_pane(Pane::Browser);
+            let op = if session.browser.tabs.is_empty() {
+                BrowserOp::Open {
+                    url: Some(url.to_owned()),
+                }
+            } else {
+                BrowserOp::NewTab {
+                    url: Some(url.to_owned()),
+                }
+            };
+            return vec![Intent::Browser {
+                session: session.id,
+                op,
+            }];
+        }
+        let path = url.strip_prefix("file://").unwrap_or(url);
+        if !path.contains("://") && !path.starts_with("mailto:") {
+            let id = format!("{}1:{path}", view::OPEN_HERE);
+            return files::action(store, ui, &limn::UiAction::Clicked { id }).unwrap_or_default();
+        }
+        return vec![];
+    }
+    if id.starts_with(view::LINK_EXTERNAL)
+        || id.starts_with(view::LINK_COPY)
+        || id == format!("{}:dismiss", view::LINK_MENU)
+    {
+        // The host opens or copies it; the menu closes.
+        ui.link_menu = None;
         return vec![];
     }
     if id == view::TASKS_OPEN {

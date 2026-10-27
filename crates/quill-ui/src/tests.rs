@@ -1199,6 +1199,31 @@ fn a_fork_starts_with_its_parents_conversation_and_opens() {
 }
 
 #[test]
+fn a_link_opens_in_the_sessions_browser_and_its_menu_closes() {
+    let (store, mut ui) = store_with_session();
+    assert_eq!(
+        view::link_url("link:ab12:7:https://example.com/a:b"),
+        Some("https://example.com/a:b")
+    );
+    assert_eq!(
+        click(&store, &mut ui, "link:ab12:7:https://example.com"),
+        vec![Intent::Browser {
+            session: 1,
+            op: quill_model::BrowserOp::Open {
+                url: Some("https://example.com".into())
+            }
+        }]
+    );
+    assert!(ui.pane_open(Pane::Browser));
+    ui.link_menu = Some(("https://example.com".into(), limn::Point::new(10.0, 10.0)));
+    assert_eq!(
+        click(&store, &mut ui, "link-copy:https://example.com"),
+        vec![]
+    );
+    assert!(ui.link_menu.is_none());
+}
+
+#[test]
 fn each_session_keeps_its_model_and_effort() {
     let (mut store, mut ui) = store_with_session();
     store.apply(Event::SessionCreated {
@@ -2508,7 +2533,7 @@ fn settings_save_through_the_engine_and_shape_what_comes_next() {
     heard(&mut ui, settings);
     click(&store, &mut ui, view::NEW_SESSION);
     assert_eq!(ui.model.as_deref(), Some("haiku"));
-    assert_eq!(look::chat(), 18.0);
+    assert_eq!(look::chat(), 15.0);
     look::set_text_size(TextSize::Medium);
     // The page draws, the search finds across pages, and bypass is offered once allowed.
     let window = limn::Size::new(1408.0, 844.0);

@@ -30,6 +30,21 @@ pub const DIFF_TOGGLE: &str = "diff:toggle";
 /// (`{line}:{path}`), its Open in menu, and a place from it (`{place}:{line}:{path}`).
 pub const DIFF_FOLD: &str = "diff:fold:";
 pub const OPEN_HERE: &str = "doc:open-at:";
+/// A link in the conversation, `{LINK}{scope}:{offset}:{url}` as limn's Markdown writes it,
+/// its right-click menu, and what the menu does with its address.
+pub const LINK: &str = "link:";
+pub const LINK_MENU: &str = "link-menu";
+pub const LINK_BROWSER: &str = "link-browser:";
+pub const LINK_EXTERNAL: &str = "link-external:";
+pub const LINK_COPY: &str = "link-copy:";
+
+/// The address of a link's action, `{LINK}{scope}:{offset}:{url}`.
+pub fn link_url(id: &str) -> Option<&str> {
+    let mut parts = id.strip_prefix(LINK)?.splitn(3, ':');
+    parts.next()?;
+    parts.next()?;
+    parts.next()
+}
 pub const OPEN_FILE_MENU: &str = "open-file-menu:";
 pub const OPEN_FILE_IN: &str = "open-file-in:";
 /// The top bar's "Open in" menu, of the folder on screen.
@@ -507,6 +522,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     // The hidden sidebar peeking over the page [3.6556.2 `shared-16`].
     let root = ui.sidebar.peeking(root, with_line, window);
     let root = search_dialog(store, ui, root, palette);
+    let root = link_menu(ui, root, window);
     // The Files pane's naming dialog, its trash's question, and a tab's edits to give up.
     let root = match ui.files_pane() {
         Some(pane) if ui.pane_open(Pane::Files) => files_dialogs(pane, root),
@@ -2967,6 +2983,40 @@ fn new_divider(column: f32) -> Element {
     .gap(10.0)
 }
 
+/// A link's right-click menu, where it was clicked: the page in quill's browser, in the
+/// computer's own, or its address copied.
+fn link_menu(ui: &Ui, base: Element, window: Size) -> Element {
+    let Some((url, at)) = &ui.link_menu else {
+        return base;
+    };
+    let entries = vec![
+        limn::DropdownMenuItem::new(format!("{LINK_BROWSER}{url}"), "Open in Browser")
+            .icon(icons::of(icons::GLOBE))
+            .into(),
+        limn::DropdownMenuItem::new(format!("{LINK_EXTERNAL}{url}"), "Open in default browser")
+            .icon(icons::of(icons::ARROW_OUT))
+            .into(),
+        limn::DropdownMenuEntry::Separator,
+        limn::DropdownMenuItem::new(format!("{LINK_COPY}{url}"), "Copy link")
+            .icon(icons::of(icons::COPY))
+            .into(),
+    ];
+    let anchor = Element::spacer().size(Some(1.0), Some(1.0));
+    let menu = menu(
+        anchor,
+        entries,
+        true,
+        LINK_MENU,
+        240.0,
+        limn::PopoverPlacement::BottomStart,
+    );
+    let placed = Element::column(vec![
+        Element::spacer().size(None, Some(at.y.max(0.0))),
+        Element::row(vec![hgap(at.x.max(0.0)), menu]),
+    ]);
+    Element::stack(vec![base, placed]).size(Some(window.width), Some(window.height))
+}
+
 /// How long a copy button shows its check, as Desktop's (3.6556.2 `VA`).
 pub const COPIED_FOR: std::time::Duration = std::time::Duration::from_millis(1200);
 
@@ -3306,6 +3356,7 @@ fn item(
                 .width(column)
                 .font_size(chat())
                 .colors(colors)
+                .link_action_prefix(LINK)
                 .code_label(false)
                 .code_fit_content(true)
                 .code_copy_action_prefix(COPY_CODE)
