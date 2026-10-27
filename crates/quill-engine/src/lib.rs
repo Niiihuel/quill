@@ -588,6 +588,18 @@ impl Router {
             agent: new.agent.clone(),
             cwd: new.cwd.clone(),
         });
+        if let Some(model) = &new.model {
+            (self.sink)(Event::ModelChosen {
+                session: id,
+                model: model.clone(),
+            });
+        }
+        if let Some(effort) = &new.effort {
+            (self.sink)(Event::EffortChosen {
+                session: id,
+                effort: effort.clone(),
+            });
+        }
         for event in about(id) {
             (self.sink)(event);
         }
@@ -764,10 +776,25 @@ impl Router {
             Intent::SetMode { session, mode } => {
                 (session, Input::Command(AgentCommand::SetMode(mode)))
             }
+            // Kept with the session, for its next launch, a restart and a fork of it.
             Intent::SetModel { session, model } => {
+                if let Some(new) = self.started.get_mut(&session) {
+                    new.model = Some(model.clone());
+                }
+                (self.sink)(Event::ModelChosen {
+                    session,
+                    model: model.clone(),
+                });
                 (session, Input::Command(AgentCommand::SetModel(model)))
             }
             Intent::SetEffort { session, effort } => {
+                if let Some(new) = self.started.get_mut(&session) {
+                    new.effort = Some(effort.clone());
+                }
+                (self.sink)(Event::EffortChosen {
+                    session,
+                    effort: effort.clone(),
+                });
                 (session, Input::Command(AgentCommand::SetEffort(effort)))
             }
             Intent::ContextUsage { session } => {
@@ -1437,6 +1464,8 @@ impl Restored {
         for event in events {
             match event {
                 Event::RewoundTo { at, .. } => rewound = Some(at.clone()),
+                Event::ModelChosen { model, .. } => new.model = Some(model.clone()),
+                Event::EffortChosen { effort, .. } => new.effort = Some(effort.clone()),
                 Event::Queued { .. } => rewound = None,
                 Event::Linked {
                     parent: p,
@@ -1745,6 +1774,12 @@ impl Actor {
                 Input::Rewind(request) => self.rewind(request).await,
                 Input::RewindTo(request, at) => self.rewind_to(request, at).await,
                 Input::Command(command) => {
+                    // A launch after this one runs at what was chosen last.
+                    match &command {
+                        AgentCommand::SetModel(model) => self.spec.model = Some(model.clone()),
+                        AgentCommand::SetEffort(effort) => self.spec.effort = Some(effort.clone()),
+                        _ => {}
+                    }
                     let decided = match &command {
                         AgentCommand::Decide { id, decision } => Some(Event::Decided {
                             session: self.id,
@@ -2213,6 +2248,47 @@ mod tests {
         std::fs::write(&path, r#"{"wide": true, "someday": 1}"#).unwrap();
         assert!(read_settings(Some(&path)).wide);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_restored_session_goes_on_with_its_model_effort_and_rewind() {
+        let events = vec![
+            Event::SessionCreated {
+                session: 1,
+                agent: "claude".into(),
+                cwd: "/work".into(),
+            },
+            Event::ModelChosen {
+                session: 1,
+                model: "opus".into(),
+            },
+            Event::ModelChosen {
+                session: 1,
+                model: "haiku".into(),
+            },
+            Event::EffortChosen {
+                session: 1,
+                effort: "low".into(),
+            },
+            Event::RewoundTo {
+                session: 1,
+                request: "r2".into(),
+                at: Some("m1".into()),
+            },
+        ];
+        let restored = Restored::from(&events).unwrap();
+        assert_eq!(restored.new.model.as_deref(), Some("haiku"));
+        assert_eq!(restored.new.effort.as_deref(), Some("low"));
+        assert_eq!(restored.rewound, Some(Some("m1".into())));
+        // A message after the rewind wrote its own branch: nothing is pending any more.
+        let mut sent = events;
+        sent.push(Event::Queued {
+            session: 1,
+            request: "r3".into(),
+            text: "again".into(),
+            at: None,
+        });
+        assert_eq!(Restored::from(&sent).unwrap().rewound, None);
     }
 
     #[test]

@@ -1199,6 +1199,78 @@ fn a_fork_starts_with_its_parents_conversation_and_opens() {
 }
 
 #[test]
+fn each_session_keeps_its_model_and_effort() {
+    let (mut store, mut ui) = store_with_session();
+    store.apply(Event::SessionCreated {
+        session: 2,
+        agent: "claude".into(),
+        cwd: "/work".into(),
+    });
+    for (session, model, effort) in [(1, "opus", "high"), (2, "haiku", "low")] {
+        store.apply(Event::ModelChosen {
+            session,
+            model: model.into(),
+        });
+        store.apply(Event::EffortChosen {
+            session,
+            effort: effort.into(),
+        });
+    }
+    click(&store, &mut ui, "session:2");
+    assert_eq!(
+        (ui.model.as_deref(), ui.effort.as_deref()),
+        (Some("haiku"), Some("low"))
+    );
+    click(&store, &mut ui, "session:1");
+    assert_eq!(
+        (ui.model.as_deref(), ui.effort.as_deref()),
+        (Some("opus"), Some("high"))
+    );
+}
+
+#[test]
+fn a_changed_file_folds_and_opens_in_files_or_elsewhere() {
+    use quill_model::{ChangeKind, FileEffect};
+    let (mut store, mut ui) = store_with_session();
+    store.apply(Event::Changes {
+        session: 1,
+        request: "r1".into(),
+        files: vec![FileEffect {
+            path: "src/a.rs".into(),
+            kind: ChangeKind::Modified,
+            added: 1,
+            removed: 0,
+            patch: "@@ -1,1 +4,2 @@\n a\n+b\n".into(),
+        }],
+        snapshot: "s".into(),
+    });
+    click(&store, &mut ui, "changes:r1:view");
+    settle(&store, &mut ui);
+    let window = limn::Size::new(1408.0, 844.0);
+    let shows = |ui: &Ui, id: &str| {
+        let frame = UiTree::new(view(&store, ui, window)).layout(window);
+        frame.regions.iter().any(|r| r.id == id)
+    };
+    assert!(shows(&ui, "diff:0"));
+    click(&store, &mut ui, "diff:fold:src/a.rs");
+    assert!(!shows(&ui, "diff:0"));
+    click(&store, &mut ui, "diff:fold:src/a.rs");
+    assert!(shows(&ui, "diff:0") && shows(&ui, "doc:open-at:4:src/a.rs"));
+    // Its menu lists the session's places for this file and line.
+    click(&store, &mut ui, "open-file-menu:src/a.rs");
+    assert_eq!(ui.diff_menu.as_deref(), Some("src/a.rs"));
+    // In quill, it opens in the Files pane, the caret going to its line once read.
+    assert!(
+        click(&store, &mut ui, "doc:open-at:4:src/a.rs").contains(&Intent::ReadFile {
+            session: 1,
+            path: "src/a.rs".into()
+        })
+    );
+    assert!(ui.pane_open(Pane::Files));
+    assert_eq!(ui.files[&1].goto, Some(("src/a.rs".into(), 3)));
+}
+
+#[test]
 fn background_tasks_list_running_and_finished_stop_and_clear() {
     let (mut store, mut ui) = store_with_session();
     for (id, kind) in [("t1", "agent"), ("t2", "command")] {

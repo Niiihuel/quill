@@ -872,21 +872,31 @@ impl eframe::App for App {
                         }
                     }
                 }
-                // A changed file's button: that file at its first changed line.
-                if let Some((line, path)) = id
-                    .strip_prefix(quill_ui::view::OPEN_FILE)
+                // A changed file from its Open in menu: at its line, in an editor, or the
+                // desktop's default app, or shown in its folder.
+                if let Some((place, (line, path))) = id
+                    .strip_prefix(quill_ui::view::OPEN_FILE_IN)
                     .and_then(|rest| rest.split_once(':'))
+                    .and_then(|(place, rest)| Some((place, rest.split_once(':')?)))
                 {
                     let root = quill_ui::folder(&self.store, &self.ui);
                     let path = root.join(path);
-                    let editor = self.ui.settings.editor.clone();
-                    open_in_editor(
-                        &editor,
-                        self.handlers.get(&editor),
-                        &root,
-                        Some(&path),
-                        line.parse().ok(),
-                    );
+                    match place {
+                        "files" => {
+                            let folder = path.parent().map_or(root.clone(), |p| p.to_path_buf());
+                            std::thread::spawn(move || show_in_file_manager(&folder));
+                        }
+                        "default" => {
+                            let _ = std::process::Command::new("xdg-open").arg(&path).spawn();
+                        }
+                        editor => open_in_editor(
+                            editor,
+                            self.handlers.get(editor),
+                            &root,
+                            Some(&path),
+                            line.parse().ok(),
+                        ),
+                    }
                 }
                 // Settings › Browser: the Chromium to run, from the platform's dialog.
                 if id == quill_ui::view::BROWSER_PROGRAM_CHOOSE {

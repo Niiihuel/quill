@@ -100,6 +100,9 @@ pub struct Session {
     pub items: Vec<Item>,
     pub capabilities: Option<AgentCapabilities>,
     pub mode: String,
+    /// The model and the effort it runs at, as last chosen for it.
+    pub model: Option<String>,
+    pub effort: Option<String>,
     /// The first message, as the sidebar's title until the agent names the session.
     pub title: String,
     pub branch: Option<String>,
@@ -226,6 +229,8 @@ impl Store {
                 items: vec![],
                 capabilities: None,
                 mode: "default".into(),
+                model: None,
+                effort: None,
                 title: String::new(),
                 branch: None,
                 context_tokens: 0,
@@ -376,6 +381,16 @@ impl Store {
             Event::Archived { session, archived } => {
                 if let Some(s) = self.session_mut(session) {
                     s.archived = archived;
+                }
+            }
+            Event::ModelChosen { session, model } => {
+                if let Some(s) = self.session_mut(session) {
+                    s.model = Some(model);
+                }
+            }
+            Event::EffortChosen { session, effort } => {
+                if let Some(s) = self.session_mut(session) {
+                    s.effort = Some(effort);
                 }
             }
             // "Rewind to here": the message and all after it go.
@@ -905,6 +920,8 @@ pub struct Ui {
     pub live: std::collections::HashSet<SessionId>,
     /// The group header whose filter menu is open.
     pub filter_menu: Option<String>,
+    /// The changed file of the diff whose Open in menu is open.
+    pub diff_menu: Option<String>,
     /// Whether the menu of the sidebar's foot, the person's, is open.
     pub account_menu: bool,
     /// A fork was asked for: the session the engine makes next is it, and opens.
@@ -1506,6 +1523,7 @@ impl Ui {
             ascending: false,
             live: Default::default(),
             filter_menu: None,
+            diff_menu: None,
             waiting_fork: false,
             restore_prompt: None,
             cleared_tasks: Default::default(),
@@ -2615,6 +2633,16 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
             ui.mark_new(store, session);
         }
         ui.selected = Some(session);
+        // The composer shows the model and effort this session runs at, as Desktop's does;
+        // a session from before they were kept leaves them as they are.
+        if let Some(s) = store.session(session) {
+            if s.model.is_some() {
+                ui.model = s.model.clone();
+            }
+            if s.effort.is_some() {
+                ui.effort = s.effort.clone();
+            }
+        }
         // Going somewhere from the peek puts it away, as Desktop's does ("navigated").
         ui.sidebar.peek = false;
         // A session beside another goes with it: shown on its own, or from elsewhere, it closes.
@@ -2633,6 +2661,35 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
             });
         }
         return intents;
+    }
+    if id.starts_with(view::DIFF_FOLD) {
+        match ui.expanded.iter().position(|k| k == id) {
+            Some(at) => drop(ui.expanded.remove(at)),
+            None => ui.expanded.push(id.to_owned()),
+        }
+        return vec![];
+    }
+    if let Some(rest) = id.strip_prefix(view::OPEN_FILE_MENU) {
+        match rest.strip_suffix(":dismiss") {
+            Some(path) if ui.diff_menu.as_deref() == Some(path) => ui.diff_menu = None,
+            Some(_) => {}
+            None => ui.diff_menu = (ui.diff_menu.as_deref() != Some(rest)).then(|| rest.to_owned()),
+        }
+        return vec![];
+    }
+    // The host opens the file there; an editor chosen is the one Open in offers first next.
+    if let Some((place, _)) = id
+        .strip_prefix(view::OPEN_FILE_IN)
+        .and_then(|rest| rest.split_once(':'))
+    {
+        ui.diff_menu = None;
+        if !matches!(place, "default" | "files") && place != ui.settings.editor {
+            return vec![Intent::SaveSettings(quill_model::Settings {
+                editor: place.to_owned(),
+                ..ui.settings.clone()
+            })];
+        }
+        return vec![];
     }
     if id == view::TASKS_OPEN {
         ui.open_pane(Pane::Tasks);

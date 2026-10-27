@@ -648,6 +648,16 @@ pub enum Event {
         request: RequestId,
         at: Option<String>,
     },
+    /// The model or the effort the session runs at, kept so it goes on with them: chosen
+    /// when it was made and each time the person changed them.
+    ModelChosen {
+        session: SessionId,
+        model: String,
+    },
+    EffortChosen {
+        session: SessionId,
+        effort: String,
+    },
     /// The session's files were put back as they were before `request`.
     Rewound {
         session: SessionId,
@@ -792,6 +802,8 @@ impl Event {
             | Event::Changes { session, .. }
             | Event::Rewound { session, .. }
             | Event::RewoundTo { session, .. }
+            | Event::ModelChosen { session, .. }
+            | Event::EffortChosen { session, .. }
             | Event::Decided { session, .. }
             | Event::WorkingTree { session, .. }
             | Event::Environment { session, .. }

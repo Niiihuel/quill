@@ -377,6 +377,34 @@ pub(crate) fn action(store: &Store, ui: &mut Ui, action: &UiAction) -> Option<Ve
             let (id, root) = (session.id, session.cwd.clone());
             return Some(open_in(ui, id, &root, path));
         }
+        // A changed file at its line (one-based), its path from the folder or absolute.
+        if let Some((line, path)) = (id.strip_prefix(view::OPEN_HERE))
+            .and_then(|rest| rest.split_once(':'))
+            .and_then(|(line, path)| Some((line.parse::<usize>().ok()?, path)))
+        {
+            let session = ui.selected.and_then(|s| store.session(s))?;
+            let (id, root) = (session.id, session.cwd.clone());
+            let path = Path::new(path)
+                .strip_prefix(&root)
+                .unwrap_or(Path::new(path));
+            let path = path.to_string_lossy().into_owned();
+            let out = open_in(ui, id, &root, &path);
+            let row = line.saturating_sub(1);
+            let pane = ui.files.get_mut(&id)?;
+            match pane
+                .tabs
+                .iter()
+                .find(|d| d.path == path && d.editor.is_some())
+            {
+                Some(document) => {
+                    go_to(document, row);
+                    ui.files_reveal = Some(editor_id(&path));
+                }
+                None => pane.goto = Some((path.clone(), row)),
+            }
+            ui.files_focus = Some(editor_id(&path));
+            return Some(out);
+        }
     }
     if !ui.pane_open(Pane::Files) {
         return None;
