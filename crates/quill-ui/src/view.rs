@@ -82,6 +82,10 @@ pub const SCROLL_END: &str = "scroll-end";
 pub const COPY_CODE: &str = "copy-code:";
 /// "+" menu actions the host carries out: pickers for @-mentions, and the slash.
 pub const ATTACH_FILES: &str = "attach:files";
+/// The image viewer's close control (also Escape and a click on the backdrop), and its annotate
+/// control, which only a composer image has.
+pub const IMAGE_CLOSE: &str = "image:close";
+pub const IMAGE_ANNOTATE: &str = "image:annotate";
 pub const ATTACH_FOLDER: &str = "attach:folder";
 pub const SLASH: &str = "attach:slash";
 pub const TERMINAL_TOGGLE: &str = "terminal:toggle";
@@ -556,6 +560,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     let root = marketplace_dialog(ui, root, palette);
     let root = server_dialog(ui, root, palette);
     let root = removing_dialog(ui, root);
+    let root = image_viewer(ui, root, window, palette);
     // Desktop's own wording for both closes (Ion `cccc2cf0a`,) and for a delete
     //, less its vendor's servers: quill forgets only its own record.
     let tabs = &ui.terminal.tabs;
@@ -3063,6 +3068,31 @@ fn new_divider(column: f32) -> Element {
         hline(side, look::spark()).centered_y(),
     ])
     .gap(10.0)
+}
+
+/// The image viewer over the window: the picture at full size once decoded, else its thumbnail,
+/// with its file name and, for a composer image, the annotate control.
+fn image_viewer(ui: &Ui, base: Element, window: Size, palette: ComponentPalette) -> Element {
+    let Some(viewer) = &ui.viewer else {
+        return base;
+    };
+    let name = viewer
+        .path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let picture = ui.full.get(&viewer.path).or(ui.thumbs.get(&viewer.path));
+    let mut shown = limn::ImageViewer::new(base, true, name, IMAGE_CLOSE, palette).viewport(window);
+    if let Some(picture) = picture {
+        shown = shown.image(picture.clone());
+    }
+    if let Some(origin) = viewer.origin {
+        shown = shown.origin(origin);
+    }
+    if viewer.annotatable {
+        shown = shown.action(IMAGE_ANNOTATE, limn::Icon::Edit, "Annotate image");
+    }
+    shown.render()
 }
 
 /// A link's right-click menu, where it was clicked: the page in quill's browser, in the

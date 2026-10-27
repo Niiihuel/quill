@@ -52,29 +52,49 @@ pub fn paste(pasted: Arc<Mutex<Vec<PathBuf>>>, ctx: egui::Context) {
 /// The thumbnail of an image as limn takes it: 256 px at most, PNG. `None` when the file does
 /// not decode, and the tile keeps its file icon.
 pub fn thumbnail(path: &Path) -> Option<RasterImage> {
+    scaled(path, 256)
+}
+
+/// The picture the viewer shows: 2048 px at most on its long side. PNG, or JPEG at quality 90
+/// when the PNG would pass limn's 8 MiB cap.
+pub fn full(path: &Path) -> Option<RasterImage> {
+    scaled(path, 2048)
+}
+
+/// The image at most `side` px on each side, as limn takes it.
+fn scaled(path: &Path, side: u32) -> Option<RasterImage> {
     use base64::Engine;
     use sha2::Digest;
+    const LIMN_CAP: usize = 8 * 1024 * 1024;
     let decoded = image::ImageReader::open(path)
         .ok()?
         .with_guessed_format()
         .ok()?
         .decode()
-        .ok()?;
+        .ok()?
+        .thumbnail(side, side);
     let mut png = Vec::new();
     decoded
-        .thumbnail(256, 256)
         .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
         .ok()?;
-    let digest: String = sha2::Sha256::digest(&png)
+    let (format, bytes) = if png.len() <= LIMN_CAP {
+        (RasterImageFormat::Png, png)
+    } else {
+        let mut jpeg = std::io::Cursor::new(Vec::new());
+        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 90);
+        decoded.to_rgb8().write_with_encoder(encoder).ok()?;
+        (RasterImageFormat::Jpeg, jpeg.into_inner())
+    };
+    let digest: String = sha2::Sha256::digest(&bytes)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
-    let data = base64::engine::general_purpose::STANDARD.encode(&png);
+    let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
     let alt = path.file_name()?.to_string_lossy().into_owned();
     RasterImage::new(
         digest,
-        RasterImageFormat::Png,
-        u32::try_from(png.len()).ok()?,
+        format,
+        u32::try_from(bytes.len()).ok()?,
         data.into(),
         alt,
     )

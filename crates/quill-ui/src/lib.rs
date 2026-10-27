@@ -962,6 +962,17 @@ pub struct Editor {
 /// image files.
 pub type Waiting = (String, Vec<(SessionId, String)>, Vec<PathBuf>);
 
+/// The image the viewer shows over the window.
+pub struct Viewer {
+    /// The image file.
+    pub path: PathBuf,
+    /// The rectangle of its tile in the window, which the picture grows from. The host fills it,
+    /// since only the frame knows where the tile is.
+    pub origin: Option<limn::Rect>,
+    /// Whether the image is still in the composer, so it can be annotated; a sent one is not.
+    pub annotatable: bool,
+}
+
 /// What the person is doing, apart from what the engine knows.
 pub struct Ui {
     pub selected: Option<SessionId>,
@@ -986,6 +997,13 @@ pub struct Ui {
     /// the host decodes for the tiles and the messages shown.
     pub images: Vec<PathBuf>,
     pub thumbs: std::collections::HashMap<PathBuf, limn::RasterImage>,
+    /// The image the viewer shows, if any.
+    pub viewer: Option<Viewer>,
+    /// The images at up to 2048 px for the viewer, decoded off the window's thread once it opens
+    /// on them; until then it shows the thumbnail.
+    pub full: std::collections::HashMap<PathBuf, limn::RasterImage>,
+    /// The composer's image being annotated. The editor is not built yet.
+    pub annotating: Option<PathBuf>,
     /// Why the last image was left out, until the composer's images change again.
     pub image_notice: Option<String>,
     /// The request whose changes the diff pane shows.
@@ -1697,6 +1715,9 @@ impl Ui {
             waiting: None,
             images: vec![],
             thumbs: Default::default(),
+            viewer: None,
+            full: Default::default(),
+            annotating: None,
             image_notice: None,
             diff: None,
             panes: vec![],
@@ -2805,8 +2826,45 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         }
         return vec![];
     }
-    // The viewer comes next: a tile's click does nothing yet.
-    if id.starts_with("image:open:") || id.starts_with("image:msg:") {
+    // The viewer's close, Escape and backdrop all report the close control.
+    if id == view::IMAGE_CLOSE {
+        ui.viewer = None;
+        return vec![];
+    }
+    if id == view::IMAGE_ANNOTATE {
+        // Desktop closes the viewer as the editor opens; the editor itself is the next task.
+        ui.annotating = ui.viewer.take().map(|viewer| viewer.path);
+        return vec![];
+    }
+    if let Some(index) = id
+        .strip_prefix("image:open:")
+        .and_then(|i| i.parse::<usize>().ok())
+    {
+        if let Some(path) = ui.images.get(index).cloned() {
+            ui.viewer = Some(Viewer {
+                path,
+                origin: None,
+                annotatable: true,
+            });
+        }
+        return vec![];
+    }
+    if let Some(rest) = id.strip_prefix("image:msg:") {
+        let shown = rest.rsplit_once(':').and_then(|(request, index)| {
+            let index: usize = index.parse().ok()?;
+            let session = store.session(ui.selected?)?;
+            session.items.iter().find_map(|item| match item {
+                Item::User {
+                    request: r, images, ..
+                } if r.as_str() == request => images.get(index).cloned(),
+                _ => None,
+            })
+        });
+        ui.viewer = shown.map(|path| Viewer {
+            path,
+            origin: None,
+            annotatable: false,
+        });
         return vec![];
     }
     if id == view::NEW_SESSION {

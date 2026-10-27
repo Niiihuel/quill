@@ -39,6 +39,9 @@ struct App {
     /// Thumbnails decoded off the window's thread, and the images asked for so far (each once).
     thumbs_done: Arc<Mutex<Vec<(PathBuf, limn::RasterImage)>>>,
     thumbs_asked: std::collections::HashSet<PathBuf>,
+    /// The viewer's full-size pictures, decoded like the thumbnails, and the images asked for.
+    full_done: Arc<Mutex<Vec<(PathBuf, limn::RasterImage)>>>,
+    full_asked: std::collections::HashSet<PathBuf>,
     /// The terminal tabs of each folder, kept while the window lives (features/terminal.md).
     terminals: HashMap<PathBuf, quill_pty::Tabs>,
     fonts_attached: bool,
@@ -751,6 +754,21 @@ impl eframe::App for App {
         for (path, thumb) in std::mem::take(&mut *self.thumbs_done.lock().unwrap()) {
             self.ui.thumbs.insert(path, thumb);
         }
+        // The image the viewer shows, at full size, decoded once off the window's thread.
+        if let Some(path) = self.ui.viewer.as_ref().map(|viewer| viewer.path.clone()) {
+            if !self.ui.full.contains_key(&path) && self.full_asked.insert(path.clone()) {
+                let (done, ctx) = (self.full_done.clone(), ctx.clone());
+                std::thread::spawn(move || {
+                    if let Some(full) = images::full(&path) {
+                        done.lock().unwrap().push((path, full));
+                        ctx.request_repaint();
+                    }
+                });
+            }
+        }
+        for (path, full) in std::mem::take(&mut *self.full_done.lock().unwrap()) {
+            self.ui.full.insert(path, full);
+        }
         if let Some(folder) = self.picked.lock().unwrap().take() {
             self.ui.cwd = folder;
         }
@@ -1154,7 +1172,24 @@ impl eframe::App for App {
                 }
             }
             let opened = !self.ui.pane_open(Pane::Terminal);
+            // A tile opens the viewer, which grows its picture from the tile: only the frame knows where it is.
+            let tile = match &action {
+                limn::UiAction::Clicked { id }
+                    if id.starts_with("image:open:") || id.starts_with("image:msg:") =>
+                {
+                    self.tree
+                        .frame()
+                        .regions
+                        .iter()
+                        .find(|r| &r.id == id)
+                        .map(|r| r.rect)
+                }
+                _ => None,
+            };
             let intents = quill_ui::update(&self.store, &mut self.ui, &action);
+            if let (Some(viewer), Some(rect)) = (self.ui.viewer.as_mut(), tile) {
+                viewer.origin = Some(rect);
+            }
             self.dispatch(intents);
             // A pane just opened, or a tab just picked or made, takes the keys.
             focus_terminal |= (opened && self.ui.pane_open(Pane::Terminal))
@@ -1548,6 +1583,8 @@ fn main() -> eframe::Result {
                 restored: false,
                 thumbs_done: Arc::default(),
                 thumbs_asked: Default::default(),
+                full_done: Arc::default(),
+                full_asked: Default::default(),
                 terminals: HashMap::new(),
                 transcript: None,
                 beside: None,

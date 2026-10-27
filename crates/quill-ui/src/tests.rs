@@ -4107,6 +4107,68 @@ fn each_attached_image_is_a_tile_with_remove_and_open_regions() {
 }
 
 #[test]
+fn a_composer_image_opens_an_annotatable_viewer_with_close_and_annotate() {
+    let (store, mut ui) = store_with_session();
+    add_images(&mut ui, vec!["/work/a.png".into()]);
+    click(&store, &mut ui, "image:open:0");
+    let viewer = ui.viewer.as_ref().expect("the viewer opened");
+    assert_eq!(viewer.path, PathBuf::from("/work/a.png"));
+    assert!(viewer.annotatable);
+    let window = limn::Size::new(1408.0, 844.0);
+    let frame = UiTree::new(view(&store, &ui, window)).layout(window);
+    for id in [view::IMAGE_CLOSE, view::IMAGE_ANNOTATE] {
+        assert!(frame.regions.iter().any(|r| r.id == id), "no {id}");
+    }
+}
+
+#[test]
+fn a_message_image_opens_a_viewer_that_cannot_be_annotated() {
+    let (mut store, mut ui) = store_with_session();
+    store.apply(Event::Queued {
+        session: 1,
+        request: "r2".into(),
+        text: "what is this?".into(),
+        at: None,
+        images: vec!["/work/shot.png".into()],
+    });
+    click(&store, &mut ui, "image:msg:r2:0");
+    let viewer = ui.viewer.as_ref().expect("the viewer opened");
+    assert_eq!(viewer.path, PathBuf::from("/work/shot.png"));
+    assert!(!viewer.annotatable);
+    let window = limn::Size::new(1408.0, 844.0);
+    let frame = UiTree::new(view(&store, &ui, window)).layout(window);
+    assert!(frame.regions.iter().any(|r| r.id == view::IMAGE_CLOSE));
+    assert!(!frame.regions.iter().any(|r| r.id == view::IMAGE_ANNOTATE));
+}
+
+#[test]
+fn the_viewer_closes_on_its_close_control_and_hands_an_image_to_the_editor() {
+    let (store, mut ui) = store_with_session();
+    add_images(&mut ui, vec!["/work/a.png".into()]);
+    click(&store, &mut ui, "image:open:0");
+    click(&store, &mut ui, view::IMAGE_CLOSE);
+    assert!(ui.viewer.is_none());
+    click(&store, &mut ui, "image:open:0");
+    click(&store, &mut ui, view::IMAGE_ANNOTATE);
+    assert!(ui.viewer.is_none());
+    assert_eq!(ui.annotating, Some(PathBuf::from("/work/a.png")));
+}
+
+#[test]
+fn escape_closes_the_viewer_as_its_close_control_does() {
+    let (store, mut ui) = store_with_session();
+    add_images(&mut ui, vec!["/work/a.png".into()]);
+    click(&store, &mut ui, "image:open:0");
+    let window = limn::Size::new(1408.0, 844.0);
+    let mut tree = UiTree::new(view(&store, &ui, window));
+    tree.layout(window);
+    let actions = tree.handle_event(key(limn::Key::Escape));
+    assert!(actions.contains(&UiAction::Clicked {
+        id: view::IMAGE_CLOSE.into()
+    }));
+}
+
+#[test]
 fn removing_an_image_drops_that_one_from_the_composer() {
     let (store, mut ui) = store_with_session();
     add_images(&mut ui, vec!["/work/a.png".into(), "/work/b.png".into()]);
