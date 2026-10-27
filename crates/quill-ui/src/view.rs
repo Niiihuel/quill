@@ -33,6 +33,13 @@ pub const OPEN_HERE: &str = "doc:open-at:";
 /// A link in the conversation, `{LINK}{scope}:{offset}:{url}` as limn's Markdown writes it,
 /// its right-click menu, and what the menu does with its address.
 pub const LINK: &str = "link:";
+/// The composer's "+": its Connectors (the session's MCP servers, each switched by
+/// `{CONNECTOR_SWITCH}{on}:{name}`) and its Plugins, found and managed.
+pub const CONNECTORS_BROWSE: &str = "plus:connectors:browse";
+pub const CONNECTORS_MANAGE: &str = "plus:connectors:manage";
+pub const CONNECTOR_SWITCH: &str = "plus:connector:";
+pub const PLUGINS_BROWSE: &str = "plus:plugins:browse";
+pub const PLUGINS_MANAGE: &str = "plus:plugins:manage";
 pub const LINK_MENU: &str = "link-menu";
 pub const LINK_BROWSER: &str = "link-browser:";
 pub const LINK_EXTERNAL: &str = "link-external:";
@@ -110,6 +117,7 @@ pub const ACCOUNT_MENU: &str = "account:menu";
 /// Customize's pages: each agent's skills and plugins.
 pub const SETTINGS_SKILLS: &str = "skills";
 pub const SETTINGS_PLUGINS: &str = "plugins";
+pub const SETTINGS_CONNECTORS: &str = "connectors";
 /// Customize's question before removing, and the marketplace's field (`{id}{agent}`).
 pub const EXT_REMOVE_YES: &str = "ext-remove:yes";
 pub const EXT_REMOVE_NO: &str = "ext-remove:no";
@@ -5037,10 +5045,10 @@ fn send_button(ready: bool) -> Element {
 
 /// "+": what can go into the message, as far as quill can: files and folders
 /// as @-mentions the agent reads, and the slash that opens its commands.
-fn plus_menu(ui: &Ui) -> Element {
+fn plus_menu(session: Option<&Session>, ui: &Ui) -> Element {
     let open = ui.open_menu == Some(PLUS_MENU);
     let anchor = composer_button(PLUS_MENU, icons::of(icons::ADD), "Add", open, 28.0);
-    let entries = vec![
+    let mut entries = vec![
         limn::DropdownMenuItem::new(ATTACH_FILES, "Add files or photos")
             .icon(icons::of(icons::PAPERCLIP))
             .shortcut("Ctrl+U")
@@ -5052,6 +5060,88 @@ fn plus_menu(ui: &Ui) -> Element {
             .icon(icons::of(icons::SLASH))
             .into(),
     ];
+    // Desktop's Connectors and Plugins (the person's capture of 2026-10-27): ways to find and
+    // manage them, then each one with its switch. A session's connectors are its agent's MCP
+    // servers; the plugins are its agent's.
+    let switch_row = |id: String, icon: &'static str, name: &str, on: bool| {
+        limn::DropdownMenuEntry::custom(
+            Element::row(vec![
+                hgap(0.0),
+                Element::icon(icons::of(icon))
+                    .foreground(look::palette().text)
+                    .size(Some(16.0), Some(16.0))
+                    .centered_y(),
+                Element::truncated_text(name.to_owned())
+                    .font_family(FontFamily::Sans)
+                    .font_size(BODY)
+                    .foreground(look::palette().text)
+                    .flex(1.0)
+                    .centered_y(),
+                limn::Switch::new(id, on, look::palette())
+                    .variant(limn::SwitchVariant::Accent)
+                    .ink(look::switch_on())
+                    .off_ink(look::switch_off())
+                    .render()
+                    .centered_y(),
+                hgap(4.0),
+            ])
+            .gap(10.0)
+            .size(None, Some(32.0)),
+        )
+    };
+    let mut connectors = vec![
+        limn::DropdownMenuItem::new(CONNECTORS_BROWSE, "Browse connectors")
+            .icon(icons::of(icons::CONNECTORS))
+            .into(),
+        limn::DropdownMenuItem::new(CONNECTORS_MANAGE, "Manage connectors")
+            .icon(icons::of(icons::BRIEFCASE))
+            .into(),
+    ];
+    let servers = session.and_then(|s| s.mcp.as_ref());
+    // The agent says its servers only while it runs.
+    if servers.is_none() && session.is_some() {
+        connectors.push(limn::DropdownMenuEntry::Separator);
+        connectors.push(limn::DropdownMenuEntry::Message(
+            "The session's connectors show once its agent runs.".into(),
+        ));
+    }
+    if let Some(servers) = servers.filter(|s| !s.is_empty()) {
+        connectors.push(limn::DropdownMenuEntry::Separator);
+        connectors.extend(servers.iter().map(|server| {
+            let on = server.status != quill_model::McpStatus::Disabled;
+            let id = format!("{CONNECTOR_SWITCH}{}:{}", u8::from(!on), server.name);
+            switch_row(id, icons::PLUG, &server.label, on)
+        }));
+    }
+    let agent = session.map_or(ui.agent.as_str(), |s| s.agent.as_str());
+    let mut plugins = vec![
+        limn::DropdownMenuItem::new(PLUGINS_BROWSE, "Browse plugins")
+            .icon(icons::of(icons::CONNECTORS))
+            .into(),
+        limn::DropdownMenuItem::new(PLUGINS_MANAGE, "Manage plugins")
+            .icon(icons::of(icons::BRIEFCASE))
+            .into(),
+    ];
+    let installed = ui.extensions.get(agent).map(|e| &e.list.plugins);
+    if let Some(installed) = installed.filter(|p| !p.is_empty()) {
+        plugins.push(limn::DropdownMenuEntry::Separator);
+        plugins.extend(installed.iter().map(|plugin| {
+            let id = format!("ext:switch:{agent}:{}", plugin.id);
+            switch_row(id, icons::PLUG, &plugin.name, plugin.enabled)
+        }));
+    }
+    entries.push(
+        limn::DropdownMenuItem::new(format!("{PLUS_MENU}:connectors"), "Connectors")
+            .icon(icons::of(icons::CONNECTORS))
+            .submenu(connectors)
+            .into(),
+    );
+    entries.push(
+        limn::DropdownMenuItem::new(format!("{PLUS_MENU}:plugins"), "Plugins")
+            .icon(icons::of(icons::PLUG))
+            .submenu(plugins)
+            .into(),
+    );
     menu(
         anchor,
         entries,
@@ -5119,7 +5209,7 @@ fn composer_footer(
     palette: ComponentPalette,
 ) -> Element {
     let row = Element::row(vec![
-        plus_menu(ui),
+        plus_menu(session, ui),
         mode_menu(session, ui),
         Element::spacer().flex(1.0),
         model_menu(store, session, ui, palette),

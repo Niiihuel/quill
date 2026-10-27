@@ -2578,6 +2578,9 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
     if id == format!("{}:effort", view::MODEL_MENU) {
         return vec![];
     }
+    if let Some(intents) = plus_clicked(ui, id) {
+        return intents;
+    }
     for menu in [
         view::MODE_MENU,
         view::MODEL_MENU,
@@ -3298,6 +3301,63 @@ fn extensions_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
                 skill: skill.clone(),
             };
             send(ui, agent, skill.name, None, op)
+        }
+        _ => None,
+    }
+}
+
+/// The composer's "+": opened, it asks for the session's MCP servers and its agent's plugins,
+/// which its Connectors and Plugins list; their switches, and where finding and managing
+/// them go. `None` when `id` is none of them.
+fn plus_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
+    let session = ui.selected;
+    if id == view::PLUS_MENU && ui.open_menu != Some(view::PLUS_MENU) {
+        ui.open_menu = Some(view::PLUS_MENU);
+        let mut intents: Vec<Intent> = session
+            .map(|session| Intent::McpStatus { session })
+            .into_iter()
+            .collect();
+        intents.extend(ui.ask_extensions());
+        return Some(intents);
+    }
+    if let Some((on, name)) = id
+        .strip_prefix(view::CONNECTOR_SWITCH)
+        .and_then(|r| r.split_once(':'))
+    {
+        let session = session?;
+        return Some(vec![
+            Intent::McpToggle {
+                session,
+                name: name.to_owned(),
+                enabled: on == "1",
+            },
+            Intent::McpStatus { session },
+        ]);
+    }
+    // A plugin switched from the menu, with Settings closed.
+    if id.starts_with("ext:switch:") && ui.settings_page.is_none() {
+        return extensions_clicked(ui, id);
+    }
+    let page = |ui: &mut Ui, page: &str| {
+        ui.open_menu = None;
+        ui.settings_page = Some(page.to_owned());
+        ui.settings_query.clear();
+        ui.ask_extensions()
+    };
+    match id {
+        view::CONNECTORS_MANAGE => {
+            ui.open_menu = None;
+            let session = session?;
+            ui.mcp = Some(McpDialog::new(session));
+            Some(vec![Intent::McpStatus { session }])
+        }
+        view::CONNECTORS_BROWSE => Some(page(ui, view::SETTINGS_CONNECTORS)),
+        view::PLUGINS_MANAGE => Some(page(ui, view::SETTINGS_PLUGINS)),
+        view::PLUGINS_BROWSE => {
+            let intents = page(ui, view::SETTINGS_PLUGINS);
+            ui.directory = ui.agents.first().map(|a| a.id.clone());
+            ui.directory_query.clear();
+            Some(intents)
         }
         _ => None,
     }
