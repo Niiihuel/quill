@@ -3212,10 +3212,12 @@ fn annotate_toolbar(ui: &Ui, palette: ComponentPalette) -> Element {
                 Element::spacer()
                     .size(Some(14.0), Some(14.0))
                     .background(ui.ink)
-                    .radius(7.0),
-                icon_glyph(icons::of(icons::CARET_DOWN), ink),
+                    .radius(7.0)
+                    .centered_y(),
+                icon_glyph(icons::of(icons::CARET_DOWN), ink).centered_y(),
             ])
             .gap(2.0)
+            .size(None, Some(16.0))
             .centered(),
             "Ink color",
             40.0,
@@ -3253,14 +3255,17 @@ fn annotate_toolbar(ui: &Ui, palette: ComponentPalette) -> Element {
     let widths = menu(
         tool_button(
             annotate::WIDTH_MENU,
+            // The bar and the caret on one middle line, whatever the width.
             Element::row(vec![
                 Element::spacer()
                     .size(Some(16.0), Some(ui.stroke))
                     .background(ink)
-                    .radius(ui.stroke / 2.0),
-                icon_glyph(icons::of(icons::CARET_DOWN), ink),
+                    .radius(ui.stroke / 2.0)
+                    .centered_y(),
+                icon_glyph(icons::of(icons::CARET_DOWN), ink).centered_y(),
             ])
             .gap(2.0)
+            .size(None, Some(16.0))
             .centered(),
             "Line width",
             40.0,

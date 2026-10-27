@@ -35,6 +35,7 @@ When they are all merged, point `Cargo.toml` back at `../lienzo` and drop the br
 | — | `feat/suggestion-compact` | one-line suggestion rows, a wider cap, the selected row's description beside it, matched text in bold, the host's text sizes: the composer's "/" palette | local, not pushed |
 | — | `feat/viewer-morph` | `ImageViewer` actions beside close, a morph from the thumbnail (`Easing::CubicBezier`) and a lightbox mode (the picture fitted, its caption under it): the composer's images | local, not pushed |
 | — | `feat/sketch` | `Sketch`, marks drawn over an image and painted into its pixels: annotating an attached image | local, not pushed |
+| — | `fix/modal-focus-tooltip` | a popover's opening focus and its backdrop raise no tooltip: the image viewer's close showed "Close image · Esc" all the time | local, not pushed |
 | — | `feat/surface-image` | the browser's native frames handed to egui as they are (`SurfaceFrame::from_image`) | local, not pushed |
 | — | `feat/surface-texture` | the browser's GPU frames drawn from a texture quill registered with egui-wgpu (`present_surface_texture`) | local, not pushed |
 | — | `feat/surface-paint` | the page presented beneath the window: quill paints the browser's surface itself, a transparent hole (`present_surface_paint`) | local, not pushed |
