@@ -61,10 +61,10 @@ pub fn full(path: &Path) -> Option<RasterImage> {
     scaled(path, 2048)
 }
 
-/// The width over height of an image, from its header; the editor lays the picture out at it.
-pub fn aspect(path: &Path) -> Option<f32> {
+/// An image's size in pixels, from its header; the viewer fits it and the editor lays it out.
+pub fn size(path: &Path) -> Option<(f32, f32)> {
     let (width, height) = image::image_dimensions(path).ok()?;
-    (height > 0).then(|| width as f32 / height as f32)
+    (width > 0 && height > 0).then_some((width as f32, height as f32))
 }
 
 /// The annotated copy of an image: the original at full size with `marks` painted over it,

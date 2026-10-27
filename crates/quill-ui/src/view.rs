@@ -3080,7 +3080,7 @@ fn annotator(ui: &Ui, base: Element, window: Size, palette: ComponentPalette) ->
     let Some(path) = &ui.annotating else {
         return base;
     };
-    let aspect = ui.aspects.get(path).copied().unwrap_or(1.0);
+    let aspect = (ui.sizes.get(path)).map_or(1.0, |(width, height)| width / height);
     let shown = annotate::shown(aspect, window);
     let mut board = vec![
         Sketch::new(annotate::SKETCH, &ui.marks, ui.tool, ui.ink, ui.stroke)
@@ -3409,7 +3409,8 @@ fn shape_icon(tool: limn::SketchTool) -> &'static str {
 }
 
 /// The image viewer over the window: the picture at full size once decoded, else its thumbnail,
-/// with its file name and, for a composer image, the annotate control.
+/// fitted to its size, with its file name under it and, for a composer image, the annotate
+/// control.
 fn image_viewer(ui: &Ui, base: Element, window: Size, palette: ComponentPalette) -> Element {
     let Some(viewer) = &ui.viewer else {
         return base;
@@ -3420,9 +3421,17 @@ fn image_viewer(ui: &Ui, base: Element, window: Size, palette: ComponentPalette)
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
     let picture = ui.full.get(&viewer.path).or(ui.thumbs.get(&viewer.path));
-    let mut shown = limn::ImageViewer::new(base, true, name, IMAGE_CLOSE, palette).viewport(window);
+    // Desktop's lightbox: the picture fitted at most 640 wide, its controls beside it and its
+    // name under it, over the dimmed window (3.6556.2 `cb1b78cfa`).
+    let mut shown = limn::ImageViewer::new(base, true, name.clone(), IMAGE_CLOSE, palette)
+        .viewport(window)
+        .lightbox(true)
+        .caption(name);
     if let Some(picture) = picture {
         shown = shown.image(picture.clone());
+    }
+    if let Some(&(width, height)) = ui.sizes.get(&viewer.path) {
+        shown = shown.natural_size(width, height);
     }
     if let Some(origin) = viewer.origin {
         shown = shown.origin(origin);

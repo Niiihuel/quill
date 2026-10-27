@@ -1019,9 +1019,9 @@ pub struct Ui {
     /// Whether the "Discard your annotations?" question is open, and whether a save runs.
     pub discarding: bool,
     pub saving: bool,
-    /// The width over height of each image, read from its file by the host for the editor's
-    /// layout.
-    pub aspects: std::collections::HashMap<PathBuf, f32>,
+    /// Each image's size in pixels, read from its file by the host: the viewer fits the
+    /// picture to it and the editor lays it out at its shape.
+    pub sizes: std::collections::HashMap<PathBuf, (f32, f32)>,
     /// Why the last image was left out, until the composer's images change again.
     pub image_notice: Option<String>,
     /// The request whose changes the diff pane shows.
@@ -1744,7 +1744,7 @@ impl Ui {
             stroke: annotate::WIDTHS[1].1,
             discarding: false,
             saving: false,
-            aspects: Default::default(),
+            sizes: Default::default(),
             image_notice: None,
             diff: None,
             panes: vec![],

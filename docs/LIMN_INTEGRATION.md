@@ -33,7 +33,7 @@ When they are all merged, point `Cargo.toml` back at `../lienzo` and drop the br
 | — | `feat/menu-switch-ink` | a menu switch that is on takes the menu's `check_ink`; builds on `feat/menu-switch` and `feat/desktop-menus` | local, not pushed |
 | — | `feat/submenu-width` | a submenu with its own width (`DropdownMenuItem::submenu_width`): the session menu's "Transcript view" | local, not pushed |
 | — | `feat/suggestion-compact` | one-line suggestion rows, a wider cap, the selected row's description beside it, matched text in bold, the host's text sizes: the composer's "/" palette | local, not pushed |
-| — | `feat/viewer-morph` | `ImageViewer` actions beside close and a morph from the thumbnail (`Easing::CubicBezier`): the composer's images | local, not pushed |
+| — | `feat/viewer-morph` | `ImageViewer` actions beside close, a morph from the thumbnail (`Easing::CubicBezier`) and a lightbox mode (the picture fitted, its caption under it): the composer's images | local, not pushed |
 | — | `feat/sketch` | `Sketch`, marks drawn over an image and painted into its pixels: annotating an attached image | local, not pushed |
 | — | `feat/surface-image` | the browser's native frames handed to egui as they are (`SurfaceFrame::from_image`) | local, not pushed |
 | — | `feat/surface-texture` | the browser's GPU frames drawn from a texture quill registered with egui-wgpu (`present_surface_texture`) | local, not pushed |

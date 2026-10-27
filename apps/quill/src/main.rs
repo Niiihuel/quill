@@ -17,6 +17,8 @@ use std::sync::{Arc, Mutex};
 
 /// An annotated copy and the picture it replaces: `None` when the copy could not be written.
 type AnnotatedCopy = (PathBuf, Option<PathBuf>);
+/// An image and its size in pixels, read off the window's thread.
+type ImageSize = (PathBuf, (f32, f32));
 
 struct App {
     tree: UiTree,
@@ -47,8 +49,8 @@ struct App {
     full_asked: std::collections::HashSet<PathBuf>,
     /// The width over height of the picture the editor lays out, read from its file off the
     /// window's thread, and the images asked for so far.
-    aspects_done: Arc<Mutex<Vec<(PathBuf, f32)>>>,
-    aspects_asked: std::collections::HashSet<PathBuf>,
+    sizes_done: Arc<Mutex<Vec<ImageSize>>>,
+    sizes_asked: std::collections::HashSet<PathBuf>,
     /// Annotated copies made off the window's thread, each with the picture it replaces; `None`
     /// when the copy could not be written.
     annotated: Arc<Mutex<Vec<AnnotatedCopy>>>,
@@ -779,20 +781,23 @@ impl eframe::App for App {
         for (path, full) in std::mem::take(&mut *self.full_done.lock().unwrap()) {
             self.ui.full.insert(path, full);
         }
-        // The editor lays its picture out at the shape of the file, read off the window's thread.
-        if let Some(path) = self.ui.annotating.clone() {
-            if !self.ui.aspects.contains_key(&path) && self.aspects_asked.insert(path.clone()) {
-                let (done, ctx) = (self.aspects_done.clone(), ctx.clone());
+        // The viewer and the editor lay the picture out at the file's size, read off the
+        // window's thread.
+        let shown =
+            (self.ui.viewer.as_ref().map(|v| v.path.clone())).or(self.ui.annotating.clone());
+        if let Some(path) = shown {
+            if !self.ui.sizes.contains_key(&path) && self.sizes_asked.insert(path.clone()) {
+                let (done, ctx) = (self.sizes_done.clone(), ctx.clone());
                 std::thread::spawn(move || {
-                    if let Some(aspect) = images::aspect(&path) {
-                        done.lock().unwrap().push((path, aspect));
+                    if let Some(size) = images::size(&path) {
+                        done.lock().unwrap().push((path, size));
                         ctx.request_repaint();
                     }
                 });
             }
         }
-        for (path, aspect) in std::mem::take(&mut *self.aspects_done.lock().unwrap()) {
-            self.ui.aspects.insert(path, aspect);
+        for (path, size) in std::mem::take(&mut *self.sizes_done.lock().unwrap()) {
+            self.ui.sizes.insert(path, size);
         }
         // An annotated copy made: it takes the picture's place, or the editor says it failed.
         for (original, copy) in std::mem::take(&mut *self.annotated.lock().unwrap()) {
@@ -1629,8 +1634,8 @@ fn main() -> eframe::Result {
                 thumbs_asked: Default::default(),
                 full_done: Arc::default(),
                 full_asked: Default::default(),
-                aspects_done: Arc::default(),
-                aspects_asked: Default::default(),
+                sizes_done: Arc::default(),
+                sizes_asked: Default::default(),
                 annotated: Arc::default(),
                 terminals: HashMap::new(),
                 transcript: None,
