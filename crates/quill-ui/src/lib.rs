@@ -4,7 +4,9 @@
 
 mod account;
 pub mod annotate;
+pub mod appearance;
 mod files;
+mod greeting;
 mod mention;
 mod pixels;
 mod slash;
@@ -2309,7 +2311,11 @@ impl Ui {
         if let Event::Settings { settings, agents } = event {
             look::set_text_size(settings.text_size);
             look::set_width(settings.width);
+            let first = self.agents.is_empty();
             self.settings = settings.clone();
+            // Welcomed before the appearance step existed (the first settings of a run already
+            // say so): not asked now. Later ones echo a Get started pressed in this run.
+            self.settings.looked |= first && settings.welcomed;
             self.agents = agents.clone();
             // The agent last chosen, else the first available, until there is one in use.
             if !agents.iter().any(|a| a.id == self.agent) {
@@ -3149,7 +3155,6 @@ pub fn terminal_key(
 fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
     if id == welcome::START {
         ui.settings.welcomed = true;
-        tour::after_welcome(ui);
         return vec![Intent::SaveSettings(ui.settings.clone())];
     }
     if let Some(index) = id
@@ -3214,6 +3219,9 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         return intents;
     }
     if let Some(intents) = account::clicked(ui, id) {
+        return intents;
+    }
+    if let Some(intents) = appearance::clicked(ui, id) {
         return intents;
     }
     if let Some(intents) = tour::clicked(ui, id) {

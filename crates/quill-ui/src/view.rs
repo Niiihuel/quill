@@ -441,6 +441,9 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     if crate::welcoming(ui) {
         return crate::welcome::view(ui, window);
     }
+    if crate::appearance::looking(ui) {
+        return crate::appearance::view(ui, window);
+    }
     if crate::account::visible(ui) {
         return crate::account::screen(ui, window);
     }
@@ -2549,18 +2552,18 @@ fn status_dot(session: &Session) -> Element {
         .centered_y()
 }
 
-/// A new session's page greets the person at the top, as their Desktop does
-///: an orange spark and "What's up next, Name?", 20 px.
+/// A new session's page greets the person at the top, 20 px: quill's pen and words that
+/// follow the local hour and day (`greeting`). Desktop's place and size, not its spark or
+/// its words.
 fn empty(ui: &Ui, column: f32) -> Element {
-    let greeting = match &ui.name {
-        Some(name) => format!("What's up next, {name}?"),
-        None => "What's up next?".into(),
-    };
+    let greeting = crate::greeting::now(ui.utc_offset, ui.name.as_deref());
     let line = Element::row(vec![
-        Element::icon(icons::of(icons::SPARK))
-            .foreground(look::spark())
-            .size(Some(24.0), Some(24.0))
-            .centered_y(),
+        Element::icon(icons::of(include_str!(
+            "../../../apps/quill/assets/icons/quill-mark.svg"
+        )))
+        .foreground(look::palette().text)
+        .large_icon(30.0)
+        .centered_y(),
         text(greeting).font_size(20.0).centered_y(),
     ])
     .gap(8.0)

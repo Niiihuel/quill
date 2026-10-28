@@ -1,6 +1,6 @@
 use super::*;
 use limn::{UiAction, UiTree};
-use quill_model::{AgentEvent, TranscriptView, Usage};
+use quill_model::{AgentEvent, AuthState, Theme, TranscriptView, Usage};
 
 fn tab(title: &str, busy: bool) -> TerminalTab {
     TerminalTab {
@@ -5112,6 +5112,81 @@ fn the_welcome_shows_once_the_settings_are_known_until_get_started() {
     assert!(!crate::welcoming(&test));
 }
 
+#[test]
+fn the_welcome_leads_to_the_appearance_step_then_the_tour_with_each_choice_saved() {
+    let (store, mut ui) = store_with_session();
+    ui.skip_welcome = false;
+    ui.applied(&Event::Settings {
+        settings: Settings::default(),
+        agents: an_agent_known(),
+    });
+    assert!(crate::welcoming(&ui) && !crate::appearance::looking(&ui));
+    let saved = click(&store, &mut ui, crate::welcome::START);
+    assert!(matches!(&saved[..], [Intent::SaveSettings(s)] if s.welcomed && !s.looked));
+    // The step shows next, ahead of the sign-in screen and the tour.
+    assert!(!crate::welcoming(&ui) && crate::appearance::looking(&ui));
+    assert!(!crate::account::visible(&ui));
+    assert_eq!(ui.tour, None);
+    // Echoed back by the engine, the step is still to show.
+    ui.applied(&Event::Settings {
+        settings: Settings {
+            welcomed: true,
+            ..Settings::default()
+        },
+        agents: an_agent_known(),
+    });
+    assert!(crate::appearance::looking(&ui));
+    // Choosing applies the theme at once and is saved; Continue ends the step, once.
+    let saved = click(&store, &mut ui, "look:dark");
+    assert!(matches!(&saved[..], [Intent::SaveSettings(s)] if s.theme == Theme::Dark));
+    assert_eq!(ui.settings.theme, Theme::Dark);
+    click(&store, &mut ui, "look:light");
+    assert_eq!(ui.settings.theme, Theme::Light);
+    assert!(crate::appearance::looking(&ui));
+    let saved = click(&store, &mut ui, crate::appearance::CONTINUE);
+    assert!(
+        matches!(&saved[..], [Intent::SaveSettings(s)] if s.looked && s.theme == Theme::Light),
+        "{saved:?}"
+    );
+    assert!(!crate::appearance::looking(&ui));
+    assert_eq!(ui.tour, Some(0));
+    let window = limn::Size::new(1408.0, 844.0);
+    // The step draws all three choices and its button.
+    ui.settings.looked = false;
+    let frame = UiTree::new(view(&store, &ui, window)).layout(window);
+    for id in ["look:system", "look:light", "look:dark", "look:continue"] {
+        assert!(frame.regions.iter().any(|r| r.id == id), "{id}");
+    }
+}
+
+#[test]
+fn a_person_welcomed_before_the_step_existed_is_not_asked_and_a_signed_out_one_signs_in_after_it() {
+    let (_, mut old) = store_with_session();
+    old.skip_welcome = false;
+    old.applied(&Event::Settings {
+        settings: Settings {
+            welcomed: true,
+            ..Settings::default()
+        },
+        agents: an_agent_known(),
+    });
+    assert!(!crate::appearance::looking(&old));
+    let (store, mut fresh) = store_with_session();
+    fresh.skip_welcome = false;
+    fresh.applied(&Event::Settings {
+        settings: Settings::default(),
+        agents: an_agent_known(),
+    });
+    fresh
+        .account
+        .states
+        .insert("claude".into(), AuthState::SignedOut);
+    click(&store, &mut fresh, crate::welcome::START);
+    assert!(!crate::account::visible(&fresh));
+    click(&store, &mut fresh, crate::appearance::CONTINUE);
+    assert!(crate::account::visible(&fresh));
+}
+
 fn an_agent_known() -> Vec<quill_model::AgentInfo> {
     vec![quill_model::AgentInfo {
         id: "claude".into(),
@@ -5135,6 +5210,7 @@ fn get_started_starts_the_tour_which_moves_by_its_buttons_and_saves_when_skipped
         agents: an_agent_known(),
     });
     click(&store, &mut ui, crate::welcome::START);
+    click(&store, &mut ui, crate::appearance::CONTINUE);
     assert_eq!(ui.tour, Some(0));
     assert!(click(&store, &mut ui, "tour:next").is_empty());
     assert_eq!(ui.tour, Some(1));

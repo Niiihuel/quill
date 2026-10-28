@@ -98,6 +98,10 @@ pub struct Settings {
     /// The welcome was seen and its Get started pressed.
     #[serde(default)]
     pub welcomed: bool,
+    /// The appearance step after the welcome was passed with Continue. A person who was
+    /// welcomed before it existed is not asked.
+    #[serde(default)]
+    pub looked: bool,
     /// The agent the new-session page last chose; none takes the first one available.
     pub default_agent: Option<String>,
     /// The tour after the welcome was finished or skipped; it shows again only from the
@@ -182,6 +186,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             welcomed: false,
+            looked: false,
             default_agent: None,
             toured: false,
             theme: Theme::System,

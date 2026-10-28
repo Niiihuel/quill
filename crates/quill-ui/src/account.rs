@@ -71,7 +71,9 @@ pub fn state(ui: &Ui) -> Option<&AuthState> {
 /// Whether the sign-in screen fills the window: the program says nobody is signed in (once
 /// the welcome is done), or a session asked for it.
 pub fn visible(ui: &Ui) -> bool {
-    !crate::welcoming(ui) && (ui.account.asked || matches!(state(ui), Some(AuthState::SignedOut)))
+    !crate::welcoming(ui)
+        && !crate::appearance::looking(ui)
+        && (ui.account.asked || matches!(state(ui), Some(AuthState::SignedOut)))
 }
 
 /// What the engine reports: the accounts, and the sign-in's progress. The first settings
