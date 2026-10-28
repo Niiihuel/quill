@@ -1476,8 +1476,13 @@ impl Router {
                 return;
             }
             Intent::CheckSignIn { agent } => {
-                // Asked when the agent is offered: its models, too, before any session of it.
+                // Asked when the agent is offered: its models, too, before any session of it,
+                // and its own servers and skills, so the first session already leaves to the
+                // agent the names it has (decision: the CLI's own wins over "All agents").
                 self.ask_models(agent.clone());
+                let home = quill_files::home_dir().unwrap_or_else(|| ".".into());
+                self.servers(agent.clone(), home.clone());
+                self.extensions(agent.clone(), home, None);
                 self.check_sign_in(agent);
                 return;
             }

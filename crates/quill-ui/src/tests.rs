@@ -2240,14 +2240,17 @@ fn customize_lists_and_changes_an_agents_plugins_marketplaces_and_skills() {
             state: "off".into()
         })]
     );
-    // Another folder chosen while it shows is read again.
+    // Another folder chosen while it shows is read again, with the "All agents" layer.
     ui.cwd = "/other".into();
     assert_eq!(
         ui.due(),
-        vec![Intent::Extensions {
-            agent: "claude".into(),
-            folder: "/other".into()
-        }]
+        vec![
+            Intent::Extensions {
+                agent: "claude".into(),
+                folder: "/other".into()
+            },
+            Intent::Global(quill_model::GlobalOp::Load)
+        ]
     );
 }
 
