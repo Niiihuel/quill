@@ -61,7 +61,13 @@ impl Terminal {
         let pair = native_pty_system()
             .openpty(size)
             .map_err(std::io::Error::other)?;
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| {
+            if cfg!(windows) {
+                std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into())
+            } else {
+                "/bin/sh".into()
+            }
+        });
         let mut command = CommandBuilder::new(shell);
         command.cwd(cwd);
         command.env("TERM", "xterm-256color");
@@ -127,7 +133,12 @@ impl Terminal {
 
     /// Whether a program other than the shell holds the terminal, so closing it would stop one.
     pub fn busy(&self) -> bool {
+        // shortcut: Windows has no foreground process group to ask; closing never warns there.
+        #[cfg(not(unix))]
+        return false;
+        #[cfg(unix)]
         let shell = self.child.process_id().map(|pid| pid as i32);
+        #[cfg(unix)]
         matches!((self.master.process_group_leader(), shell), (Some(leader), Some(shell)) if leader != shell)
     }
 

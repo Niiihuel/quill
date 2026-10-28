@@ -278,7 +278,11 @@ fn copy_entry(from: &Path, to: &Path, depth: usize, budget: &mut usize) -> io::R
     let metadata = fs::symlink_metadata(from)?;
     let kind = metadata.file_type();
     if kind.is_symlink() {
+        #[cfg(unix)]
         return std::os::unix::fs::symlink(fs::read_link(from)?, to);
+        // shortcut: Windows links need a privilege and a file/folder distinction; not copied.
+        #[cfg(not(unix))]
+        return Err(limit("Links are not copied on this system"));
     }
     if kind.is_dir() {
         if depth >= MAX_COPY_DEPTH {
@@ -298,6 +302,7 @@ fn copy_entry(from: &Path, to: &Path, depth: usize, budget: &mut usize) -> io::R
         let mut source = fs::OpenOptions::new();
         source.read(true);
         // A file swapped for a link after the check above is not followed.
+        #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::custom_flags(&mut source, libc::O_NOFOLLOW);
         let mut target = fs::OpenOptions::new()
             .write(true)
@@ -346,6 +351,35 @@ fn move_without_replacing(source: &Path, target: &Path) -> io::Result<()> {
         return Err(io::ErrorKind::AlreadyExists.into());
     }
     fs::rename(source, target)
+}
+
+/// The person's home folder, on any system.
+pub fn home_dir() -> Option<PathBuf> {
+    std::env::home_dir().filter(|home| !home.as_os_str().is_empty())
+}
+
+/// Where an app keeps its data and its settings: `$XDG_DATA_HOME` / `$XDG_CONFIG_HOME` (or
+/// `~/.local/share`, `~/.config`) on Linux, `~/Library/Application Support` on macOS,
+/// `%LOCALAPPDATA%` / `%APPDATA%` on Windows. Inferred from each system's convention.
+pub fn data_dir() -> Option<PathBuf> {
+    app_dir("XDG_DATA_HOME", ".local/share", "LOCALAPPDATA")
+}
+
+/// See [`data_dir`].
+pub fn config_dir() -> Option<PathBuf> {
+    app_dir("XDG_CONFIG_HOME", ".config", "APPDATA")
+}
+
+fn app_dir(xdg: &str, linux: &str, windows: &str) -> Option<PathBuf> {
+    if cfg!(windows) {
+        return std::env::var_os(windows).map(PathBuf::from);
+    }
+    if cfg!(target_os = "macos") {
+        return Some(home_dir()?.join("Library/Application Support"));
+    }
+    std::env::var_os(xdg)
+        .map(PathBuf::from)
+        .or_else(|| Some(home_dir()?.join(linux)))
 }
 
 /// A page, a file or a folder in what the computer opens it with (its default browser for an

@@ -12,6 +12,8 @@ use std::path::PathBuf;
 use std::process::Stdio;
 
 mod auth;
+// The `$BROWSER` bridge is a Unix socket; elsewhere the system's browser opens addresses.
+#[cfg(unix)]
 mod bridge;
 mod images;
 mod logos;
@@ -102,16 +104,8 @@ pub struct Config {
 impl Config {
     /// Sessions kept in `$XDG_DATA_HOME/quill/quill.db` (`~/.local/share/quill` without it).
     pub fn default_database() -> Self {
-        let data = std::env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share"))
-            })
-            .unwrap_or_else(|| ".".into());
-        let config = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-            .unwrap_or_else(|| ".".into());
+        let data = quill_files::data_dir().unwrap_or_else(|| ".".into());
+        let config = quill_files::config_dir().unwrap_or_else(|| ".".into());
         Self {
             database: Some(data.join("quill/quill.db")),
             snapshots: Some(data.join("quill/snapshots")),
@@ -312,6 +306,7 @@ struct Router {
     servers: Arc<servers::Servers>,
     /// What the agents' `$BROWSER` hands back; `None` when the person has a `BROWSER` of
     /// their own or there is no private folder for it.
+    #[cfg(unix)]
     bridge: Option<bridge::Bridge>,
     /// The reply being read aloud: what stops it, and the task that ends once it stopped.
     reading: Option<(
@@ -413,9 +408,7 @@ impl Router {
         };
         let browser = {
             let (ui, sink) = (ui.clone(), sink.clone());
-            let home = std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| ".".into());
+            let home = quill_files::home_dir().unwrap_or_else(|| ".".into());
             quill_browser::Browser::new(
                 quill_browser::Options {
                     program: None,
@@ -450,6 +443,7 @@ impl Router {
             internal,
             ask,
             servers: Arc::default(),
+            #[cfg(unix)]
             bridge: bridge::Bridge::start(browser.clone()),
             browser,
             site_waits,
@@ -516,7 +510,7 @@ impl Router {
         let adapter = adapter(agent)?;
         let plan = adapter.launch(&SessionSpec::default());
         let mut command = Command::new(self.program(agent).unwrap_or(plan.program));
-        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let home = quill_files::home_dir();
         command
             .args(args)
             .current_dir(home.unwrap_or_else(std::env::temp_dir));
@@ -709,9 +703,7 @@ impl Router {
             let folder = if folder.is_dir() {
                 folder
             } else {
-                std::env::var_os("HOME")
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| ".".into())
+                quill_files::home_dir().unwrap_or_else(|| ".".into())
             };
             let mut error = None;
             if let Some(op) = op {
@@ -761,6 +753,20 @@ impl Router {
         });
     }
 
+    fn bridge_env(&self, session: SessionId) -> Vec<(String, String)> {
+        #[cfg(unix)]
+        return self
+            .bridge
+            .as_ref()
+            .map(|b| b.env(session))
+            .unwrap_or_default();
+        #[cfg(not(unix))]
+        {
+            let _ = session;
+            vec![]
+        }
+    }
+
     /// Hold the computer awake while an agent works and the person wants it, as Desktop's
     /// "Keep computer awake while Claude works": idle sleep is held
     /// off, the display may still turn off and the lid still sleeps (logind ignores
@@ -773,20 +779,15 @@ impl Router {
             && (self.settings.keep_awake_on_battery || !on_battery(&power_supplies()));
         match (want, self.awake.is_some()) {
             (true, false) => {
-                self.awake = Command::new("systemd-inhibit")
-                    .args([
-                        "--what=sleep",
-                        "--who=quill",
-                        "--why=An agent is working",
-                        "sleep",
-                        "infinity",
-                    ])
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .kill_on_drop(true)
-                    .spawn()
-                    .ok();
+                self.awake = awake_command().and_then(|mut command| {
+                    command
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .kill_on_drop(true)
+                        .spawn()
+                        .ok()
+                });
             }
             (false, true) => self.awake = None,
             _ => {}
@@ -861,11 +862,7 @@ impl Router {
             }
             actor.spec.allow_unsafe = chosen.allow_unsafe;
             actor.spec.options = chosen.options.clone();
-            actor.env = self
-                .bridge
-                .as_ref()
-                .map(|b| b.env(session))
-                .unwrap_or_default();
+            actor.env = self.bridge_env(session);
             actor.env.extend(env_pairs(&chosen.env));
             // A fork that has said nothing yet still continues where it was forked from.
             if let (None, Some((from, at))) = (&actor.spec.resume, restored.forked) {
@@ -958,7 +955,7 @@ impl Router {
         );
         actor.spec.allow_unsafe = chosen.allow_unsafe;
         actor.spec.options = chosen.options.clone();
-        actor.env = self.bridge.as_ref().map(|b| b.env(id)).unwrap_or_default();
+        actor.env = self.bridge_env(id);
         actor.env.extend(env_pairs(&chosen.env));
         actor.shadow_root = self.config.snapshots.clone();
         actor.route = Some(self.internal.clone());
@@ -2790,32 +2787,87 @@ fn write_settings(
     std::fs::rename(&next, path).map_err(|e| e.to_string())
 }
 
+/// The process that holds idle sleep off while it lives; none where there is no such tool.
+/// `systemd-inhibit` on Linux, `caffeinate -i` (idle sleep) tied to quill's pid on macOS;
+/// Windows has none without FFI (`SetThreadExecutionState`), so it stays degraded.
+fn awake_command() -> Option<Command> {
+    if cfg!(target_os = "macos") {
+        let mut command = Command::new("caffeinate");
+        command.args(["-i", "-w", &std::process::id().to_string()]);
+        Some(command)
+    } else if cfg!(target_os = "linux") {
+        let mut command = Command::new("systemd-inhibit");
+        command.args([
+            "--what=sleep",
+            "--who=quill",
+            "--why=An agent is working",
+            "sleep",
+            "infinity",
+        ]);
+        Some(command)
+    } else {
+        None
+    }
+}
+
 /// Start quill when the person logs in, or no longer: the desktop's autostart entry
-/// (freedesktop Desktop Application Autostart), written for this program or removed.
+/// (freedesktop Desktop Application Autostart on Linux), a LaunchAgent on macOS, the user's
+/// `Run` key on Windows; written for this program or removed.
 fn start_at_login(on: bool) -> Result<(), String> {
-    let Some(config) = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-    else {
-        return Ok(());
-    };
-    let entry = config.join("autostart/quill.desktop");
-    if !on {
-        return match std::fs::remove_file(&entry) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
-            _ => Ok(()),
+    let program = std::env::current_exe().map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    {
+        const KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+        let mut reg = Command::new("reg");
+        if on {
+            let value = format!("\"{}\"", program.display());
+            reg.args([
+                "add", KEY, "/v", "quill", "/t", "REG_SZ", "/d", &value, "/f",
+            ]);
+        } else {
+            reg.args(["delete", KEY, "/v", "quill", "/f"]);
+        }
+        // Removing a value that is not there fails, which is as good as removed.
+        let done = reg.output().map_err(|e| e.to_string())?;
+        return if done.status.success() || !on {
+            Ok(())
+        } else {
+            Err(String::from_utf8_lossy(&done.stderr).trim().to_owned())
         };
     }
-    let program = std::env::current_exe().map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(entry.parent().unwrap_or(&config)).map_err(|e| e.to_string())?;
-    std::fs::write(
-        &entry,
-        format!(
-            "[Desktop Entry]\nType=Application\nName=quill\nIcon=quill\nExec=\"{}\"\nX-GNOME-Autostart-enabled=true\n",
-            program.display()
-        ),
-    )
-    .map_err(|e| e.to_string())
+    #[cfg(not(windows))]
+    {
+        let Some(config) = quill_files::config_dir() else {
+            return Ok(());
+        };
+        // On macOS the LaunchAgents folder is the home's, not Application Support.
+        #[cfg(target_os = "macos")]
+        let (entry, text) = (
+            quill_files::home_dir()
+                .ok_or("no home folder")?
+                .join("Library/LaunchAgents/dev.quill.quill.plist"),
+            format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict><key>Label</key><string>dev.quill.quill</string><key>ProgramArguments</key><array><string>{}</string></array><key>RunAtLoad</key><true/></dict></plist>\n",
+                program.display()
+            ),
+        );
+        #[cfg(not(target_os = "macos"))]
+        let (entry, text) = (
+            config.join("autostart/quill.desktop"),
+            format!(
+                "[Desktop Entry]\nType=Application\nName=quill\nIcon=quill\nExec=\"{}\"\nX-GNOME-Autostart-enabled=true\n",
+                program.display()
+            ),
+        );
+        if !on {
+            return match std::fs::remove_file(&entry) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+                _ => Ok(()),
+            };
+        }
+        std::fs::create_dir_all(entry.parent().unwrap_or(&config)).map_err(|e| e.to_string())?;
+        std::fs::write(&entry, text).map_err(|e| e.to_string())
+    }
 }
 
 /// The bytes the files under `path` take.

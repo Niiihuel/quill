@@ -80,9 +80,7 @@ struct Entry {
 
 /// Where the desktop keeps applications and icons: `$XDG_DATA_HOME`, then `$XDG_DATA_DIRS`.
 fn data_dirs() -> Vec<PathBuf> {
-    let home = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")));
+    let home = quill_files::data_dir();
     let rest = std::env::var("XDG_DATA_DIRS")
         .ok()
         .filter(|d| !d.is_empty())

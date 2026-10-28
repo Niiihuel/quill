@@ -4008,9 +4008,7 @@ pub enum Removing {
 /// the person's own when none is chosen.
 pub fn customize_folder(ui: &Ui) -> PathBuf {
     if ui.cwd.as_os_str().is_empty() {
-        std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_default()
+        quill_files::home_dir().unwrap_or_default()
     } else {
         ui.cwd.clone()
     }
@@ -4019,7 +4017,7 @@ pub fn customize_folder(ui: &Ui) -> PathBuf {
 /// Whether `folder` is a project, not the person's own folder: what installing for a
 /// project and a skill's state need.
 pub fn is_project(folder: &std::path::Path) -> bool {
-    std::env::var_os("HOME").is_none_or(|home| folder != std::path::Path::new(&home))
+    quill_files::home_dir().is_none_or(|home| folder != home)
 }
 
 /// The marketplaces' dialogs: adding one, and the list of them to update or remove.

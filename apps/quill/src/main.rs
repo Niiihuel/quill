@@ -1,7 +1,28 @@
 //! quill's window: limn paints quill-ui's view; quill-engine runs the agents.
 //! `quill [folder]` opens new sessions in `folder` (the current directory without one).
 
+// The page presented beneath the window is Wayland's (dmabufs, a subsurface); elsewhere egui
+// draws it and this stand-in never shows.
+#[cfg(target_os = "linux")]
 mod direct;
+#[cfg(not(target_os = "linux"))]
+mod direct {
+    use std::sync::Arc;
+
+    pub struct Direct;
+
+    impl Direct {
+        pub fn place(&self, _: Option<eframe::egui::Rect>, _: eframe::egui::Vec2, _: f32, _: bool) {
+        }
+        pub fn shows(&self) -> bool {
+            false
+        }
+    }
+
+    pub fn punch(_: &Arc<Direct>) -> eframe::egui::PaintCallback {
+        unreachable!("a stand-in that shows nothing is never punched")
+    }
+}
 mod editors;
 mod images;
 mod page;
@@ -1402,7 +1423,9 @@ fn utc_offset() -> i64 {
 /// The person's first name for the greeting: the account's full name if the system has one,
 /// else the login name, capitalized.
 fn first_name() -> Option<String> {
-    let user = std::env::var("USER").ok()?;
+    let user = std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .ok()?;
     let full = std::process::Command::new("getent")
         .args(["passwd", &user])
         .output()
@@ -1468,6 +1491,11 @@ fn wait_for_restarter() {
         return;
     };
     std::env::remove_var("QUILL_RESTART_AFTER");
+    // shortcut: only Linux can ask whether a pid lives without FFI; elsewhere a moment's grace.
+    if !std::path::Path::new("/proc/self").exists() {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        return;
+    }
     let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while std::path::Path::new(&format!("/proc/{pid}")).exists()
         && std::time::Instant::now() < until
@@ -1568,6 +1596,20 @@ fn open_in_editor(
 /// The folder shown, picked, in the desktop's file manager, through its common interface;
 /// without one, the folder it is in.
 fn show_in_file_manager(folder: &std::path::Path) {
+    // Explorer and Finder select the item themselves (explorer exits 1 even then).
+    if cfg!(windows) {
+        let _ = std::process::Command::new("explorer")
+            .arg(format!("/select,{}", folder.display()))
+            .spawn();
+        return;
+    }
+    if cfg!(target_os = "macos") {
+        let _ = std::process::Command::new("open")
+            .arg("-R")
+            .arg(folder)
+            .spawn();
+        return;
+    }
     let shown = std::process::Command::new("dbus-send")
         .args([
             "--session",
@@ -1830,6 +1872,15 @@ fn wgpu_setup(native: bool) -> eframe::egui_wgpu::WgpuSetup {
 
 /// The page presented beneath the window, straight to the compositor, where it is Wayland and
 /// takes dmabufs; `None` keeps it drawn by egui.
+#[cfg(not(target_os = "linux"))]
+fn start_direct(
+    _: &eframe::CreationContext,
+    _: &quill_engine::Native,
+) -> Option<Arc<direct::Direct>> {
+    None
+}
+
+#[cfg(target_os = "linux")]
 fn start_direct(
     creation: &eframe::CreationContext,
     native: &quill_engine::Native,

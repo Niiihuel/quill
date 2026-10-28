@@ -8562,12 +8562,12 @@ fn context_breakdown(session: &Session, ui: &Ui, width: f32) -> Vec<Element> {
 
 /// A path under the person's home as "~/…", so a long one keeps what tells it apart.
 fn tilde(path: &str) -> String {
-    match std::env::var("HOME") {
-        Ok(home) if !home.is_empty() => match path.strip_prefix(&home) {
-            Some(rest) if rest.starts_with('/') => format!("~{rest}"),
+    match quill_files::home_dir() {
+        Some(home) => match path.strip_prefix(&*home.to_string_lossy()) {
+            Some(rest) if rest.starts_with(['/', '\\']) => format!("~{rest}"),
             _ => path.to_owned(),
         },
-        _ => path.to_owned(),
+        None => path.to_owned(),
     }
 }
 

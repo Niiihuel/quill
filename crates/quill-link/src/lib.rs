@@ -1,12 +1,99 @@
-//! The line between quill and quill-ide: Unix sockets in the person's runtime folder, one
-//! JSON message a line. Each IDE window listens on its folder's socket, so a file of a
+//! The line between quill and quill-ide: Unix sockets in the person's runtime folder (on
+//! Windows, a loopback TCP port and a secret kept in a file of that folder, as Windows has no
+//! such sockets in std), one JSON message a line. Each IDE window listens on its folder's socket, so a file of a
 //! folder already open goes to that window; quill listens on its own.
 
 use serde::{Deserialize, Serialize};
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+
+#[cfg(unix)]
+mod transport {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::{io, path::Path};
+
+    pub type Stream = UnixStream;
+
+    pub fn connect(socket: &Path) -> io::Result<Stream> {
+        UnixStream::connect(socket)
+    }
+
+    pub fn private_dir(dir: &Path) -> io::Result<()> {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)
+    }
+
+    pub fn bind(socket: &Path) -> io::Result<impl Iterator<Item = Stream>> {
+        let listener = UnixListener::bind(socket)?;
+        // Only the person's own apps may talk to it.
+        std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
+        Ok(std::iter::repeat_with(move || listener.accept())
+            .filter_map(|heard| heard.ok().map(|(stream, _)| stream)))
+    }
+}
+
+#[cfg(windows)]
+mod transport {
+    use std::io::{self, Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::{fs, path::Path};
+
+    pub type Stream = TcpStream;
+
+    /// The file at `socket` holds `<port> <secret>`; whoever connects says the secret first.
+    fn read(socket: &Path) -> io::Result<(u16, String)> {
+        let text = fs::read_to_string(socket)?;
+        let (port, secret) = text
+            .trim()
+            .split_once(' ')
+            .ok_or(io::ErrorKind::InvalidData)?;
+        let port = port.parse().map_err(|_| io::ErrorKind::InvalidData)?;
+        Ok((port, secret.to_owned()))
+    }
+
+    pub fn connect(socket: &Path) -> io::Result<Stream> {
+        let (port, secret) = read(socket)?;
+        let mut stream = TcpStream::connect(("127.0.0.1", port))?;
+        writeln!(stream, "{secret}")?;
+        Ok(stream)
+    }
+
+    // The folder is under the person's own %TEMP%, which only they can read.
+    pub fn private_dir(dir: &Path) -> io::Result<()> {
+        fs::create_dir_all(dir)
+    }
+
+    /// 128 bits from the keys std seeds its hash maps with from the system.
+    fn secret() -> String {
+        use std::hash::{BuildHasher, Hasher};
+        let word = || {
+            std::collections::hash_map::RandomState::new()
+                .build_hasher()
+                .finish()
+        };
+        format!("{:016x}{:016x}", word(), word())
+    }
+
+    pub fn bind(socket: &Path) -> io::Result<impl Iterator<Item = Stream>> {
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let secret = secret();
+        fs::write(
+            socket,
+            format!("{} {secret}", listener.local_addr()?.port()),
+        )?;
+        Ok(std::iter::repeat_with(move || listener.accept())
+            .filter_map(|heard| heard.ok())
+            .filter_map(move |(mut stream, _)| {
+                let mut said = vec![0; secret.len() + 1];
+                stream.read_exact(&mut said).ok()?;
+                (said[..secret.len()] == *secret.as_bytes() && said[secret.len()] == b'\n')
+                    .then_some(stream)
+            }))
+    }
+}
 
 /// What one app asks of the other.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -37,7 +124,9 @@ fn folder() -> PathBuf {
     let base = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            let user = std::env::var("USER").unwrap_or_default();
+            let user = std::env::var("USER")
+                .or_else(|_| std::env::var("USERNAME"))
+                .unwrap_or_default();
             std::env::temp_dir().join(format!("quill-{user}"))
         });
     base.join("quill")
@@ -65,7 +154,7 @@ pub fn ide_socket(root: &Path) -> PathBuf {
 
 /// Send `message` to whoever listens on `socket`. An error when no one does.
 pub fn send(socket: &Path, message: &Message) -> io::Result<()> {
-    let mut stream = UnixStream::connect(socket)?;
+    let mut stream = transport::connect(socket)?;
     let mut line = serde_json::to_string(message)?;
     line.push('\n');
     stream.write_all(line.as_bytes())
@@ -86,23 +175,18 @@ impl Drop for Listener {
 /// left by an app that is gone is replaced; one that answers is someone else's, an error.
 pub fn listen(socket: &Path, heard: impl Fn(Message) + Send + 'static) -> io::Result<Listener> {
     if let Some(parent) = socket.parent() {
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(parent)?;
+        transport::private_dir(parent)?;
     }
-    if UnixStream::connect(socket).is_ok() {
+    if transport::connect(socket).is_ok() {
         return Err(io::Error::new(
             io::ErrorKind::AddrInUse,
             "another window listens there",
         ));
     }
     let _ = std::fs::remove_file(socket);
-    let listener = UnixListener::bind(socket)?;
-    // Only the person's own apps may talk to it.
-    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
+    let incoming = transport::bind(socket)?;
     std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
+        for stream in incoming {
             for line in BufReader::new(stream.take(LONGEST)).lines() {
                 let Ok(line) = line else { break };
                 // What does not read as a message is left, never a crash.
@@ -138,7 +222,7 @@ mod tests {
         send(&socket, &open).unwrap();
         assert_eq!(told.recv_timeout(Duration::from_secs(2)).unwrap(), open);
         // Garbage on the line is left; what follows still arrives.
-        UnixStream::connect(&socket)
+        transport::connect(&socket)
             .unwrap()
             .write_all(b"not json\n")
             .unwrap();

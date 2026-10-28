@@ -262,6 +262,7 @@ mod tests {
         assert_eq!(names, ["src", ".gitignore", "a.rs", "b.rs"]);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_save_through_a_link_replaces_the_file_whole_and_keeps_its_mode_and_the_link() {
         use std::os::unix::fs::{symlink, PermissionsExt};

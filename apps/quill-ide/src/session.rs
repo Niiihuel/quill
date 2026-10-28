@@ -16,10 +16,7 @@ pub struct Session {
 }
 
 fn path() -> PathBuf {
-    let data = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
-        .unwrap_or_else(|| ".".into());
+    let data = quill_files::data_dir().unwrap_or_else(|| ".".into());
     data.join("quill-ide/sessions.json")
 }
 

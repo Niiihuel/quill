@@ -141,11 +141,13 @@ impl Servers {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .process_group(0)
             .kill_on_drop(true);
+        #[cfg(unix)]
+        process.process_group(0);
         // It goes with quill even when quill is killed rather than closed: Linux signals it
         // when the forking thread, one of the engine's runtime threads, ends.
         // SAFETY: only an async-signal-safe call between fork and exec.
+        #[cfg(target_os = "linux")]
         unsafe {
             process.pre_exec(|| {
                 libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
@@ -323,12 +325,19 @@ impl Drop for Servers {
 }
 
 fn stop_group(pid: u32) {
-    if pid > 0 {
-        // SAFETY: a signal to the process group the server leads.
-        unsafe {
-            libc::kill(-(pid as i32), libc::SIGTERM);
-        }
+    if pid == 0 {
+        return;
     }
+    #[cfg(unix)]
+    // SAFETY: a signal to the process group the server leads.
+    unsafe {
+        libc::kill(-(pid as i32), libc::SIGTERM);
+    }
+    // /T takes the tree: Windows has no process groups to signal.
+    #[cfg(windows)]
+    let _ = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .output();
 }
 
 fn tail(logs: &Mutex<VecDeque<(bool, String)>>, most: usize, errors: bool, search: &str) -> String {

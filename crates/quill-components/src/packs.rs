@@ -173,7 +173,7 @@ pub fn load(json: &Path) -> Result<Theme, String> {
 
 /// Where editors keep their extensions on this computer, and the folders the person added.
 pub fn roots(added: &[PathBuf]) -> Vec<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = quill_files::home_dir();
     let installed = [".vscode", ".vscode-oss", ".cursor", ".windsurf"]
         .into_iter()
         .filter_map(|editor| Some(home.as_ref()?.join(editor).join("extensions")));
