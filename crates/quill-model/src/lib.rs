@@ -381,6 +381,42 @@ pub struct LogoWanted {
     pub url: Option<String>,
 }
 
+/// Whether the person is signed in to GitHub through the `gh` program, which keeps the
+/// credentials (in the system's keychain): GitHub is the person's identity, not an agent.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum GithubState {
+    /// `gh` is not installed; the text says how to install it on this system.
+    Missing(String),
+    SignedOut,
+    SignedIn {
+        login: String,
+        name: Option<String>,
+        /// The picture, kept as a PNG under quill's data folder once downloaded.
+        avatar: Option<PathBuf>,
+    },
+    /// `gh` answered something that was not understood, kept as its words.
+    Unknown(String),
+}
+
+/// One day of the contribution calendar.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ContributionDay {
+    /// `YYYY-MM-DD`.
+    pub date: String,
+    pub count: u32,
+    /// GitHub's intensity, 0 (none) to 4.
+    pub level: u8,
+}
+
+/// The last year of contributions: weeks from Sunday to Saturday, a missing day (outside the
+/// period) as `None`. Ported from openADE's `GithubContributionCalendar`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ContributionCalendar {
+    pub login: String,
+    pub total: u32,
+    pub weeks: Vec<[Option<ContributionDay>; 7]>,
+}
+
 /// What the UI asks of the engine.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Intent {
@@ -626,6 +662,22 @@ pub enum Intent {
     /// Sign out of an agent's program (it is signed out wherever that program runs).
     SignOut {
         agent: String,
+    },
+    /// Ask `gh` who is signed in to GitHub; answered by `Event::Github`.
+    CheckGithub,
+    /// Sign in to GitHub through `gh`'s browser flow. Answered by `Event::GithubCode`, then
+    /// `Event::Github` or `Event::GithubFailed`.
+    ConnectGithub,
+    /// Abandon the GitHub sign-in under way (its process is killed).
+    CancelGithub,
+    /// Sign `login` out of GitHub in `gh` (the terminal's `gh` is signed out too).
+    DisconnectGithub {
+        login: String,
+    },
+    /// The last year of contributions of `login`, the account the person sees; answered by
+    /// `Event::GithubContributions`.
+    GithubContributions {
+        login: String,
     },
     /// Servers the public MCP registry lists for `query`; answered by `Event::ServersFound`.
     FindServers {
@@ -1179,6 +1231,18 @@ pub enum Event {
         agent: String,
         message: String,
     },
+    /// Who is signed in to GitHub, as `gh` says.
+    Github(GithubState),
+    /// The one-time code `gh` printed and the page where it is typed (opened in the browser).
+    GithubCode {
+        code: String,
+        url: String,
+    },
+    GithubFailed {
+        message: String,
+    },
+    /// The contribution calendar, or why it could not be had.
+    GithubContributions(Result<ContributionCalendar, String>),
     /// What the MCP registry lists for `query`, or why it could not be asked.
     ServersFound {
         query: String,
@@ -1280,7 +1344,11 @@ impl Event {
             | Event::Auth { .. }
             | Event::AgentModels { .. }
             | Event::SignInUrl { .. }
-            | Event::SignInFailed { .. } => 0,
+            | Event::SignInFailed { .. }
+            | Event::Github(_)
+            | Event::GithubCode { .. }
+            | Event::GithubFailed { .. }
+            | Event::GithubContributions(_) => 0,
         }
     }
 }

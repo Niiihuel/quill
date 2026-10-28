@@ -54,3 +54,17 @@ El adaptador declara cómo se conecta la persona; el motor corre esos comandos f
 El motor abre la URL con `quill_files::open_in_system` (como la de un servidor MCP: `xdg-open` en Linux, `open` en macOS, `rundll32 url.dll,FileProtocolHandler` en Windows) y lanza el login con `BROWSER=true` para que el CLI no abra otra pestaña. El estado se pregunta con el mismo entorno que las sesiones (las variables del agente en Settings incluidas): con `ANTHROPIC_API_KEY` el CLI dice `api_key`. Cancelar mata el proceso hijo por su PID.
 
 Codex 0.163.0 (verificado, ver [codex.md](codex.md)): un solo método, `chatgpt` "ChatGPT account"; `auth_query` es `login status` (escribe en stderr, el motor entrega el texto de la salida que tenga algo), `login` imprime la URL en stderr y vuelve por un servidor local, sin código; `logout` es `logout`. `--device-auth` no se ofrece: pide escribir un código que quill no muestra.
+
+## Cuenta de GitHub (no es un agente)
+
+GitHub es la identidad de la persona en quill (el pie de la sidebar y Settings › Accounts, ver [ui.md](ui.md) §2.14b). No pasa por `AgentAdapter`: el código genérico no nombra proveedor, y `gh` es una herramienta de la computadora, como `git`. El motor (`quill-engine/src/github.rs`) corre estos comandos fuera del hilo de la UI y la UI solo ve `GithubState`, `ContributionCalendar` y los eventos `Github`, `GithubCode`, `GithubFailed` y `GithubContributions`.
+
+| Concepto | Comando | Notas |
+|---|---|---|
+| Estado | `gh auth status --hostname github.com`, luego `gh api user` | sale 0 si hay sesión; `api user` da `login`, `name`, `avatar_url` (forma confirmada con la cuenta real, solo lectura). "error connecting" no es "signed out": es `Unknown` |
+| Sin `gh` | (el `spawn` falla con `NotFound`) | `GithubState::Missing` con la instrucción por sistema: `winget install GitHub.cli`, `brew install gh`, el gestor de paquetes en Linux |
+| Conectar | `gh auth login --web --hostname github.com --git-protocol https --scopes read:user` | imprime `! First copy your one-time code: XXXX-XXXX`; el motor lo lee de stdout o stderr, abre la página y lo manda a la UI. Se lanza con `GH_BROWSER=true` y `GH_PROMPT_DISABLED=1`. No verificado contra un login real (no se corrió) |
+| Desconectar | `gh auth logout --hostname github.com --user {login}` | cierra también el `gh` de la terminal; `--user` porque con varias cuentas `gh` no elige solo |
+| Contribuciones | `gh api graphql -f query=…` | la misma consulta de openADE (`viewer { login contributionsCollection { contributionCalendar … } }`), validada en `parse_calendar` |
+
+El token no sale del llavero de `gh` (Linux, Windows y macOS); no se imprime ni se guarda. `GH_TOKEN` y `GITHUB_TOKEN` se quitan del entorno de estos comandos para que la cuenta sea la del llavero.

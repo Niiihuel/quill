@@ -15,6 +15,7 @@ mod auth;
 // The `$BROWSER` bridge is a Unix socket; elsewhere the system's browser opens addresses.
 #[cfg(unix)]
 mod bridge;
+mod github;
 mod images;
 mod logos;
 mod registry;
@@ -89,6 +90,8 @@ pub struct Config {
     pub settings: Option<PathBuf>,
     /// Where the logos of connectors and plugins are kept; `None` looks none up.
     pub logos: Option<PathBuf>,
+    /// Where the GitHub account's avatar is kept; `None` downloads none.
+    pub avatars: Option<PathBuf>,
     /// The built-in browser's Chromium profile; `None` puts one in the temporary folder.
     pub browser: Option<PathBuf>,
     /// Whether quill looks for its own updates (update.rs): the app does, the tests do not.
@@ -111,6 +114,7 @@ impl Config {
             snapshots: Some(data.join("quill/snapshots")),
             settings: Some(config.join("quill/settings.json")),
             logos: Some(data.join("quill/logos")),
+            avatars: Some(data.join("quill/avatars")),
             browser: Some(data.join("quill/browser")),
             updates: true,
             open_pages: true,
@@ -320,6 +324,8 @@ struct Router {
     updates: update::Updates,
     /// Each agent's sign-in under way: where the person's code or cancel goes.
     logins: HashMap<String, UnboundedSender<auth::Login>>,
+    /// The GitHub sign-in under way: a message (or a drop) kills its `gh`.
+    github_login: Option<UnboundedSender<()>>,
 }
 
 impl Router {
@@ -465,6 +471,7 @@ impl Router {
             awake: None,
             updates,
             logins: HashMap::new(),
+            github_login: None,
         }
     }
 
@@ -1411,6 +1418,36 @@ impl Router {
             }
             Intent::SignOut { agent } => {
                 self.sign_out(agent);
+                return;
+            }
+            Intent::CheckGithub => {
+                let (ui, dir) = (self.ui.clone(), self.config.avatars.clone());
+                tokio::spawn(async move { github::check(dir, &ui).await });
+                return;
+            }
+            Intent::ConnectGithub => {
+                // A new sign-in replaces one under way: the old sender drops and cancels it.
+                self.github_login = Some(github::connect(
+                    self.config.avatars.clone(),
+                    self.ui.clone(),
+                    self.config.open_pages,
+                ));
+                return;
+            }
+            Intent::CancelGithub => {
+                if let Some(login) = self.github_login.take() {
+                    let _ = login.send(());
+                }
+                return;
+            }
+            Intent::DisconnectGithub { login } => {
+                let (ui, dir) = (self.ui.clone(), self.config.avatars.clone());
+                tokio::spawn(async move { github::disconnect(login, dir, &ui).await });
+                return;
+            }
+            Intent::GithubContributions { login } => {
+                let ui = self.ui.clone();
+                tokio::spawn(async move { github::contributions(login, &ui).await });
                 return;
             }
             // The registry, asked with the computer's own `curl` (Linux, macOS, Windows 10 on).

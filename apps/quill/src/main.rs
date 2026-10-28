@@ -1752,6 +1752,8 @@ fn main() -> eframe::Result {
                         native: native.clone(),
                         // The stand-in's sign-in page opens too, so the flow can be watched.
                         open_pages: true,
+                        // GitHub's picture is kept like the real app's, so the foot can show it.
+                        avatars: quill_engine::Config::default_database().avatars,
                         ..Default::default()
                     },
                 ),

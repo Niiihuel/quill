@@ -1,5 +1,6 @@
-//! The person's account as the agent's own program keeps it: the sidebar's account button and
-//! menu, the sign-in screen, and the question before signing out. The program signs in and out
+//! The person's account with an agent as its own program keeps it: the sign-in screen and
+//! the question before signing out (Settings' Accounts page holds the buttons; the sidebar's
+//! foot is the GitHub identity, github.rs). The program signs in and out
 //! (the engine runs it); this shows what it reports. Desktop's account menu and its identity
 //! rules are in private notes `desk-updates-account.md` § Cuenta: its avatar shows the first and
 //! last word's initials with `?` as the fallback, its menu opens with the identity, and Sign
@@ -14,7 +15,10 @@ use std::collections::HashMap;
 
 /// The account menu's entries and the session's "Sign in" button.
 pub const SIGN_IN: &str = "account:sign-in";
-pub const SIGN_OUT: &str = "account:sign-out";
+/// An agent's "Sign in" in Settings, followed by its id.
+pub const SIGN_IN_OF: &str = "account:sign-in-of:";
+/// An agent's "Sign out" in Settings, followed by its id.
+pub const SIGN_OUT_OF: &str = "account:sign-out-of:";
 const SIGN_OUT_YES: &str = "account:sign-out:yes";
 const SIGN_OUT_NO: &str = "account:sign-out:no";
 /// A sign-in method's button, followed by its key.
@@ -52,15 +56,19 @@ pub struct Account {
     /// What the code field holds, and which attempt's field it is.
     pub code: String,
     pub attempt: u32,
-    /// Whether the question before signing out is up.
-    pub confirming: bool,
+    /// The agent whose sign-out is being asked about.
+    pub confirming: Option<String>,
+    /// The agent Settings asked to sign in to, while it is not the one new sessions use.
+    pub target: Option<String>,
 }
 
-/// The agent new sessions use, whose account the window shows.
+/// The agent whose account the screen and the question are about: the one Settings asked
+/// for, else the one new sessions use.
 fn current(ui: &Ui) -> Option<&quill_model::AgentInfo> {
+    let wanted = ui.account.target.as_deref().unwrap_or(&ui.agent);
     ui.agents
         .iter()
-        .find(|a| a.id == ui.agent)
+        .find(|a| a.id == wanted)
         .or(ui.agents.first())
 }
 
@@ -91,6 +99,7 @@ pub(crate) fn heard(ui: &mut Ui, event: &Event) -> Vec<Intent> {
             ui.account.states.insert(agent.clone(), state.clone());
             if matches!(state, AuthState::SignedIn { .. }) {
                 ui.account.asked = false;
+                ui.account.target = None;
                 ui.account.phase = Phase::Choose;
                 ui.account.code.clear();
             }
@@ -113,6 +122,16 @@ pub(crate) fn heard(ui: &mut Ui, event: &Event) -> Vec<Intent> {
 
 /// The clicks of this module, or `None` for another's.
 pub(crate) fn clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
+    if let Some(agent) = id.strip_prefix(SIGN_IN_OF) {
+        ui.account.target = Some(agent.to_owned());
+        ui.account.asked = true;
+        ui.account.phase = Phase::Choose;
+        return Some(vec![]);
+    }
+    if let Some(agent) = id.strip_prefix(SIGN_OUT_OF) {
+        ui.account.confirming = Some(agent.to_owned());
+        return Some(vec![]);
+    }
     let agent = current(ui)?.id.clone();
     if let Some(method) = id.strip_prefix(METHOD) {
         ui.account.phase = Phase::Waiting {
@@ -132,17 +151,12 @@ pub(crate) fn clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
             ui.account.asked = true;
             vec![]
         }
-        SIGN_OUT => {
-            ui.account_menu = false;
-            ui.account.confirming = true;
-            vec![]
-        }
         SIGN_OUT_NO => {
-            ui.account.confirming = false;
+            ui.account.confirming = None;
             vec![]
         }
         SIGN_OUT_YES => {
-            ui.account.confirming = false;
+            let agent = ui.account.confirming.take()?;
             vec![Intent::SignOut { agent }]
         }
         COPY_LINK => {
@@ -157,6 +171,7 @@ pub(crate) fn clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
         CANCEL => {
             ui.account.phase = Phase::Choose;
             ui.account.asked = false;
+            ui.account.target = None;
             vec![Intent::CancelSignIn { agent }]
         }
         RETRY => {
@@ -183,7 +198,7 @@ pub(crate) fn submit(ui: &mut Ui) -> Vec<Intent> {
 }
 
 /// The first and last words' initials in capitals, `?` for none; a lone word gives one.
-fn initials(name: &str) -> String {
+pub(crate) fn initials(name: &str) -> String {
     let words: Vec<&str> = name
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty())
@@ -196,72 +211,14 @@ fn initials(name: &str) -> String {
     }
 }
 
-/// "max" as the plan reads in the account button.
-fn plan_word(plan: &str) -> String {
-    let mut chars = plan.trim().chars();
-    chars.next().map_or(String::new(), |c| {
-        c.to_uppercase().collect::<String>() + chars.as_str()
-    })
-}
-
-/// What the account button shows: the avatar's letters, the name (the host's, else the
-/// email), and the plan the program reports when it does.
-pub(crate) fn identity(ui: &Ui) -> (String, String, Option<String>) {
-    let (email, plan) = match state(ui) {
-        Some(AuthState::SignedIn { email, plan, .. }) => (email.clone(), plan.clone()),
-        _ => (None, None),
-    };
-    let name = ui
-        .name
-        .clone()
-        .filter(|n| !n.trim().is_empty())
-        .or(email)
-        .unwrap_or_default();
-    (
-        // An email's letters are its local part's.
-        initials(name.split('@').next().unwrap_or_default()),
-        name,
-        plan.map(|p| plan_word(&p)).filter(|p| !p.is_empty()),
-    )
-}
-
-/// The menu's first block: the identity, muted, and the organization under it, or that
-/// nobody is signed in; it is not clickable.
-pub(crate) fn menu_header(ui: &Ui) -> limn::DropdownMenuEntry {
-    let mut lines = vec![];
-    match state(ui) {
-        Some(AuthState::SignedIn { email, org, .. }) => {
-            lines.extend(email.clone().or(ui.name.clone()).map(muted));
-            lines.extend(org.clone().map(|o| muted(o).font_size(12.0)));
-        }
-        Some(AuthState::SignedOut) => lines.push(muted("Not signed in")),
-        _ => {}
-    }
-    limn::DropdownMenuEntry::Custom(Box::new(
-        Element::column(lines)
-            .gap(2.0)
-            .padding(8.0)
-            .size(Some(244.0), None),
-    ))
-}
-
-/// The menu's last entry: Sign out, or Sign in… when nobody is.
-pub(crate) fn menu_end(ui: &Ui) -> Vec<limn::DropdownMenuEntry> {
-    let entry = match state(ui) {
-        Some(AuthState::SignedIn { .. }) => {
-            limn::DropdownMenuItem::new(SIGN_OUT, "Sign out").icon(icons::of(icons::LOGOUT))
-        }
-        Some(AuthState::SignedOut) => {
-            limn::DropdownMenuItem::new(SIGN_IN, "Sign in\u{2026}").icon(icons::of(icons::LOGOUT))
-        }
-        _ => return vec![],
-    };
-    vec![limn::DropdownMenuEntry::Separator, entry.into()]
-}
-
 /// "Sign out of {agent}?", over `base`.
 pub(crate) fn dialogs(ui: &Ui, base: Element) -> Element {
-    let Some(agent) = current(ui) else {
+    let Some(agent) = ui
+        .account
+        .confirming
+        .as_ref()
+        .and_then(|id| ui.agents.iter().find(|a| &a.id == id))
+    else {
         return base;
     };
     let program = ui
@@ -271,7 +228,7 @@ pub(crate) fn dialogs(ui: &Ui, base: Element) -> Element {
         .unwrap_or_else(|| agent.id.clone());
     confirm(
         base,
-        ui.account.confirming,
+        true,
         &format!("Sign out of {}?", agent.name),
         &format!("This also signs you out of {program} in your terminal."),
         "Sign out",

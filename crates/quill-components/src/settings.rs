@@ -15,6 +15,8 @@ pub struct Setting {
     pub title: String,
     pub about: Option<String>,
     pub control: Element,
+    /// A block under the row, as wide as the page (a chart): the row is its heading.
+    pub below: Option<Element>,
 }
 
 pub fn setting(title: &str, about: &str, control: Element) -> Setting {
@@ -22,6 +24,15 @@ pub fn setting(title: &str, about: &str, control: Element) -> Setting {
         title: title.to_owned(),
         about: (!about.is_empty()).then(|| about.to_owned()),
         control,
+        below: None,
+    }
+}
+
+impl Setting {
+    /// The same row with `block` under it.
+    pub fn below(mut self, block: Element) -> Self {
+        self.below = Some(block);
+        self
     }
 }
 
@@ -288,6 +299,10 @@ pub fn dialog(
                     .render()
                     .size(Some(rows_width), None),
             );
+            if let Some(block) = row.below {
+                items.push(Element::row(vec![hgap(10.0), block]));
+                items.push(Element::spacer().size(None, Some(12.0)));
+            }
             // The hairline runs under the copy and the control, inside the rows' inset.
             if at + 1 < count {
                 items.push(Element::row(vec![

@@ -5379,7 +5379,7 @@ fn the_first_settings_ask_each_agent_who_is_signed_in_and_signed_out_shows_the_s
         agents: claude_with_sign_in(),
     });
     assert!(
-        matches!(&asked[..], [Intent::CheckSignIn { agent }] if agent == "claude"),
+        matches!(&asked[..], [Intent::CheckSignIn { agent }, Intent::CheckGithub] if agent == "claude"),
         "{asked:?}"
     );
     ui.agents = claude_with_sign_in();
@@ -5458,34 +5458,299 @@ fn signed_out() -> quill_model::AuthState {
     quill_model::AuthState::SignedOut
 }
 
+/// A GitHub account as `gh` reports it.
+fn github_in() -> quill_model::GithubState {
+    quill_model::GithubState::SignedIn {
+        login: "ada".into(),
+        name: Some("Ada Lovelace".into()),
+        avatar: None,
+    }
+}
+
+fn a_week() -> quill_model::ContributionCalendar {
+    let day = |date: &str, count, level| {
+        Some(quill_model::ContributionDay {
+            date: date.into(),
+            count,
+            level,
+        })
+    };
+    quill_model::ContributionCalendar {
+        login: "ada".into(),
+        total: 4,
+        weeks: vec![[
+            day("2026-09-06", 1, 1),
+            day("2026-09-07", 3, 2),
+            None,
+            None,
+            None,
+            None,
+            None,
+        ]],
+    }
+}
+
 #[test]
-fn the_account_menu_names_who_is_signed_in_and_signing_out_asks_first() {
+fn the_foot_shows_the_github_identity_and_its_menu_connects_or_disconnects() {
+    let (store, mut ui) = store_with_session();
+    ui.skip_welcome = true;
+    ui.name = Some("Grace Hopper".into());
+    // Not asked or not connected: quill's user, and the menu offers to connect.
+    let (initials, name, avatar) = crate::github::identity(&ui);
+    assert_eq!(
+        (initials.as_str(), name.as_str(), avatar),
+        ("GH", "Grace Hopper", None)
+    );
+    ui.github.state = Some(quill_model::GithubState::SignedOut);
+    assert_eq!(crate::github::menu_action(&ui).1, "Connect GitHub");
+    // Connected: GitHub's name, whatever the quill user is called.
+    ui.github.state = Some(github_in());
+    let (initials, name, _) = crate::github::identity(&ui);
+    assert_eq!((initials.as_str(), name.as_str()), ("AL", "Ada Lovelace"));
+    assert_eq!(crate::github::menu_action(&ui).1, "Disconnect GitHub");
+    // Without a name the login stands in.
+    ui.github.state = Some(quill_model::GithubState::SignedIn {
+        login: "ada".into(),
+        name: None,
+        avatar: Some("/tmp/ada.png".into()),
+    });
+    let (initials, name, avatar) = crate::github::identity(&ui);
+    assert_eq!((initials.as_str(), name.as_str()), ("A", "ada"));
+    assert!(avatar.is_some());
+    assert!(crate::image_paths(&store, &ui).contains(&"/tmp/ada.png".into()));
+
+    // Disconnecting asks first, and also says it signs the terminal out.
+    ui.github.state = Some(github_in());
+    ui.account_menu = true;
+    assert!(click(&store, &mut ui, crate::github::DISCONNECT).is_empty());
+    assert!(ui.github.confirming && !ui.account_menu);
+    assert!(click(&store, &mut ui, "github:disconnect:no").is_empty());
+    assert!(!ui.github.confirming);
+    click(&store, &mut ui, crate::github::DISCONNECT);
+    let out = click(&store, &mut ui, "github:disconnect:yes");
+    assert!(
+        matches!(&out[..], [Intent::DisconnectGithub { login }] if login == "ada"),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn github_connects_with_a_code_that_can_be_copied_cancelled_or_fail() {
+    let (store, mut ui) = store_with_session();
+    ui.github.state = Some(quill_model::GithubState::SignedOut);
+    let started = click(&store, &mut ui, crate::github::CONNECT);
+    assert_eq!(started, vec![Intent::ConnectGithub]);
+    assert_eq!(
+        ui.github.phase,
+        crate::github::Phase::Waiting { code: None }
+    );
+    // Copy has no code to copy yet.
+    click(&store, &mut ui, crate::github::COPY_CODE);
+    assert!(ui.files_copy.is_none());
+    ui.applied(&Event::GithubCode {
+        code: "1A2B-3C4D".into(),
+        url: "https://github.com/login/device".into(),
+    });
+    click(&store, &mut ui, crate::github::COPY_CODE);
+    assert_eq!(ui.files_copy.as_deref(), Some("1A2B-3C4D"));
+    assert_eq!(
+        click(&store, &mut ui, crate::github::CANCEL),
+        vec![Intent::CancelGithub]
+    );
+    assert_eq!(ui.github.phase, crate::github::Phase::Idle);
+    ui.applied(&Event::GithubFailed {
+        message: "expired".into(),
+    });
+    assert_eq!(
+        ui.github.phase,
+        crate::github::Phase::Failed("expired".into())
+    );
+    // Signing in clears it.
+    ui.applied(&Event::Github(github_in()));
+    assert_eq!(ui.github.phase, crate::github::Phase::Idle);
+    // Without gh, Connect opens the Accounts page instead of starting anything.
+    ui.github.state = Some(quill_model::GithubState::Missing("install gh".into()));
+    assert!(click(&store, &mut ui, crate::github::CONNECT).is_empty());
+    assert_eq!(ui.settings_page.as_deref(), Some(view::SETTINGS_ACCOUNTS));
+}
+
+#[test]
+fn the_first_settings_ask_github_once_and_the_accounts_page_asks_for_the_calendar() {
+    let (store, mut ui) = store_with_session();
+    let settings = Event::Settings {
+        settings: Default::default(),
+        agents: vec![],
+    };
+    let first = ui.applied(&settings);
+    assert!(first.contains(&Intent::CheckGithub), "{first:?}");
+    assert!(!ui.applied(&settings).contains(&Intent::CheckGithub));
+    // Signed in, with the page closed: nothing is asked of the network.
+    assert!(ui.applied(&Event::Github(github_in())).is_empty());
+    let opened = click(&store, &mut ui, view::SETTINGS_OPEN);
+    assert!(!opened
+        .iter()
+        .any(|i| matches!(i, Intent::GithubContributions { .. })));
+    let page = click(
+        &store,
+        &mut ui,
+        &format!("settings:page:{}", view::SETTINGS_ACCOUNTS),
+    );
+    assert_eq!(
+        page,
+        vec![Intent::GithubContributions {
+            login: "ada".into()
+        }]
+    );
+    assert_eq!(ui.github.calendar, crate::github::Calendar::Loading);
+    // Asked once; the answer is kept, and Refresh asks again.
+    assert!(click(
+        &store,
+        &mut ui,
+        &format!("settings:page:{}", view::SETTINGS_ACCOUNTS)
+    )
+    .is_empty());
+    ui.applied(&Event::GithubContributions(Ok(a_week())));
+    assert!(matches!(
+        ui.github.calendar,
+        crate::github::Calendar::Ready(_)
+    ));
+    assert_eq!(click(&store, &mut ui, crate::github::REFRESH).len(), 1);
+    ui.applied(&Event::GithubContributions(Err("nope".into())));
+    assert_eq!(
+        ui.github.calendar,
+        crate::github::Calendar::Failed("nope".into())
+    );
+    // Another account's login drops the old calendar.
+    ui.applied(&Event::Github(quill_model::GithubState::SignedOut));
+    assert_eq!(ui.github.calendar, crate::github::Calendar::Idle);
+}
+
+fn titles(page: &quill_components::settings::SettingsPage, group: &str) -> Vec<String> {
+    page.groups
+        .iter()
+        .find(|(name, _)| name == group)
+        .map(|(_, rows)| rows.iter().map(|r| r.title.clone()).collect())
+        .unwrap_or_default()
+}
+
+#[test]
+fn the_accounts_page_has_github_then_a_section_per_agent_with_its_usage() {
+    let (mut store, mut ui) = store_with_session();
+    ui.agents = claude_with_sign_in();
+    ui.agent = "claude".into();
+    let palette = quill_components::look::palette();
+    // Nothing known yet.
+    let page = crate::accounts::page(&store, &ui, palette);
+    assert_eq!(page.key, view::SETTINGS_ACCOUNTS);
+    assert_eq!(titles(&page, "GitHub"), vec!["GitHub"]);
+    // Connected, loading its calendar.
+    ui.github.state = Some(github_in());
+    let page = crate::accounts::page(&store, &ui, palette);
+    assert_eq!(
+        titles(&page, "GitHub"),
+        vec!["Signed in as @ada", "Contributions"]
+    );
+    ui.github.calendar = crate::github::Calendar::Ready(a_week());
+    let page = crate::accounts::page(&store, &ui, palette);
+    assert_eq!(
+        titles(&page, "GitHub"),
+        vec!["Signed in as @ada", "4 contributions in the last year"]
+    );
+    // gh missing and signed out say what to do.
+    ui.github.state = Some(quill_model::GithubState::Missing("install gh".into()));
+    assert_eq!(
+        titles(&crate::accounts::page(&store, &ui, palette), "GitHub"),
+        vec!["GitHub CLI not found"]
+    );
+    ui.github.state = Some(quill_model::GithubState::SignedOut);
+    assert_eq!(
+        titles(&crate::accounts::page(&store, &ui, palette), "GitHub"),
+        vec!["GitHub"]
+    );
+
+    // The agent: signed in, and its usage once a session of it reported limits.
+    let name = ui.agents[0].name.clone();
+    ui.account.states.insert("claude".into(), signed_in());
+    let page = crate::accounts::page(&store, &ui, palette);
+    assert_eq!(titles(&page, &name), vec!["Signed in", "Usage"]);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    store.apply(Event::Agent {
+        session: 1,
+        request: None,
+        event: AgentEvent::Limits(quill_model::PlanLimits {
+            session: Some(quill_model::UsageWindow {
+                utilization: 0.8,
+                resets_at: now + 3 * 3600,
+            }),
+            weekly: Some(quill_model::UsageWindow {
+                utilization: 0.1,
+                resets_at: now + 3 * 86_400,
+            }),
+        }),
+    });
+    let page = crate::accounts::page(&store, &ui, palette);
+    assert_eq!(
+        titles(&page, &name),
+        vec!["Signed in", "5-hour limit", "Weekly"]
+    );
+    // Signed out: it can sign in again from here.
+    ui.account.states.insert("claude".into(), signed_out());
+    assert_eq!(
+        titles(&crate::accounts::page(&store, &ui, palette), &name)[0],
+        "Not signed in"
+    );
+}
+
+#[test]
+fn the_usage_bar_warns_from_75_and_turns_red_from_90() {
+    use quill_components::look;
+    let (normal, warn, danger) = (
+        crate::accounts::bar_fill(0.5),
+        crate::accounts::bar_fill(0.75),
+        crate::accounts::bar_fill(0.9),
+    );
+    assert_eq!(normal, look::handle());
+    assert_eq!(warn, look::manual());
+    assert_eq!(danger, look::removed());
+    assert_eq!(crate::accounts::bar_fill(0.749), normal);
+}
+
+#[test]
+fn an_agents_sign_out_from_settings_asks_first_and_signs_in_targets_that_agent() {
     let (store, mut ui) = store_with_session();
     ui.skip_welcome = true;
     ui.agents = claude_with_sign_in();
     ui.account.states.insert("claude".into(), signed_in());
-    ui.name = Some("Ada Lovelace".into());
-    let (initials, name, plan) = crate::account::identity(&ui);
-    assert_eq!(
-        (initials.as_str(), name.as_str(), plan.as_deref()),
-        ("AL", "Ada Lovelace", Some("Max"))
-    );
-    // Without a name the email stands in, and a lone word gives one letter.
-    ui.name = None;
-    let (initials, name, _) = crate::account::identity(&ui);
-    assert_eq!((initials.as_str(), name.as_str()), ("A", "ada@example.com"));
-
-    ui.account_menu = true;
-    let first = click(&store, &mut ui, crate::account::SIGN_OUT);
-    assert!(first.is_empty() && ui.account.confirming && !ui.account_menu);
+    assert!(click(
+        &store,
+        &mut ui,
+        &format!("{}claude", crate::account::SIGN_OUT_OF)
+    )
+    .is_empty());
+    assert_eq!(ui.account.confirming.as_deref(), Some("claude"));
     assert!(click(&store, &mut ui, "account:sign-out:no").is_empty());
-    assert!(!ui.account.confirming);
-    click(&store, &mut ui, crate::account::SIGN_OUT);
+    assert!(ui.account.confirming.is_none());
+    click(
+        &store,
+        &mut ui,
+        &format!("{}claude", crate::account::SIGN_OUT_OF),
+    );
     let out = click(&store, &mut ui, "account:sign-out:yes");
     assert!(
         matches!(&out[..], [Intent::SignOut { agent }] if agent == "claude"),
         "{out:?}"
     );
+    // "Sign in" in Settings opens the sign-in screen for that agent.
+    assert!(!crate::account::visible(&ui));
+    click(
+        &store,
+        &mut ui,
+        &format!("{}claude", crate::account::SIGN_IN_OF),
+    );
+    assert!(crate::account::visible(&ui));
 }
 
 #[test]

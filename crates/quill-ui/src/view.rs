@@ -141,6 +141,8 @@ pub const CUSTOMIZE_OPEN: &str = "customize:open";
 pub const ACCOUNT_MENU: &str = "account:menu";
 /// Customize's pages: each agent's skills and plugins.
 pub const SETTINGS_SKILLS: &str = "skills";
+/// Settings' Accounts page: GitHub and each agent's sign-in and usage.
+pub const SETTINGS_ACCOUNTS: &str = "accounts";
 pub const SETTINGS_PLUGINS: &str = "plugins";
 pub const SETTINGS_CONNECTORS: &str = "connectors";
 /// Connectors' search of the MCP registry, and "Add custom connector"'s fields
@@ -581,6 +583,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     let root = server_dialog(ui, root, palette);
     let root = crate::updates::dialogs(ui, root, palette);
     let root = crate::account::dialogs(ui, root);
+    let root = crate::github::dialogs(ui, root);
     let root = removing_dialog(ui, root);
     let root = image_viewer(ui, root, window, palette);
     let root = annotator(ui, root, window, palette);
@@ -2016,22 +2019,26 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
             ));
         }
     }
-    // At its foot over a line, the person: their initials, name and plan, opening the menu
-    // that holds Settings, as Desktop's (3.6556.2, captured 2026-10-27). Its other entries
-    // are claude.ai's pages; quill keeps none. The agent's program says who it is.
-    let (initial, name, signed_plan) = crate::account::identity(ui);
+    // At its foot over a line, the person: their GitHub picture (else their initials) and
+    // name, opening the menu that holds Settings, as Desktop's (3.6556.2, captured
+    // 2026-10-27). Its other entries are claude.ai's pages; quill keeps none. GitHub says who
+    // it is (`gh`); without it the foot has quill's user and the menu offers to connect.
+    let (initial, name, avatar) = crate::github::identity(ui);
     let mut account = vec![hgap(0.0)];
-    account.push(
-        Element::row(vec![muted(initial).font_size(10.0).centered().flex(1.0)])
+    let picture = avatar.and_then(|path| ui.thumbs.get(&path));
+    account.push(match picture {
+        Some(picture) => limn::Avatar::new(name.clone(), palette)
+            .image(picture.clone())
+            .size(20.0)
+            .render()
+            .centered_y(),
+        None => Element::row(vec![muted(initial).font_size(10.0).centered().flex(1.0)])
             .size(Some(20.0), Some(20.0))
             .background(look::active())
             .radius(10.0)
             .centered_y(),
-    );
+    });
     account.push(text(name).centered_y());
-    if let Some(plan) = signed_plan.or_else(|| account_plan(store, None)) {
-        account.push(muted(format!("\u{b7} {plan}")).font_size(12.0).centered_y());
-    }
     account.push(
         Element::icon(icons::of(icons::CARET_DOWN))
             .foreground(look::muted())
@@ -2049,7 +2056,7 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
     ))
     .radius(8.0);
     let mut entries = vec![
-        crate::account::menu_header(ui),
+        crate::github::menu_header(ui),
         limn::DropdownMenuEntry::Separator,
     ];
     entries.push(
@@ -2063,7 +2070,7 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
             .icon(icons::of(icons::QUESTION))
             .into(),
     );
-    entries.extend(crate::account::menu_end(ui));
+    entries.extend(crate::github::menu_end(ui));
     let account = menu(
         account,
         entries,
@@ -6767,7 +6774,7 @@ pub fn resets_in(resets_at: u64, now: u64, offset: i64) -> String {
 
 /// The share of a plan window spent: none once it started again, until the agent reports
 /// the new one.
-fn spent(window: &quill_model::UsageWindow, now: u64) -> f32 {
+pub(crate) fn spent(window: &quill_model::UsageWindow, now: u64) -> f32 {
     if window.resets_at <= now {
         0.0
     } else {
@@ -9453,6 +9460,7 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
     for agent in &ui.agents {
         pages.push(agent_page(store, ui, agent, palette));
     }
+    pages.push(crate::accounts::page(store, ui, palette));
     let kept = match &ui.storage {
         Some((path, bytes)) => format!(
             "Sessions and their file history are kept in {} ({}).",
@@ -11071,7 +11079,10 @@ fn settings_dialog(
     };
     let pages = settings_pages(store, ui, palette);
     let owned = |keys: &[&str]| keys.iter().map(|k| (*k).to_owned()).collect();
-    let mut groups = vec![("Preferences", owned(&["general", "sessions", "browser"]))];
+    let mut groups = vec![(
+        "Preferences",
+        owned(&["general", "sessions", "browser", SETTINGS_ACCOUNTS]),
+    )];
     let agents: Vec<String> = pages
         .iter()
         .filter(|p| p.key.starts_with("agent:"))

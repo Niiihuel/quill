@@ -3,9 +3,11 @@
 //! Layout and colors follow Claude Desktop's Code surface (docs/ui.md, features/code-*.md).
 
 mod account;
+mod accounts;
 pub mod annotate;
 pub mod appearance;
 mod files;
+mod github;
 mod greeting;
 mod mention;
 mod pixels;
@@ -224,6 +226,8 @@ pub struct Store {
     /// The plan's usage windows, as the agent last reported them; they are the person's,
     /// not one session's.
     pub limits: Option<quill_model::PlanLimits>,
+    /// The same, by the agent whose session reported them: Settings' Accounts page.
+    pub limits_by_agent: std::collections::HashMap<String, quill_model::PlanLimits>,
     /// Counts the events applied, so a session knows when it last changed.
     pub clock: u64,
 }
@@ -354,9 +358,15 @@ impl Store {
             }
             Event::QueueTaken { .. } => {}
             Event::Agent {
+                session,
                 event: AgentEvent::Limits(limits),
                 ..
-            } => self.limits = Some(limits),
+            } => {
+                if let Some(agent) = self.session(session).map(|s| s.agent.clone()) {
+                    self.limits_by_agent.insert(agent, limits);
+                }
+                self.limits = Some(limits);
+            }
             Event::Agent { session, event, .. } => {
                 if let Some(s) = self.session_mut(session) {
                     agent_event(s, event);
@@ -586,6 +596,10 @@ impl Store {
             | Event::FilesFound { .. }
             | Event::Settings { .. }
             | Event::Logo { .. }
+            | Event::Github(_)
+            | Event::GithubCode { .. }
+            | Event::GithubFailed { .. }
+            | Event::GithubContributions(_)
             | Event::Storage { .. }
             | Event::Restored
             | Event::SettingsNotSaved { .. }
@@ -1167,6 +1181,8 @@ pub struct Ui {
     pub account_menu: bool,
     /// The agent's account and the sign-in screen (`account`).
     pub account: account::Account,
+    /// GitHub through `gh`: the person's identity (github.rs).
+    pub github: github::Github,
     /// quill's own update, as the engine last reported it.
     pub update: quill_model::UpdateState,
     /// "Agents are still working" is up, and "Wait for agents" was chosen (the update installs
@@ -1908,6 +1924,7 @@ impl Ui {
             agent_models: Default::default(),
             settings_page: None,
             account_menu: false,
+            github: Default::default(),
             account: Default::default(),
             update: quill_model::UpdateState::Idle,
             update_asking: false,
@@ -2267,6 +2284,7 @@ impl Ui {
         updates::heard(self, event);
         tour::heard(self, event);
         let mut intents = account::heard(self, event);
+        intents.extend(github::heard(self, event));
         intents.extend(files::heard(self, event));
         intents.extend(self.mcp_heard(event));
         intents.extend(self.applied_to_view(event));
@@ -2559,11 +2577,13 @@ pub fn image_paths(store: &Store, ui: &Ui) -> Vec<PathBuf> {
                 light.clone()
             }
         });
+    let avatar = github::signed_in(ui).and_then(|(.., avatar)| avatar.cloned());
     ui.images
         .iter()
         .cloned()
         .chain(shown)
         .chain(logos)
+        .chain(avatar)
         .collect()
 }
 
@@ -3222,6 +3242,9 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         return intents;
     }
     if let Some(intents) = appearance::clicked(ui, id) {
+        return intents;
+    }
+    if let Some(intents) = github::clicked(ui, id) {
         return intents;
     }
     if let Some(intents) = tour::clicked(ui, id) {
@@ -4553,6 +4576,10 @@ fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
         }
         if page == view::SETTINGS_CONNECTORS {
             return Some(ui.ask_servers());
+        }
+        // The Accounts page shows the contributions, read when it opens.
+        if page == view::SETTINGS_ACCOUNTS {
+            return Some(github::want_calendar(ui));
         }
         return Some(vec![]);
     }

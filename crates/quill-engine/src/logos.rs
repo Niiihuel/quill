@@ -194,7 +194,7 @@ fn bitmap(bytes: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// The agent every lookup uses: https only, ten seconds at most.
-fn agent() -> ureq::Agent {
+pub(crate) fn agent() -> ureq::Agent {
     ureq::Agent::new_with_config(
         ureq::Agent::config_builder()
             .https_only(true)
@@ -204,7 +204,7 @@ fn agent() -> ureq::Agent {
 }
 
 /// The body of `url` (with one query pair), at most `LIMIT` bytes; `None` on any failure.
-fn get(agent: &ureq::Agent, url: &str, query: Option<(&str, &str)>) -> Option<Vec<u8>> {
+pub(crate) fn get(agent: &ureq::Agent, url: &str, query: Option<(&str, &str)>) -> Option<Vec<u8>> {
     let mut request = agent.get(url);
     if let Some((key, value)) = query {
         request = request.query(key, value);
