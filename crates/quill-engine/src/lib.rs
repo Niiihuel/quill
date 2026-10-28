@@ -30,6 +30,7 @@ pub type Sink = Arc<dyn Fn(Event) + Send + Sync>;
 /// Site permissions the browser waits on: by card, the site and where the answer goes.
 /// Questions quill itself asks on a permission card: by card, what for (a site, whose
 /// "Always" joins Settings, or a dev server) and where the answer goes.
+type Modes = Arc<Mutex<HashMap<SessionId, String>>>;
 type SiteWaits = Arc<
     Mutex<
         HashMap<
@@ -277,6 +278,8 @@ struct Router {
     started: HashMap<SessionId, NewSession>,
     /// Each session's own id at its agent, which a fork continues from.
     agent_ids: Arc<Mutex<HashMap<SessionId, String>>>,
+    /// Each session's permission mode, as launched and as the agent last reported it.
+    modes: Modes,
     next: SessionId,
     /// The session that started each one, which it reports to.
     parents: HashMap<SessionId, SessionId>,
@@ -320,16 +323,23 @@ impl Router {
     fn new(ui: Sink, config: Config, internal: UnboundedSender<Internal>) -> Self {
         let store = Arc::new(Mutex::new(open_store(&config, &ui)));
         let agent_ids: Arc<Mutex<HashMap<SessionId, String>>> = Arc::default();
+        let modes: Modes = Arc::default();
         let sink: Sink = {
             let (store, ui, agent_ids) = (store.clone(), ui.clone(), agent_ids.clone());
+            let modes = modes.clone();
             Arc::new(move |event: Event| {
-                if let Event::Agent {
-                    session,
-                    event: AgentEvent::Session { id },
-                    ..
-                } = &event
-                {
-                    agent_ids.lock().unwrap().insert(*session, id.clone());
+                match &event {
+                    Event::Agent {
+                        session,
+                        event: AgentEvent::Session { id },
+                        ..
+                    } => drop(agent_ids.lock().unwrap().insert(*session, id.clone())),
+                    Event::Agent {
+                        session,
+                        event: AgentEvent::ModeChanged { mode },
+                        ..
+                    } => drop(modes.lock().unwrap().insert(*session, mode.clone())),
+                    _ => {}
                 }
                 if let Err(error) = store.lock().unwrap().append(event.session(), &event) {
                     ui(Event::Status {
@@ -344,8 +354,17 @@ impl Router {
         // What quill asks itself (a site, a dev server) is a card, as a permission is.
         let ask: Ask = {
             let (sink, ui, waits) = (sink.clone(), ui.clone(), site_waits.clone());
+            let modes = modes.clone();
             Arc::new(move |session, input, site| {
                 let (answer, heard) = tokio::sync::oneshot::channel();
+                // A session in bypass or auto mode starts a dev server without asking, this
+                // once, as Desktop waives it (2.9939.4 `askForLaunchSpawn`,
+                // "consent_waiver_mode_preview_start", modes `YPa` = {bypass, auto}).
+                let mode = modes.lock().unwrap().get(&session).cloned();
+                if waives_server_consent(mode.as_deref()) && input["kind"] == "server" {
+                    let _ = answer.send(quill_browser::Grant::Once);
+                    return heard;
+                }
                 let id = format!("site-{}", uuid::Uuid::new_v4().simple());
                 waits.lock().unwrap().insert(id.clone(), (site, answer));
                 sink(Event::Agent {
@@ -423,6 +442,7 @@ impl Router {
             folders: HashMap::new(),
             started: HashMap::new(),
             agent_ids,
+            modes,
             next: 0,
             parents: HashMap::new(),
             titles: HashMap::new(),
@@ -672,6 +692,9 @@ impl Router {
                 self.sink.clone(),
             );
             actor.spec.resume = restored.resume;
+            if let Some(mode) = &actor.spec.mode {
+                self.modes.lock().unwrap().insert(session, mode.clone());
+            }
             // Undoing a rewind from before the restart goes back to the conversation's last id.
             if restored.rewound.is_some() {
                 actor.unrewind = Some((actor.spec.resume.clone(), false, None));
@@ -773,6 +796,9 @@ impl Router {
         let program = self.program(&new.agent);
         let chosen = self.settings.agent(&new.agent);
         let mut actor = Actor::new(id, new, adapter, program, tx.clone(), self.sink.clone());
+        if let Some(mode) = &actor.spec.mode {
+            self.modes.lock().unwrap().insert(id, mode.clone());
+        }
         actor.spec.allow_unsafe = chosen.allow_unsafe;
         actor.spec.options = chosen.options.clone();
         actor.env = self.bridge.as_ref().map(|b| b.env(id)).unwrap_or_default();
@@ -1346,6 +1372,7 @@ impl Router {
                 self.pull_requests.remove(&session);
                 self.archived.remove(&session);
                 self.agent_ids.lock().unwrap().remove(&session);
+                self.modes.lock().unwrap().remove(&session);
                 let (done, stopped) = tokio::sync::oneshot::channel();
                 let stopping = self
                     .sessions
@@ -3013,8 +3040,21 @@ fn report_text(reports: &[quill_model::Report]) -> String {
     text
 }
 
+/// The permission modes in which an agent starts a dev server without a card.
+fn waives_server_consent(mode: Option<&str>) -> bool {
+    matches!(mode, Some("bypassPermissions" | "auto"))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bypass_and_auto_start_a_dev_server_without_asking() {
+        assert!(super::waives_server_consent(Some("bypassPermissions")));
+        assert!(super::waives_server_consent(Some("auto")));
+        assert!(!super::waives_server_consent(Some("acceptEdits")));
+        assert!(!super::waives_server_consent(None));
+    }
+
     use super::*;
 
     #[test]
