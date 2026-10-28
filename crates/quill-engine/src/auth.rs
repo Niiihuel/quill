@@ -7,7 +7,7 @@ use quill_agent::{AgentAdapter, AuthState, ProgramRun};
 use quill_model::Event;
 use std::process::Stdio;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
@@ -18,10 +18,23 @@ pub(crate) enum Login {
     Cancel,
 }
 
-/// What a finished run printed: its exit code and stdout.
+/// What a finished run printed: its exit code and both streams.
 struct Ran {
     exit: i32,
     stdout: String,
+    stderr: String,
+}
+
+impl Ran {
+    /// What the program said: its stdout, or its stderr when stdout is empty (Codex's
+    /// `login status` writes to stderr; Claude's JSON stays on stdout whatever stderr holds).
+    fn said(&self) -> &str {
+        if self.stdout.trim().is_empty() {
+            &self.stderr
+        } else {
+            &self.stdout
+        }
+    }
 }
 
 async fn run(mut command: Command, seconds: u64) -> Result<Ran, String> {
@@ -41,6 +54,7 @@ async fn run(mut command: Command, seconds: u64) -> Result<Ran, String> {
     Ok(Ran {
         exit: out.status.code().unwrap_or(-1),
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
     })
 }
 
@@ -58,7 +72,7 @@ pub(crate) async fn check(
 
 fn announce(adapter: &dyn AgentAdapter, agent: String, ran: Result<Ran, String>, ui: &Sink) {
     let state = match ran {
-        Ok(ran) => adapter.auth_state(&ran.stdout, ran.exit),
+        Ok(ran) => adapter.auth_state(ran.said(), ran.exit),
         Err(e) => AuthState::Unknown(e),
     };
     ui(Event::Auth { agent, state });
@@ -108,12 +122,16 @@ pub(crate) fn login(
             Ok(child) => child,
             Err(e) => return failed(format!("could not start: {e}")),
         };
-        let (mut stdin, stdout, mut stderr) = (
+        let (mut stdin, stdout, stderr) = (
             child.stdin.take().expect("piped stdin"),
             child.stdout.take().expect("piped stdout"),
             child.stderr.take().expect("piped stderr"),
         );
         let mut lines = BufReader::new(stdout).lines();
+        // The page address may come on either stream (Codex prints it on stderr).
+        let mut errors = BufReader::new(stderr).lines();
+        let mut errors_open = true;
+        let mut last_error = String::new();
         let mut told = false;
         // The whole sign-in has the adapter's time; dropping the child kills it.
         // The adapter is `Send`, not `Sync`: shared across awaits only behind a lock.
@@ -134,6 +152,24 @@ pub(crate) fn login(
                         }
                         Ok(Some(_)) => {}
                         _ => break true,
+                    },
+                    line = errors.next_line(), if errors_open => match line {
+                        Ok(Some(line)) => {
+                            if !told {
+                                let url = adapter.lock().unwrap().login_url(&line);
+                                if let Some(url) = url {
+                                    told = true;
+                                    if open_page {
+                                        open(&url);
+                                    }
+                                    ui(Event::SignInUrl { agent: agent.clone(), url });
+                                }
+                            }
+                            if !line.trim().is_empty() {
+                                last_error = line;
+                            }
+                        }
+                        _ => errors_open = false,
                     },
                     input = rx.recv() => match input {
                         Some(Login::Code(code)) => {
@@ -164,9 +200,20 @@ pub(crate) fn login(
             return;
         }
         let mut said = String::new();
-        let _ = stderr.read_to_string(&mut said).await;
-        let last = said.lines().rev().find(|l| !l.trim().is_empty());
-        failed(last.unwrap_or("Sign-in failed").trim().to_owned());
+        while let Ok(Some(line)) = errors.next_line().await {
+            if !line.trim().is_empty() {
+                said = line;
+            }
+        }
+        let last = Some(said)
+            .filter(|s| !s.is_empty())
+            .or(Some(last_error).filter(|s| !s.is_empty()));
+        failed(
+            last.as_deref()
+                .unwrap_or("Sign-in failed")
+                .trim()
+                .to_owned(),
+        );
     });
     tx
 }
@@ -183,4 +230,23 @@ fn open(url: &str) {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Ran;
+
+    #[test]
+    fn stdout_is_what_a_program_said_unless_it_is_empty() {
+        let ran = |stdout: &str, stderr: &str| Ran {
+            exit: 0,
+            stdout: stdout.into(),
+            stderr: stderr.into(),
+        };
+        assert_eq!(ran("{}", "warning").said(), "{}");
+        assert_eq!(
+            ran("", "Logged in using ChatGPT\n").said(),
+            "Logged in using ChatGPT\n"
+        );
+    }
 }

@@ -31,7 +31,8 @@ pub type Sink = Arc<dyn Fn(Event) + Send + Sync>;
 /// Site permissions the browser waits on: by card, the site and where the answer goes.
 /// Questions quill itself asks on a permission card: by card, what for (a site, whose
 /// "Always" joins Settings, or a dev server) and where the answer goes.
-type Modes = Arc<Mutex<HashMap<SessionId, String>>>;
+/// Each session's agent and permission mode, as last told.
+type Modes = Arc<Mutex<HashMap<SessionId, (String, String)>>>;
 type SiteWaits = Arc<
     Mutex<
         HashMap<
@@ -57,12 +58,13 @@ pub(crate) type Ask = Arc<
 >;
 
 /// The agents quill has adapters for, as Settings lists them.
-const AGENTS: [&str; 1] = ["claude"];
+const AGENTS: [&str; 2] = ["claude", "codex"];
 
 /// The adapter for an agent id; `None` for agents quill does not have yet.
 fn adapter(agent: &str) -> Option<Box<dyn AgentAdapter>> {
     match agent {
         "claude" => Some(Box::new(quill_agent_claude::Claude::new())),
+        "codex" => Some(Box::new(quill_agent_codex::Codex::new())),
         _ => None,
     }
 }
@@ -344,7 +346,11 @@ impl Router {
                         session,
                         event: AgentEvent::ModeChanged { mode },
                         ..
-                    } => drop(modes.lock().unwrap().insert(*session, mode.clone())),
+                    } => {
+                        if let Some(entry) = modes.lock().unwrap().get_mut(session) {
+                            entry.1 = mode.clone();
+                        }
+                    }
                     _ => {}
                 }
                 if let Err(error) = store.lock().unwrap().append(event.session(), &event) {
@@ -367,7 +373,10 @@ impl Router {
                 // once, as Desktop waives it (2.9939.4 `askForLaunchSpawn`,
                 // "consent_waiver_mode_preview_start", modes `YPa` = {bypass, auto}).
                 let mode = modes.lock().unwrap().get(&session).cloned();
-                if waives_server_consent(mode.as_deref()) && input["kind"] == "server" {
+                let (agent, mode) = mode.unzip();
+                if waives_server_consent(agent.as_deref(), mode.as_deref())
+                    && input["kind"] == "server"
+                {
                     let _ = answer.send(quill_browser::Grant::Once);
                     return heard;
                 }
@@ -778,9 +787,13 @@ impl Router {
                 self.sink.clone(),
             );
             actor.spec.resume = restored.resume;
-            if let Some(mode) = &actor.spec.mode {
-                self.modes.lock().unwrap().insert(session, mode.clone());
-            }
+            self.modes.lock().unwrap().insert(
+                session,
+                (
+                    actor.adapter.id().to_owned(),
+                    actor.spec.mode.clone().unwrap_or_default(),
+                ),
+            );
             // Undoing a rewind from before the restart goes back to the conversation's last id.
             if restored.rewound.is_some() {
                 actor.unrewind = Some((actor.spec.resume.clone(), false, None));
@@ -882,9 +895,13 @@ impl Router {
         let program = self.program(&new.agent);
         let chosen = self.settings.agent(&new.agent);
         let mut actor = Actor::new(id, new, adapter, program, tx.clone(), self.sink.clone());
-        if let Some(mode) = &actor.spec.mode {
-            self.modes.lock().unwrap().insert(id, mode.clone());
-        }
+        self.modes.lock().unwrap().insert(
+            id,
+            (
+                actor.adapter.id().to_owned(),
+                actor.spec.mode.clone().unwrap_or_default(),
+            ),
+        );
         actor.spec.allow_unsafe = chosen.allow_unsafe;
         actor.spec.options = chosen.options.clone();
         actor.env = self.bridge.as_ref().map(|b| b.env(id)).unwrap_or_default();
@@ -3150,19 +3167,25 @@ fn report_text(reports: &[quill_model::Report]) -> String {
     text
 }
 
-/// The permission modes in which an agent starts a dev server without a card.
-fn waives_server_consent(mode: Option<&str>) -> bool {
-    matches!(mode, Some("bypassPermissions" | "auto"))
+/// Whether the agent's permission mode starts a dev server without a card: the adapter says,
+/// so the engine names no vendor's modes.
+fn waives_server_consent(agent: Option<&str>, mode: Option<&str>) -> bool {
+    let adapter = agent.and_then(adapter);
+    matches!((adapter, mode), (Some(adapter), Some(mode)) if adapter.mode_waives_prompts(mode))
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
     fn bypass_and_auto_start_a_dev_server_without_asking() {
-        assert!(super::waives_server_consent(Some("bypassPermissions")));
-        assert!(super::waives_server_consent(Some("auto")));
-        assert!(!super::waives_server_consent(Some("acceptEdits")));
-        assert!(!super::waives_server_consent(None));
+        let waives = |agent, mode| super::waives_server_consent(Some(agent), Some(mode));
+        assert!(waives("claude", "bypassPermissions"));
+        assert!(waives("claude", "auto"));
+        assert!(!waives("claude", "acceptEdits"));
+        assert!(!super::waives_server_consent(Some("claude"), None));
+        // Codex's "auto" asks for what leaves its sandbox; only full access waives.
+        assert!(waives("codex", "full-access"));
+        assert!(!waives("codex", "auto"));
     }
 
     use super::*;

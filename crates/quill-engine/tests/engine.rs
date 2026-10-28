@@ -991,3 +991,91 @@ fn a_rejected_code_says_what_the_program_said_and_cancel_ends_the_login() {
     assert!(rx.recv_timeout(Duration::from_millis(700)).is_err());
     assert!(!marker.exists());
 }
+
+/// Codex's captures through the same fake agent: the adapter's lines pace the replay, one per
+/// `out` of the capture (its `model/list` is answered by the fake agent itself).
+#[test]
+fn codex_captures_replay_through_the_engine() {
+    let (tx, rx) = channel();
+    let programs = HashMap::from([(
+        "codex".to_string(),
+        env!("CARGO_BIN_EXE_fake-agent").to_string(),
+    )]);
+    let config = quill_engine::Config {
+        programs,
+        database: None,
+        snapshots: None,
+        settings: None,
+        ..Default::default()
+    };
+    let engine = Engine::start_with(move |event| drop(tx.send(event)), config);
+    let session = |name: &str, id: u64, text: &str| {
+        let dir = workdir("simple");
+        let capture = format!(
+            "{}/../quill-agent-codex/fixtures/0.163.0/{name}.jsonl",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        std::fs::write(dir.join(".fake-agent"), capture).unwrap();
+        engine.send(Intent::NewSession(NewSession {
+            agent: "codex".into(),
+            cwd: dir,
+            model: Some("gpt-6-luna".into()),
+            effort: Some("low".into()),
+            mode: None,
+        }));
+        engine.send(Intent::Send {
+            session: id,
+            text: text.into(),
+            mentions: vec![],
+            images: vec![],
+            lane: Lane::Steer,
+        });
+    };
+    let finished = |e: &Event| {
+        matches!(
+            e,
+            Event::Agent {
+                event: AgentEvent::TurnFinished { ok: true, .. },
+                ..
+            }
+        )
+    };
+
+    session("simple", 1, "Reply with exactly the word: ok");
+    let events = until(&rx, finished);
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::Agent { event: AgentEvent::Text { text, .. }, .. } if text == "ok"
+    )));
+
+    session(
+        "deny",
+        2,
+        "Use the shell tool to run exactly: touch denied.txt",
+    );
+    let events = until(&rx, |e| {
+        matches!(
+            e,
+            Event::Agent {
+                event: AgentEvent::PermissionRequest { .. },
+                ..
+            }
+        )
+    });
+    let Some(Event::Agent {
+        event: AgentEvent::PermissionRequest { id, tool, .. },
+        ..
+    }) = events.last()
+    else {
+        unreachable!()
+    };
+    assert_eq!(tool, "Bash");
+    engine.send(Intent::Decide {
+        session: 2,
+        permission: id.clone(),
+        decision: Decision::Deny {
+            message: "no".into(),
+        },
+    });
+    until(&rx, finished);
+}

@@ -33,7 +33,7 @@ fn main() {
         }
         last = at;
         match entry["dir"].as_str() {
-            Some("out") if input.next().is_none() => return,
+            Some("out") if !next_line(&mut input, &mut out) => return,
             Some("in") => {
                 run_tools(&entry["msg"]);
                 writeln!(out, "{}", entry["msg"]).unwrap();
@@ -44,6 +44,28 @@ fn main() {
     }
     // The real CLI stays until its stdin closes.
     for _ in input {}
+}
+
+/// The next line quill wrote that a capture accounts for. The Codex adapter also asks
+/// `model/list` at start, which no capture holds: it is answered with no models, so the adapter
+/// keeps its own, and does not count as the line the capture waits for.
+fn next_line(
+    input: &mut impl Iterator<Item = std::io::Result<String>>,
+    out: &mut impl Write,
+) -> bool {
+    loop {
+        let Some(Ok(line)) = input.next() else {
+            return false;
+        };
+        let asked: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
+        if asked["method"] != "model/list" {
+            return true;
+        }
+        let answer =
+            serde_json::json!({ "id": asked["id"], "result": { "data": [], "nextCursor": null } });
+        writeln!(out, "{answer}").unwrap();
+        out.flush().unwrap();
+    }
 }
 
 /// `auth status|login|logout` as Claude Code 2.1.312 answers them (cli-auth.md §1-3). The

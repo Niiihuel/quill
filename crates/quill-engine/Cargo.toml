@@ -11,6 +11,7 @@ publish = false
 quill-model = { path = "../quill-model" }
 quill-agent = { path = "../quill-agent" }
 quill-agent-claude = { path = "../quill-agent-claude" }
+quill-agent-codex = { path = "../quill-agent-codex" }
 quill-store = { path = "../quill-store" }
 quill-git = { path = "../quill-git" }
 # The built-in browser, a Chromium driven over DevTools (docs/browser.md).
