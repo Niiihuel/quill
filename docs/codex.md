@@ -4,7 +4,7 @@ Plan para sumar el CLI de OpenAI Codex como segundo agente, con la misma interfa
 
 ## Fuente de verdad
 
-- **Código abierto:** [`openai/codex`](https://github.com/openai/codex), Apache-2.0, en Rust. No hace falta REA. El protocolo se lee del propio CLI con `codex app-server generate-json-schema --out <dir>`, que escribe el contrato completo (105 pedidos del cliente, 85 notificaciones, 10 pedidos del servidor en `codex-cli 0.163.0`). Las capturas de la fase 1 confirman cómo se usa.
+- **Código abierto:** [`openai/codex`](https://github.com/openai/codex), Apache-2.0, en Rust. El protocolo se lee del propio CLI con `codex app-server generate-json-schema --out <dir>`, que escribe el contrato completo (105 pedidos del cliente, 85 notificaciones, 10 pedidos del servidor en `codex-cli 0.163.0`). Las capturas de la fase 1 confirman cómo se usa.
 - **Versión probada:** `codex-cli 0.163.0`. La última release es la 0.165.0. `app-server` figura como `[experimental]` en el `--help`, así que el adaptador declara su rango en `tested()` y quill avisa fuera de él, como con Claude.
 - **Observado el 2026-10-28** con `initialize` + `model/list` + `account/read`:
   - la respuesta de `initialize` trae `userAgent`, `codexHome`, `platformFamily` y `platformOs`;

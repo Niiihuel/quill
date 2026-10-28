@@ -499,7 +499,7 @@ impl Store {
             // marked as a fork (inferred: Desktop's name for a fork was not captured).
             Event::Proposed { session, proposal } => {
                 if let Some(s) = self.session_mut(session) {
-                    // A turn's proposals share one card [videos of 2026-10-25].
+                    // A turn's proposals share one card.
                     let turn = s
                         .items
                         .iter()
@@ -1303,13 +1303,12 @@ pub struct Ui {
     pub ultra_since: Option<std::time::Instant>,
 }
 
-/// The sidebar's groups: by folder, Desktop's default (3.6556.2's "Reset to defaults" stays
-/// off on Folder, captured 2026-10-27), by status, or one list.
+/// The sidebar's groups: by folder, Desktop's default, by status, or one list.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum GroupBy {
     #[default]
     Folder,
-    /// Needs input, Working and Completed [videos of 2026-10-25].
+    /// Needs input, Working and Completed.
     Status,
     None,
 }
@@ -1342,7 +1341,7 @@ pub fn opens_outside(settings: &quill_model::Settings, url: &str) -> bool {
 
 /// What the branch bar asks of the agent to open a pull request: commit what is left, push,
 /// open it with `gh`, as a draft when that kind was chosen, and give its address. Desktop
-/// sends its own request of the same steps [3.6556.2/c06cf64bb]; these words are quill's.
+/// sends its own request of the same steps; these words are quill's.
 fn pr_request(draft: bool, prefix: &str) -> String {
     let (kind, open) = if draft {
         ("as a draft", "`gh pr create --draft`")
@@ -1515,8 +1514,7 @@ fn session_clicked(store: &Store, ui: &mut Ui, id: &str) -> Option<Vec<Intent>> 
         let unread = !store.session(s).is_some_and(|s| s.unread);
         return Some(vec![Intent::MarkUnread { session: s, unread }]);
     } else if let Some(s) = session("thread:") {
-        // A session another started opens beside it, as Desktop's threads do [C:video
-        // 2100633571543367691]; inferred: the same pane as a side chat.
+        // A session another started opens beside it, as Desktop's threads do; inferred: the same pane as a side chat.
         if ui.side_chat != Some(s) || !ui.pane_open(Pane::Side) {
             ui.mark_new(store, s);
         }
@@ -1741,8 +1739,7 @@ impl Pane {
     /// pane open sets it, so a document opened beside the tree gets a reader's width.
     pub fn share(self) -> f32 {
         match self {
-            // The diff takes 3 of 5 parts, a terminal 1 of 3 (the 1×
-            // captures of 2026-10-25, see look.rs).
+            // The diff takes 3 of 5 parts, a terminal 1 of 3 (measured at 1×, see look.rs).
             Pane::Diff => 0.6,
             // A helper agent and a plan open at a third too.
             Pane::Terminal | Pane::Agent | Pane::Plan | Pane::Tasks => 1.0 / 3.0,
@@ -2435,7 +2432,7 @@ impl Ui {
         } = event
         {
             let done = self.extensions.get(agent).and_then(|k| k.done.clone());
-            // Desktop's toast once an install went through (2.9939.4 `c6a2a31c4`).
+            // Desktop's toast once an install went through.
             let notice = (done.filter(|_| error.is_none()))
                 .map(|name| format!("{name} is installed and ready to use."));
             let known = Extensions {
@@ -2656,7 +2653,7 @@ fn queue_row_intent(ui: &mut Ui, id: &str) -> Option<Intent> {
 }
 
 /// ArrowUp in an empty composer takes the session's last queued message back for editing, as
-/// Desktop's `handleDequeueLastQueued` does (3.6556.2, chunk `c227f4d5e`).
+/// Desktop does.
 pub fn queue_key(
     store: &Store,
     ui: &Ui,
@@ -2952,14 +2949,14 @@ fn update_action(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Int
             ui.slash_dismissed = None;
             let mentions = mention::mentions_in(&text, &ui.mentioned_sessions);
             ui.mentioned_sessions.clear();
-            // "/mcp" shows the session's MCP servers, as Desktop's does (3.6556.2 `cff0db614`).
+            // "/mcp" shows the session's MCP servers, as Desktop's does.
             if text == "/mcp" {
                 if let Some(session) = ui.selected {
                     ui.mcp = Some(McpDialog::new(session));
                     return vec![Intent::McpStatus { session }];
                 }
             }
-            // "/btw …" asks a side question beside the session [videos of 2026-10-25].
+            // "/btw …" asks a side question beside the session.
             if let (Some(question), Some(session)) = (
                 text.strip_prefix("/btw ")
                     .map(str::trim)
@@ -3380,7 +3377,7 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         return vec![];
     }
     // Closing a side chat puts it away once it is between turns, as Desktop archives a
-    // settled one (3.6556.2 `closeBtwChild`).
+    // settled one.
     if id == "pane:side:close" {
         let settled = ui.side_chat.and_then(|s| store.session(s)).filter(|s| {
             s.aside
@@ -3912,8 +3909,7 @@ mod tests;
 
 /// A question card's action: `{permission}:{question}:{option}`
 /// picks an option (several when the question allows it, the last being "Other"),
-/// `prev` and `next` turn the page, `skip` answers "[No preference]" and moves on
-///, and `submit` (or `next` on the last page) sends every answer.
+/// `prev` and `next` turn the page, `skip` answers "[No preference]" and moves on, and `submit` (or `next` on the last page) sends every answer.
 fn answer(store: &Store, ui: &mut Ui, rest: &str) -> Vec<Intent> {
     let Some(session) = rest
         .split_once(':')
@@ -4635,7 +4631,7 @@ fn connectors_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
 }
 
 /// How often the open MCP dialog asks for its servers again (inferred: Desktop polls them,
-/// 3.6556.2 `cff0db614`, at a pace not found).
+/// at a pace not found).
 pub const MCP_POLL: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// The MCP dialog's clicks: done; a server's details and back; reconnecting it, turning it
@@ -4698,8 +4694,7 @@ fn mcp_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
 impl Ui {
     /// What the open MCP dialog hears: a sign-in's page opened in the browser, a sign-in that
     /// needed no one (the server is reconnected), a sign-in that could not start; and the
-    /// servers, whose sign-in is over once their status changes, as Desktop's
-    /// (2.9939.4 `c7077447f`).
+    /// servers, whose sign-in is over once their status changes, as Desktop's.
     fn mcp_heard(&mut self, event: &Event) -> Vec<Intent> {
         let Some(mcp) = self.mcp.as_mut() else {
             return vec![];
@@ -4997,7 +4992,7 @@ fn agent_switch(ui: &Ui, name: &str) -> Option<(String, String, String)> {
     Some((agent.to_owned(), key.to_owned(), option.default.clone()))
 }
 
-/// The actions under a reply [3.6556.2/c96d752d0 `KA`]: copy, fork from it, and read it
+/// The actions under a reply: copy, fork from it, and read it
 /// aloud, by "{action}:{session}:{item}"; and the branch bar's "View changes". `None` when
 /// `id` is none of them.
 fn message_clicked(store: &Store, ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
@@ -5105,7 +5100,7 @@ pub fn copied_text(store: &Store, id: &str) -> Option<String> {
 }
 
 /// Whether a session offers Thinking: its agent can show what the model thought, and the
-/// session has thought or has not answered yet (Desktop 3.6556.2 `y2`).
+/// session has thought or has not answered yet (as in Desktop).
 pub fn thinking_offered(session: &Session, thinking_text: bool) -> bool {
     let items = &session.items;
     thinking_text

@@ -1,6 +1,6 @@
 //! quill's own updates in the window: Settings' Updates group, the strip over the account
 //! button once a version is ready, and the dialogs (agents still working, a mandatory
-//! version). The engine checks and downloads; this shows what it reports. Desktop 2.9939.4
+//! version). The engine checks and downloads; this shows what it reports. Desktop
 //! announces a ready update in the sidebar only (no toast, no menu entry:
 //! desk-updates-account.md, "No se encontró ningún toast"), and so does quill.
 
@@ -24,7 +24,7 @@ pub const UPDATE_STRIP: &str = "update:strip";
 /// The strip's small cancel while it waits for the agents.
 pub const UPDATE_WAIT_CANCEL: &str = "update:wait:cancel";
 /// "Agents are still working": Cancel, Wait for agents, Update anyway
-/// (Desktop's `Cancel` / `Wait for Claude` / `Update anyway`, ION/shared-22 `wW`).
+/// (Desktop's dialog reads Cancel, Wait for Claude and Update anyway).
 pub const UPDATE_ASK_CANCEL: &str = "update:ask:cancel";
 pub const UPDATE_ASK_WAIT: &str = "update:ask:wait";
 pub const UPDATE_ASK_NOW: &str = "update:ask:now";
@@ -59,7 +59,7 @@ fn busy(store: &Store) -> bool {
 }
 
 /// A restart the person asked for: at once when no agent is busy, else the question first
-/// (Desktop asks `getRunningLocalSessionCount` before `restartToUpdate`, ION/shared-24 `eN`).
+/// (Desktop asks the same when a session is running).
 fn restart(store: &Store, ui: &mut Ui) -> Vec<Intent> {
     if busy(store) {
         ui.update_asking = true;
@@ -117,7 +117,7 @@ pub(crate) fn ready(ui: &Ui) -> Option<&str> {
     }
 }
 
-/// Desktop's "strip" over the account button (ION/shared-24 `QM`, `.df-update-strip`): 32 px
+/// Desktop's "strip" over the account button: 32 px
 /// high, an 8 px radius, a resting fill. Checking and downloading show nothing here; Settings
 /// has them. Waiting for the agents it reads as such, with a cancel.
 pub(crate) fn sidebar_strip(ui: &Ui, palette: ComponentPalette) -> Option<Element> {
@@ -164,7 +164,7 @@ pub(crate) fn sidebar_strip(ui: &Ui, palette: ComponentPalette) -> Option<Elemen
         .interactive_surface(Element::clickable(UPDATE_STRIP, row))
         .background(look::row_hover())
         .radius(8.0);
-        // Desktop's tooltip: `{detail} · v{version}` (ION/shared-24, `AV89Is5pvD`).
+        // Desktop's tooltip: `{detail} · v{version}`.
         limn::Tooltip::new(
             surface,
             UPDATE_STRIP,
@@ -182,7 +182,7 @@ pub(crate) fn sidebar_strip(ui: &Ui, palette: ComponentPalette) -> Option<Elemen
 }
 
 /// The sidebar toggle's dot while the sidebar is hidden and a version waits: Desktop's
-/// `size-1.5 rounded-full` (ION/shared-24 `rN`; there only for a mandatory restart, here for
+/// small dot (there only for a mandatory restart, here for
 /// any ready version, as the spec asks), over the toggle's top right.
 pub(crate) fn toggle_dot(ui: &Ui, toggle: Element) -> Element {
     if ui.sidebar.open || ready(ui).is_none() {
@@ -308,7 +308,7 @@ pub(crate) fn settings(ui: &Ui, auto_update: bool, palette: ComponentPalette) ->
 /// The question a restart with agents at work raises, and the dialog a mandatory version
 /// puts up, over `base`.
 pub(crate) fn dialogs(ui: &Ui, base: Element, palette: ComponentPalette) -> Element {
-    // Desktop's "Claude is still working" (ION/shared-22 `wW`); quill names no vendor, so
+    // Desktop asks "Claude is still working"; quill names no vendor, so
     // "agents". Wait is the primary button here (Desktop's is Update anyway; the spec's choice).
     let base = limn::Modal::new(
         base,

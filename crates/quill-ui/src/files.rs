@@ -1,4 +1,4 @@
-//! The Files pane, as Desktop's file tile (2.9939.4 `cccc2cf0a` `Ig`): the session's folder as
+//! The Files pane, as Desktop's file tile: the session's folder as
 //! a tree (`quill_components::tree`, in Desktop's look) beside the files open in it, in tabs,
 //! each in quill's editor or, for Markdown, rendered. The engine lists the folder, runs its file
 //! operations and reads and writes its files (`Intent::ListDir`, `FileOp`, `ReadFile`,
@@ -21,7 +21,7 @@ pub const COPY_PATH: &str = "doc:copy-path";
 /// "Discard unsaved changes?" over a tab closed with edits not saved.
 pub const DISCARD: &str = "doc:discard";
 pub const KEEP: &str = "doc:keep";
-/// The tree's filter, Desktop 3.6556.2's "Filter, or ? to search in files" (`cccc2cf0a`),
+/// The tree's filter, Desktop's "Filter, or ? to search in files",
 /// and its "Clear filter". A line found is `found:{path}:{row}`, its path from the folder.
 pub const FILTER_FIELD: &str = "tree:filter";
 pub const FILTER_CLEAR: &str = "tree:filter:clear";

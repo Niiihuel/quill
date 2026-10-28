@@ -5,7 +5,7 @@ use image::{codecs::jpeg::JpegEncoder, DynamicImage, ImageFormat, RgbImage};
 use quill_agent::PromptImage;
 use std::path::PathBuf;
 
-/// Desktop's limits (3.6556.2 `c0fbbe82d` `Ve`).
+/// Desktop's limits.
 const MAX_FILE: u64 = 30 * 1024 * 1024;
 const MAX_IMAGES: usize = 20;
 const MAX_SIDE: u32 = 2000;

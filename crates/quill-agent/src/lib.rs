@@ -950,9 +950,9 @@ pub trait AgentAdapter: Send {
 }
 
 /// The built-in browser's tools (docs/browser.md §4), served like [`HOST_TOOLS`] by a server of
-/// their own, `browser`. Their meaning follows Claude Desktop 3.6556.2's browser tools (ficha
-///; the words are quill's.
-/// One dev server of a project's launch file (Claude Desktop's format, notes):
+/// their own, `browser`. Their meaning follows Claude Desktop's browser tools;
+/// the words are quill's.
+/// One dev server of a project's launch file (Claude Desktop's format):
 /// `{"version": "0.0.1", "configurations": [{"name", "runtimeExecutable", "runtimeArgs",
 /// "port", "url"?}]}`.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]

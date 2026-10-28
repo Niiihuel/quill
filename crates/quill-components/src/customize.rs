@@ -1,5 +1,4 @@
-//! Customize's pages as Desktop draws them (3.6556.2 Skills and Plugins, captured dark at 1×
-//! on 2026-10-26): a header of a bold title and its tools, a card that says what the page is
+//! Customize's pages as Desktop draws them (Skills and Plugins, measured dark at 1×): a header of a bold title and its tools, a card that says what the page is
 //! for, sections titled with their count, and items on an icon's tile with their menu. The
 //! app says what each holds; these only lay it out.
 

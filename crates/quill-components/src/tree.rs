@@ -25,8 +25,7 @@ pub const ROW: f32 = 26.0;
 const DESKTOP_ROW: f32 = 24.0;
 
 /// How the tree is drawn: quill-ide's, with its icon pack, or Desktop's in its file tile,
-/// quieter: 24 px rows, a folder's chevron alone and a file's plain glyph (2.9939.4
-/// `cccc2cf0a` `ag`, `shared-15` `Qx`). Both draw the depth guides 3.6556.2's has.
+/// quieter: 24 px rows, a folder's chevron alone and a file's plain glyph. Both draw depth guides.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Look {
     Ide,
@@ -544,7 +543,7 @@ pub fn view(
     for ((entry, _), guides) in visible.iter().zip(limn::guides_for_depths(&depths)) {
         let open = entry.dir && tree.expanded.contains(&entry.path);
         // Desktop's: a folder's chevron alone, `<>` for code and settings and a page for the
-        // rest, over the depth guides 3.6556.2 draws (the person's capture of 2026-10-27).
+        // rest, over the depth guides.
         let (icon, title, height) = if style == Look::Desktop {
             let glyph = match (entry.dir, open) {
                 (true, true) => icons::CARET_DOWN,

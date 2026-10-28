@@ -1,5 +1,4 @@
-//! The "/" palette over the composer, as Desktop's slash menu (3.6556.2: `shared-5-Bg6ZMqvt.js`
-//! for the trigger and the ranking, `c5cd1b4dc` for the rows). Its rows are quill's own commands
+//! The "/" palette over the composer, as Desktop's slash menu. Its rows are quill's own commands
 //! that map to what quill already does, then the agent's commands; a pick either inserts
 //! `/name ` for the agent or runs the existing action.
 
@@ -56,7 +55,7 @@ fn argument(prompt: &str) -> Option<(usize, &str, &str)> {
         .then_some((at, command, query))
 }
 
-/// Desktop's rank (`BE`): 0 exact name, 1 exact alias, 2 name prefix, 3 alias prefix, 4 a
+/// Desktop's rank: 0 exact name, 1 exact alias, 2 name prefix, 3 alias prefix, 4 a
 /// substring of the name; `None` drops the command. Case does not matter. The range is the
 /// part of the name the query matched, for the list to draw bold.
 fn rank<S: AsRef<str>>(
@@ -200,7 +199,7 @@ fn rows(store: &Store, ui: &Ui, query: &str) -> Vec<Row> {
     for command in agent {
         if let Some((rank, matched)) = rank(query, &command.name, command.aliases.as_slice()) {
             // A name quill also has goes to the agent, and says so; Desktop's rows show no
-            // argument hints (the person's capture).
+            // argument hints.
             let custom = own.iter().any(|o| o.name == command.name);
             let id = format!("slash:agent:{}", command.name);
             let detail = if custom { "Custom command" } else { "" };
@@ -322,7 +321,7 @@ pub(crate) fn without_token(prompt: &str) -> String {
 }
 
 /// The composer `anchor` with the palette above it while it is open. Rows and width are
-/// Desktop's: compact, about 320 px as the person's capture (its CSS allows 240–512), in the
+/// Desktop's: compact, about 320 px, in the
 /// composer's text size.
 pub fn list(store: &Store, ui: &Ui, anchor: Element, width: f32) -> Element {
     let Some((_, rows)) = open(store, ui) else {

@@ -9,5 +9,5 @@
 - quill does not identify itself as another client (e.g. Claude Desktop) and uses no vendor code, fonts, icons or branding. One exception: an adapter (`quill-agent-<id>`) may ship its agent's logo, only to name that agent where quill lists agents; generic code never holds one.
 - Logos of connectors and plugins are never shipped: the engine looks them up at run time (svgl.app by name, else the server's site), keeps them in the person's data dir, and a Settings switch turns that off.
 - Every new dependency gets a one-line comment in `Cargo.toml` saying why.
-- Behavior taken from Claude Desktop cites its evidence (`[EV-…]` from `(private notes)`); what is inferred is said to be inferred.
+- Behavior modeled on Claude Desktop is described by what the user sees; its reverse-engineering notes stay private and are never cited or copied into this repo. What is inferred is said to be inferred.
 - Before a commit: `scripts/check.sh` (fmt, clippy `-D warnings`, tests).

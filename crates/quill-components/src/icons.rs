@@ -1,6 +1,5 @@
 //! quill's own icons: line drawings on a 20 × 20 grid with a 1.5 stroke, round caps and
-//! joins and no fill, in the quiet style of Claude Desktop's icon font (private notes
-//! `rea/features/iconography.md`,). They are drawn for quill, not
+//! joins and no fill, in the quiet style of Claude Desktop's icon font. They are drawn for quill, not
 //! taken from that font, which is Anthropic's own. Each is an SVG in `currentColor`, which
 //! limn tints like its own icons through `Icon::Custom`.
 
@@ -103,7 +102,7 @@ pub const FILE: &str = icon!(
 pub const LAPTOP: &str = icon!(
     "<rect x='3.5' y='3.75' width='13' height='9.25' rx='1.75'/><path d='M1.75 16.25h16.5'/>"
 );
-/// The permission modes' marks, as Desktop's menu gives each one (3.6556.2 `shared-8` `zG`):
+/// The permission modes' marks, as Desktop's menu gives each one:
 /// a raised hand to ask, a scroll to plan, a bolt to decide alone.
 pub const HAND: &str = icon!(
     "<path d='M6.5 10.5V5a1.25 1.25 0 0 1 2.5 0v4.5M9 9V3.75a1.25 1.25 0 0 1 2.5 0V9M11.5 9V4.75a1.25 1.25 0 0 1 2.5 0v5.5c0 4-2.25 7-6 7-2.5 0-3.75-1.25-5-3.5L1.75 11a1.2 1.2 0 0 1 2-1.25L6.5 13'/>"
@@ -207,8 +206,7 @@ pub const QUESTION: &str = icon!(
     "<circle cx='10' cy='10' r='7.5'/><path d='M7.75 7.75a2.35 2.35 0 0 1 4.55.75c0 1.6-2.3 2-2.3 3.25'/><circle cx='10' cy='14.25' r='0.7' fill='currentColor' stroke='none'/>"
 );
 
-/// A session that needs the person: a triangle with a mark [the person's Desktop, 2026-10-25
-/// videos].
+/// A session that needs the person: a triangle with a mark as in Desktop.
 pub const WARNING: &str = icon!(
     "<path d='M10 2.75L18 16.75H2z'/><path d='M10 8v4'/><circle cx='10' cy='14.25' r='0.7' fill='currentColor' stroke='none'/>"
 );

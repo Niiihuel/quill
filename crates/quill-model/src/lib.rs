@@ -170,7 +170,7 @@ pub struct Repo {
 }
 
 /// How quill shows an event that needs the person while its session is not in view. Desktop's
-/// choices are Off, Badge only and Banners (3.6556.2 `c8b630735`); its badge is the dock count,
+/// choices are Off, Badge only and Banners; its badge is the dock count,
 /// quill's is its own marks in the sidebar and on the window (inferred).
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -208,10 +208,10 @@ pub struct Settings {
     pub transcript_view: TranscriptView,
     /// How wide the conversation and the message box get, Desktop's "Transcript width".
     pub width: Width,
-    /// The font of the whole interface (Desktop's `interfaceFont`); see `InterfaceFont`.
+    /// The font of the whole interface; see `InterfaceFont`.
     pub interface_font: InterfaceFont,
-    /// The monospace font of code and the terminal, by name, which `fc-match` resolves
-    /// (Desktop's `codeFont`); empty takes the desktop's own monospace.
+    /// The monospace font of code and the terminal, by name, which `fc-match` resolves;
+    /// empty takes the desktop's own monospace.
     pub code_font: String,
     /// The old "wide", read once into `width` (Medium, which it was).
     #[serde(skip_serializing)]
@@ -223,14 +223,14 @@ pub struct Settings {
     pub motion: Motion,
     /// Keep the computer from idle sleep while an agent works.
     pub keep_awake: bool,
-    /// Keep the computer awake while it runs on battery too (Desktop's `keepAwakeOnBattery`);
+    /// Keep the computer awake while it runs on battery too;
     /// off, quill lets it sleep on battery.
     pub keep_awake_on_battery: bool,
     /// Ask the desktop to draw attention to quill when a session finishes or waits on the
     /// person while quill is not in front.
     pub attention: bool,
     /// How a permission request is shown when its session is not in view (Desktop's
-    /// "Permission requests", 3.6556.2 registry `cc7db14f1`).
+    /// "Permission requests").
     pub notify_permission: NotifyLevel,
     /// How a question is shown when its session is not in view (Desktop's "Questions").
     pub notify_question: NotifyLevel,
@@ -291,8 +291,7 @@ impl Default for Settings {
             links_in_browser: true,
             archive_after_days: 0,
             motion: Motion::System,
-            // Desktop keeps the computer awake by default and does not flash the app icon
-            //; attention starts on with the banners (inferred).
+            // Desktop keeps the computer awake by default and does not flash the app icon; attention starts on with the banners (inferred).
             keep_awake: true,
             keep_awake_on_battery: true,
             attention: true,
@@ -361,7 +360,7 @@ pub enum Width {
     Wide,
 }
 
-/// Desktop's "Interface font" (`interfaceFont`), which offers Anthropic Sans, System and
+/// Desktop's "Interface font", which offers Anthropic Sans, System and
 /// OpenDyslexic. quill does not ship Anthropic's face: System is the desktop's sans-serif and
 /// Ubuntu is the face limn bundles. OpenDyslexic is left out, as it would mean bundling it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]

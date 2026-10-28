@@ -1,5 +1,5 @@
 //! The agent's browser tools (docs/browser.md §4, `quill_agent::BROWSER_TOOLS`). What each does
-//! and what it answers follows Claude Desktop 3.6556.2's: a
+//! and what it answers follows Claude Desktop's: a
 //! tree of the page with refs the other tools take, screenshots at most 800 px wide whose
 //! pixels the clicks are given in, and a "Tab Context" footer naming the tabs.
 

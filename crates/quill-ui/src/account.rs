@@ -1,8 +1,8 @@
 //! The person's account with an agent as its own program keeps it: the sign-in screen and
 //! the question before signing out (Settings' Accounts page holds the buttons; the sidebar's
 //! foot is the GitHub identity, github.rs). The program signs in and out
-//! (the engine runs it); this shows what it reports. Desktop's account menu and its identity
-//! rules are in private notes `desk-updates-account.md` § Cuenta: its avatar shows the first and
+//! (the engine runs it); this shows what it reports. Desktop's account menu is modeled on what it
+//! shows: its avatar shows the first and
 //! last word's initials with `?` as the fallback, its menu opens with the identity, and Sign
 //! out is the last entry. Its sign-in screen is a web page; this one is quill's own (inferred).
 

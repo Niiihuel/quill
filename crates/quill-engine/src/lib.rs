@@ -385,8 +385,7 @@ impl Router {
             Arc::new(move |session, input, site| {
                 let (answer, heard) = tokio::sync::oneshot::channel();
                 // A session in bypass or auto mode starts a dev server without asking, this
-                // once, as Desktop waives it (2.9939.4 `askForLaunchSpawn`,
-                // "consent_waiver_mode_preview_start", modes `YPa` = {bypass, auto}).
+                // once, as Desktop waives it.
                 let mode = modes.lock().unwrap().get(&session).cloned();
                 let (agent, mode) = mode.unzip();
                 if waives_server_consent(agent.as_deref(), mode.as_deref())
@@ -665,7 +664,7 @@ impl Router {
 
     /// An agent's plugins, marketplaces and skills for `folder`, read from its program
     /// outside any session, after making a change first when asked; its running sessions
-    /// then load their plugins or skills again, as Desktop's do (2.9939.4 `zC`). Answered by
+    /// then load their plugins or skills again, as Desktop's do. Answered by
     /// `Event::Extensions`.
     /// An agent's MCP servers for `folder`, as its own program lists them; answered by
     /// `Event::Servers`.
@@ -1647,8 +1646,7 @@ impl Router {
                 self.answer(session, task, answer).await;
                 return;
             }
-            // Desktop's /btw forks the session as a side child (3.6556.2 `startBtwChild`,
-            // `forkSession(..., {btw: true})`); it is not a session that reports back.
+            // Desktop's /btw forks the session as a side child; it is not a session that reports back.
             Intent::SideChat { session, text } => {
                 let Some(new) = self.started.get(&session).cloned() else {
                     return;
@@ -1947,8 +1945,7 @@ impl Router {
     }
 
     /// Tell `parent` what the sessions it started said, once it is between turns and none of
-    /// them is still working, as Desktop continues a session when its side sessions end
-    /// (3.6556.2 `start_session`'s `wake_when_done`).
+    /// them is still working, as Desktop continues a session when its side sessions end.
     fn flush(&mut self, parent: SessionId) {
         let working = self.busy.contains(&parent)
             || self
@@ -2849,8 +2846,7 @@ impl Actor {
                 // A prompt sent while the agent was starting keeps the session running.
                 AgentEvent::Ready { .. } if !self.busy => self.status(SessionStatus::Idle),
                 AgentEvent::PermissionRequest { .. } => self.status(SessionStatus::Awaiting),
-                // A server's sign-in page opens in the person's browser, as Desktop opens it
-                // (2.9939.4 `ce38f2fa6`); only a secure address.
+                // A server's sign-in page opens in the person's browser, as Desktop opens it; only a secure address.
                 AgentEvent::McpSignIn { url: Some(url), .. } if url.starts_with("https://") => {
                     let _ = quill_files::open_in_system(url);
                 }
@@ -2928,7 +2924,7 @@ fn next_send(queue: &mut Vec<QueuedMessage>) -> Option<QueuedMessage> {
 }
 
 /// The message that tells a session what the sessions it started said, in quill's words for
-/// what Desktop sends (3.6556.2 `<side-sessions-event>`).
+/// what Desktop sends.
 /// The settings kept at `path`; the defaults when there is none or it does not read.
 /// Settings' "Environment variables", `KEY=value` a line, as a process's pairs; a line
 /// without a name is let go.
@@ -3230,8 +3226,7 @@ async fn run_program(
 }
 
 /// The skills an agent offers in `cwd`, asked of a short-lived start of its program that is
-/// sent no prompt, as Desktop asks a throwaway one for a folder's commands (2.9939.4
-/// `B9SZqsi8`, `getSupportedCommands`). None when it does not answer within 20 s.
+/// sent no prompt, as Desktop asks a throwaway one for a folder's commands. None when it does not answer within 20 s.
 async fn skills_of(
     mut adapter: Box<dyn AgentAdapter>,
     program: &str,

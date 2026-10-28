@@ -1,5 +1,4 @@
 //! quill's tokens. Neutrals measured from Claude Desktop's Code surface at 1408×844
-//! ;
 //! git colors from its static tokens; the accent is quill's own (spec.md §6).
 
 use limn::{Color, Theme};
@@ -13,7 +12,7 @@ static WIDTH: AtomicU32 = AtomicU32::new(770);
 /// The conversation's words at Settings' "Transcript text size", as Desktop sizes them.
 pub fn set_text_size(size: quill_model::TextSize) {
     use quill_model::TextSize::*;
-    // Desktop 3.6556.2's `--chat-body` for `data-chat-text-size` s, m and l (`.875rem` the
+    // Desktop's chat text sizes s, m and l (`.875rem` the
     // default), the transcript's and the composer's.
     let px = match size {
         Small => 13,
@@ -27,7 +26,7 @@ pub fn chat() -> f32 {
     CHAT.load(Ordering::Relaxed) as f32
 }
 
-/// Settings' "Transcript width", as Desktop's `--max-content-width` (3.6556.2): its 48rem
+/// Settings' "Transcript width", as Desktop's: its 48rem
 /// column with room for the scrollbar, 960 and 1280.
 pub fn set_width(width: quill_model::Width) {
     use quill_model::Width::*;
@@ -93,9 +92,9 @@ tones! {
     /// switch that is on.
     settings_page = hex(0xffffff), hex(0x1f1f1f);
     /// The card's outline: none to see in light (only its shadow), #2A2A2A in dark, quieter
-    /// than the hairline under its title (3.6556.2, captured 2026-10-26).
+    /// than the hairline under its title.
     settings_outline = hex(0xffffff), hex(0x2a2a2a);
-    /// Customize's pages (3.6556.2 Skills and Plugins, captured dark at 1× on 2026-10-26;
+    /// Customize's pages (Skills and Plugins, measured dark at 1×;
     /// light inferred): a card's fill, an item's icon tile, the line between items, a count's
     /// pill, an outlined button's edge, a tab's chip and its edge, a filled button.
     customize_card = hex(0xf4f4f4), hex(0x2a2a2a);
@@ -149,7 +148,7 @@ tones! {
     /// The permission card's hairline and the ink of the command it shows.
     card_border = hex(0xebebeb), hex(0x353535);
     command_ink = hex(0x616161), hex(0xb0b0b0);
-    /// The context meter [3.6556.2 `c6a992d55.css`]: what is past its first series, the
+    /// The context meter: what is past its first series, the
     /// autocompact buffer and the deferred, and the ground and the free share.
     chart_reference = hex(0x898781), hex(0x97958d);
     chart_muted = hex(0xc3c2b7), hex(0x5f5e5a);
@@ -198,8 +197,7 @@ tones! {
     branch_chip_hover = hex(0xf0f0f0), hex(0x505050);
 }
 
-// Sizes are Desktop's at 1× (Xvfb at 96 dpi, 1408×844), from private notes
-// `rea/evidence/runtime/20261025-062138-auth/`. The earlier Xephyr captures () drew
+// Sizes are Desktop's at 1× (Xvfb at 96 dpi, 1408×844). The earlier Xephyr captures drew
 // at 0.75×, so sizes read from them are scaled.
 /// Sidebar width with its 1 px border.
 pub const SIDEBAR_WIDTH: f32 = 288.0;
@@ -289,7 +287,7 @@ pub fn menu_palette() -> limn::ComponentPalette {
 }
 
 /// The composer's "/" and "@" lists, as Desktop's: a menu's surfaces, and the selected row's
-/// description on its darker box (`#2C2C2C`, the person's capture of 3.6556.2; light: the
+/// description on its darker box (`#2C2C2C`; light: the
 /// menu's raised, inferred).
 pub fn suggestion_palette() -> limn::ComponentPalette {
     let palette = menu_palette();
@@ -302,8 +300,7 @@ pub fn suggestion_palette() -> limn::ComponentPalette {
     palette
 }
 
-/// The composer's editor sits on the card without a fill of its own, as Desktop's does
-///; limn fills both the card and the editor with `selected`, so here it is the
+/// The composer's editor sits on the card without a fill of its own, as Desktop's does; limn fills both the card and the editor with `selected`, so here it is the
 /// card's: white, or the dark composer's #303030.
 pub fn composer_palette() -> limn::ComponentPalette {
     limn::ComponentPalette {
@@ -339,8 +336,7 @@ pub fn install() {
     limn::set_tokens(tokens);
 }
 
-/// The context meter's series in order, Desktop's categorical chart colors
-/// [3.6556.2 `c6a992d55.css`, `--cds-chart-categorical-1…6`].
+/// The context meter's series in order, Desktop's categorical chart colors.
 pub fn chart_series(index: usize) -> Color {
     let light = [0x2a78d6, 0xeb6834, 0x1baf7a, 0xeda100, 0xe87ba4, 0x008300];
     let dark = [0x3987e5, 0xd95926, 0x199e70, 0xc98500, 0xd55181, 0x008300];

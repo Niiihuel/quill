@@ -1,5 +1,5 @@
 //! A sidebar as quill's: it slides shut and open on a spring, and while shut it peeks over the
-//! page under the pointer, as Desktop's does (3.6556.2 `shared-16`, `shared-21`).
+//! page under the pointer, as Desktop's does.
 
 use limn::{Element, Point, ScalarSpring, SpringMotion};
 use std::time::{Duration, Instant};
@@ -57,7 +57,7 @@ impl Sidebar {
             self.peek_shown.snap_to(0.0, now);
         }
         // Hidden by a click, it does not peek again under the pointer still on its toggle
-        // until the pointer has left (`shared-21` holds it, `shared-16` lets go).
+        // until the pointer has left.
         self.peek_suppressed = !self.open;
     }
 

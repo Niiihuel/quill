@@ -139,8 +139,7 @@ pub fn keyed_button(
         .radius(8.0)
 }
 
-/// A sidebar row `height` tall, rounded, lit under the pointer and filled while selected
-///.
+/// A sidebar row `height` tall, rounded, lit under the pointer and filled while selected.
 pub fn side_row(id: String, content: Vec<Element>, selected: bool, height: f32) -> Element {
     let palette = ComponentPalette {
         hover: if selected {

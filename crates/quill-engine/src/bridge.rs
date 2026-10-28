@@ -1,4 +1,4 @@
-//! quill's `$BROWSER`, as Claude Desktop's shim [EV-BRW-001..013]: what a session's tools open
+//! quill's `$BROWSER`, as Claude Desktop's shim: what a session's tools open
 //! (`gh`, a dev server, Python's `webbrowser`) shows in that session's browser when it is a page
 //! of this computer, and in the desktop's own browser otherwise. The agent runs with
 //! `BROWSER` set to a script that hands the address back to quill over a socket only quill

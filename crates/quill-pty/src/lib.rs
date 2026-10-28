@@ -379,8 +379,7 @@ impl Tabs {
         self.tabs.get_mut(self.active).map(|tab| &mut tab.terminal)
     }
 
-    /// Each tab as the pane shows it: its name or "Terminal {n}" as Desktop numbers them
-    ///, and whether a command runs in it.
+    /// Each tab as the pane shows it: its name or "Terminal {n}" as Desktop numbers them, and whether a command runs in it.
     pub fn list(&self) -> Vec<TabInfo> {
         self.tabs
             .iter()

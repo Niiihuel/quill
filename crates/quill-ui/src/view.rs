@@ -179,7 +179,7 @@ pub const SHOW_MORE: &str = "sidebar:show-more";
 pub const EFFORT_SLIDER: &str = "effort:slider";
 const EFFORT_WIDTH: f32 = 192.0;
 /// The stops and the thumb's middle sit 10 px in, so the 20 px thumb at an end meets the
-/// track's end, flush, its corners on the track's, as the person asked (2026-10-27);
+/// track's end, flush, its corners on the track's, as the person asked;
 /// Desktop's dots sit 13.5 px in.
 const EFFORT_INSET: f32 = 10.0;
 pub const EFFORT_TRAVEL: f32 = EFFORT_WIDTH - 2.0 * EFFORT_INSET;
@@ -308,8 +308,7 @@ pub fn browser_surface(session: quill_model::SessionId, tab: u32) -> String {
     format!("browser:{session}:{tab}")
 }
 /// The right panel's left edge: dragged it sets the panel's width, clicked it hides the
-/// panel, as Desktop's side column does ("Click to collapse", "Drag to resize", 3.6556.2
-/// `ca2ef848d`).
+/// panel, as Desktop's side column does ("Click to collapse", "Drag to resize").
 pub const PANEL_HANDLE: &str = "split:panel";
 /// The widest the right panel gets; inferred, Desktop's column has no fixed limit but the
 /// conversation's.
@@ -571,7 +570,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     let root = Element::row(root)
         .background(look::theme().background)
         .size(Some(window.width), Some(window.height));
-    // The hidden sidebar peeking over the page [3.6556.2 `shared-16`].
+    // The hidden sidebar peeking over the page.
     let root = ui.sidebar.peeking(root, with_line, window);
     let root = search_dialog(store, ui, root, palette);
     let root = link_menu(ui, root, window);
@@ -593,8 +592,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     let root = image_viewer(ui, root, window, palette);
     let root = annotator(ui, root, window, palette);
     let root = crate::tour::layer(ui, root, palette);
-    // Desktop's own wording for both closes (Ion `cccc2cf0a`,) and for a delete
-    //, less its vendor's servers: quill forgets only its own record.
+    // Desktop's own wording for both closes and for a delete, less its vendor's servers: quill forgets only its own record.
     let tabs = &ui.terminal.tabs;
     let deleting = ui.deleting.and_then(|id| store.session(id));
     let (title, description, label) = match (ui.terminal.closing, deleting) {
@@ -761,8 +759,7 @@ fn terminal_pane(
     Element::column(vec![header, body.flex(1.0)]).size(Some(width), Some(height))
 }
 
-/// The Files pane, as Desktop 3.6556.2's file tile (`cccc2cf0a`, and the person's capture of
-/// 2026-10-27): the open files' tabs, the tree's toggle beside expand and close, and the file
+/// The Files pane, as Desktop's file tile: the open files' tabs, the tree's toggle beside expand and close, and the file
 /// on screen with the tree at its right. Narrower than the two side by side, the tree takes
 /// the pane while it shows, as Desktop's does over its tabs.
 fn files_pane(ui: &Ui, width: f32, height: f32, palette: ComponentPalette) -> Element {
@@ -796,7 +793,7 @@ fn files_pane(ui: &Ui, width: f32, height: f32, palette: ComponentPalette) -> El
         .collect();
     let header = tabs_header("files:tabs", tabs, pane.active, None, tools, width);
     let below = height - look::PANE_HEADER - 1.0;
-    // Desktop's tree is 240 px by default, beside a file at least 160 wide (`Pg`).
+    // Desktop's tree is 240 px by default, beside a file at least 160 wide.
     let tree_width = 240.0_f32.min((width * 0.45).round());
     let beside = width >= 240.0 + 160.0;
     let shown = pane.document().map(|d| pane.absolute(d));
@@ -816,7 +813,7 @@ fn files_pane(ui: &Ui, width: f32, height: f32, palette: ComponentPalette) -> El
                 .padding(8.0),
             );
         }
-        // Desktop 3.6556.2's filter over the tree (`cccc2cf0a`).
+        // Desktop's filter over the tree.
         let filter = limn::SearchField::new(
             FILTER_FIELD,
             &pane.filter,
@@ -859,7 +856,7 @@ fn files_pane(ui: &Ui, width: f32, height: f32, palette: ComponentPalette) -> El
     Element::column(vec![header, body]).size(Some(width), Some(height))
 }
 
-/// What the tree's filter found, in Desktop 3.6556.2's words (`cccc2cf0a`): the files whose
+/// What the tree's filter found, in Desktop's words: the files whose
 /// paths match, their folders muted; after `?` each file that holds the words over its lines,
 /// five at most; or why there is nothing.
 fn found_view(pane: &crate::files::FilesPane, width: f32, height: f32) -> Element {
@@ -979,8 +976,7 @@ fn found_view(pane: &crate::files::FilesPane, width: f32, height: f32) -> Elemen
         .clip_children()
 }
 
-/// Desktop's Background tasks (3.6556.2 `cccc2cf0a` `QM`, the person's capture of
-/// 2026-10-27): what the agent runs beside its turns, under Running and Finished with their
+/// Desktop's Background tasks: what the agent runs beside its turns, under Running and Finished with their
 /// counts, each its description over what it is, how it stands and how long it ran, then
 /// what it used and, for a helper agent, "View transcript" (its pane). A running one stops;
 /// the trash clears the finished. Desktop also names each agent's model, which the agent's
@@ -1315,7 +1311,7 @@ fn files_dialogs(pane: &crate::files::FilesPane, base: Element) -> Element {
     )
 }
 
-/// The session's browser [notes, docs/browser.md]: its tabs over a toolbar of back,
+/// The session's browser: its tabs over a toolbar of back,
 /// forward, reload and the address, then the page itself, which takes the pointer and the
 /// keys while it has the focus. Desktop's texts, less the agent's name.
 fn browser_pane(
@@ -1473,8 +1469,7 @@ fn browser_pane(
         ])
     });
     let below = height - look::PANE_HEADER - 1.0 - 41.0 - if notice.is_some() { 33.0 } else { 0.0 };
-    // A blank tab shows Desktop's empty state instead of its page (3.6556.2, the person's
-    // capture of 2026-10-27), less the agent's name and the dev server it offers to find.
+    // A blank tab shows Desktop's empty state instead of its page, less the agent's name and the dev server it offers to find.
     let blank = |failed: Option<&String>| {
         let fill = || Element::spacer().flex(1.0);
         let mut column = vec![
@@ -1545,8 +1540,7 @@ fn tab_menu(tab: usize, count: usize, child: Element, palette: ComponentPalette)
     limn::ContextMenu::new(format!("terminal:menu:{tab}"), child, entries, palette).render()
 }
 
-/// The name field a pill or the session's title turns into while the person renames it
-///.
+/// The name field a pill or the session's title turns into while the person renames it.
 fn rename_field(id: &str, name: &str, width: f32, palette: ComponentPalette) -> Element {
     limn::TextField::new(id, name, "", palette)
         .size(ControlSize::Compact)
@@ -1567,8 +1561,7 @@ fn session_title(session: &Session) -> String {
     }
 }
 
-/// The toggle's tooltip. Hidden with a version waiting it carries the dot's words (Desktop
-/// 2.9939.4, ION/shared-24 `qC5Uj7uEv+`).
+/// The toggle's tooltip. Hidden with a version waiting it carries the dot's words (as in Desktop).
 pub(crate) fn sidebar_toggle_label(ui: &Ui) -> &'static str {
     if ui.sidebar.open {
         "Hide sidebar"
@@ -1592,7 +1585,7 @@ fn sidebar_toggle(ui: &Ui) -> Element {
     crate::updates::toggle_dot(ui, toggle)
 }
 
-/// "Open in" as Desktop lists it (2.9939.4, inferred from its code): quill-ide, then the
+/// "Open in" as Desktop lists it: quill-ide, then the
 /// editors installed, by name, each with its own icon; then the desktop's default app and its
 /// file manager. Each row is "open-in:<editor | default | files>:<target>", `target` a session
 /// or "here", the folder on screen.
@@ -1679,7 +1672,7 @@ fn transcript_view_entries(session: &Session, ui: &Ui) -> Vec<limn::DropdownMenu
             .into()
     })
     .collect();
-    // Inside the submenu, after its views, as Desktop's (`cc43287c9` `GW`).
+    // Inside the submenu, after its views, as Desktop's.
     if current != ui.settings.transcript_view {
         let label = match current {
             TranscriptView::Normal => "Normal",
@@ -1712,9 +1705,8 @@ fn lettered(id: String, label: &str, key: &str) -> limn::DropdownMenuItem {
 /// The width of the top bar's toggles at its end, with their margin.
 const TOP_TOOLS: f32 = 178.0;
 
-/// The session's title, Stop while it works, and the toggles of the panel and the panes
-///. The title's chevron opens its menu, and Rename turns it into a field
-///.
+/// The session's title, Stop while it works, and the toggles of the panel and the panes.
+/// The title's chevron opens its menu, and Rename turns it into a field.
 /// The top bar: the session's title centered over the conversation, between the sidebars
 /// that are open, and its tools at the ends. No line under it: the transcript fades out
 /// beneath it instead.
@@ -2025,8 +2017,7 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
         }
     }
     // At its foot over a line, the person: their GitHub picture (else their initials) and
-    // name, opening the menu that holds Settings, as Desktop's (3.6556.2, captured
-    // 2026-10-27). Its other entries are claude.ai's pages; quill keeps none. GitHub says who
+    // name, opening the menu that holds Settings, as Desktop's. Its other entries are claude.ai's pages; quill keeps none. GitHub says who
     // it is (`gh`); without it the foot has quill's user and the menu offers to connect.
     let (initial, name, avatar) = crate::github::identity(ui);
     let mut account = vec![hgap(0.0)];
@@ -2103,7 +2094,7 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
 }
 
 /// The groups when the list goes by status, in their order, as the person's newer Desktop
-/// names them [videos of 2026-10-25]: waiting for the person, at work, and the rest.
+/// names them: waiting for the person, at work, and the rest.
 const STATUS_GROUPS: [&str; 3] = ["Needs input", "Working", "Completed"];
 /// How many sessions Completed lists before "Show more".
 const COMPLETED_SHOWN: usize = 5;
@@ -2117,7 +2108,7 @@ fn status_group(session: &Session) -> &'static str {
 }
 
 /// A session's row and, under it, the rows of the sessions it started, on a tree line that
-/// turns into the last of them [videos of 2026-10-25].
+/// turns into the last of them.
 fn with_children(
     store: &Store,
     session: &Session,
@@ -2335,8 +2326,7 @@ fn group_header(
 }
 
 /// A session's row: its title, its status, and under the pointer "···" with Desktop's
-/// Pin, Rename and Delete. As the newer Desktop draws them [videos of
-/// 2026-10-25]: a working session's title is gray with a light passing over it, an unread
+/// Pin, Rename and Delete. As the newer Desktop draws them: a working session's title is gray with a light passing over it, an unread
 /// one is bold, one that needs the person ends in a warning, and a finished top-level one in
 /// the place it ran (this computer).
 fn session_row(session: &Session, depth: usize, ui: &Ui, palette: ComponentPalette) -> Element {
@@ -2422,7 +2412,7 @@ fn session_row(session: &Session, depth: usize, ui: &Ui, palette: ComponentPalet
     let indicator = match session.status {
         SessionStatus::Awaiting => mark(icons::WARNING, look::palette().text),
         SessionStatus::Failed(_) => status_dot(session),
-        // Grouped by folder Desktop marks no place (3.6556.2, captured 2026-10-27).
+        // Grouped by folder Desktop marks no place.
         _ if depth == 0 && !working && ui.group_by != crate::GroupBy::Folder => {
             mark(icons::LAPTOP, look::muted())
         }
@@ -2507,7 +2497,7 @@ fn side_row(
 }
 
 /// A sidebar row that stays lit while the pointer is on `peer`, its "···", as Desktop's
-/// keeps both the row and the button lit [the person, 2026-10-25].
+/// keeps both the row and the button lit.
 fn side_row_with(
     id: String,
     content: Vec<Element>,
@@ -2520,8 +2510,7 @@ fn side_row_with(
     items.extend(content);
     items.push(hgap(0.0));
     let row = Element::row(items).gap(10.0).size(None, Some(32.0));
-    // Under the pointer a row turns #EDEDED, a selected one from #E0E0E0 to #D5D5D5
-    //.
+    // Under the pointer a row turns #EDEDED, a selected one from #E0E0E0 to #D5D5D5.
     let palette = ComponentPalette {
         hover: if selected {
             look::selected_hover()
@@ -2627,8 +2616,7 @@ fn transcript(
         .size(Some(outer), None)
         .padding(16.0)
         .centered_x();
-    // What runs under the composer fades out over 48 px, as above Desktop's (3.6556.2
-    // `c9e81e7b9`, `page-fade-b h-12`).
+    // What runs under the composer fades out over 48 px, as above Desktop's.
     let scroll = Element::scroll(format!("transcript:{}", session.id), content)
         .top_fade(look::theme().background, 24.0)
         .bottom_fade(look::theme().background, 48.0);
@@ -2636,7 +2624,7 @@ fn transcript(
         return scroll;
     }
     // Away from the end, Desktop floats a round "↓" over the conversation: 36 px,
-    // 20 px over the composer (3.6556.2 `cf854d0e8` `size-9`, `ca2ef848d` `bottom-5`), on the
+    // 20 px over the composer, on the
     // page's fill with its edge and no halo, at the person's word. The arrow is centered by
     // hand, as `tool_surface` does.
     let arrow = Element::icon(icons::of(icons::ARROW_DOWN))
@@ -2743,8 +2731,7 @@ fn entries<'a>(
                         input["session"].as_str().unwrap_or_default(),
                     ),
                 ) {
-                    // Desktop's "Sent your message over to" and the session [C:video
-                    // 2100633571543367691].
+                    // Desktop's "Sent your message over to" and the session.
                     flush(&mut steps, &mut items);
                     items.push(
                         Element::row(vec![
@@ -2762,8 +2749,7 @@ fn entries<'a>(
                     flush(&mut steps, &mut items);
                     items.push(web_search_block(&step, ui, transcript, column, palette));
                 } else if let Some(opened) = opened_tab(name, result.as_ref()) {
-                    // A tab the agent opened shows as a card under its step, as Desktop's
-                    //.
+                    // A tab the agent opened shows as a card under its step, as Desktop's.
                     steps.push(step);
                     flush(&mut steps, &mut items);
                     items.push(browser_card(session, &opened, column, palette));
@@ -2791,8 +2777,7 @@ fn entries<'a>(
             }
             | Item::Thinking { .. } => {}
             other => {
-                // A step that waits on this permission runs under its card
-                //.
+                // A step that waits on this permission runs under its card.
                 if busy
                     && matches!(other, Item::Permission { decided: None, .. })
                     && steps.last().is_some_and(|s| s.result.is_none())
@@ -2814,7 +2799,7 @@ fn entries<'a>(
                 let element = self::item(other, store, session, ui, column, palette);
                 // Under a turn's last reply, once the turn ended, its actions show while the
                 // pointer is on it; the replies between its steps have none and
-                // keep no room for them (inferred from the person's capture of 2026-10-27).
+                // keep no room for them (inferred).
                 let ends_turn = list[at + 1..]
                     .iter()
                     .find(|item| {
@@ -2832,7 +2817,7 @@ fn entries<'a>(
                         ..
                     } if main && ends_turn => {
                         // The turn's changes go between the reply and its actions, as
-                        // Desktop's (the person's capture of 2026-10-27).
+                        // Desktop's.
                         let changes = (at + 1..list.len())
                             .take_while(|&i| {
                                 matches!(list[i], Item::TurnEnd { .. } | Item::Changes { .. })
@@ -2891,7 +2876,7 @@ pub(crate) fn agent_word(ui: &Ui, agent: &str) -> String {
 /// What a permission card asks, in Desktop's words: Bash by what it runs, an edit by its
 /// file.
 fn permission_heading(who: &str, tool: &str, input: &Value) -> String {
-    // The browser's own question, Desktop's site card [notes], less the agent's
+    // The browser's own question, Desktop's site card, less the agent's
     // name.
     if tool == quill_model::SITE_PERMISSION {
         if input["kind"] == "server" {
@@ -3028,8 +3013,7 @@ fn child_named(store: &Store, session: &Session, title: &str) -> Option<quill_mo
         .map(|s| s.id)
 }
 
-/// A session started at the person's asking, in the conversation that started it [C:video
-/// 2100633571543367691]: a dot, its title and what it does now; it opens beside. Until the
+/// A session started at the person's asking, in the conversation that started it: a dot, its title and what it does now; it opens beside. Until the
 /// engine has made it, it is "Starting…".
 fn started_card(store: &Store, session: &Session, input: &Value, column: f32) -> Element {
     let title = input["title"].as_str().unwrap_or_default();
@@ -3080,8 +3064,7 @@ fn started_card(store: &Store, session: &Session, input: &Value, column: f32) ->
     }
 }
 
-/// Under a session, the sessions it started that wait on the person [C:video
-/// 2100633571543367691]: each with what it asks and "View session", which opens it beside.
+/// Under a session, the sessions it started that wait on the person: each with what it asks and "View session", which opens it beside.
 fn waiting_cards(
     store: &Store,
     session: &Session,
@@ -3565,7 +3548,7 @@ fn image_viewer(ui: &Ui, base: Element, window: Size, palette: ComponentPalette)
         .unwrap_or_default();
     let picture = ui.full.get(&viewer.path).or(ui.thumbs.get(&viewer.path));
     // Desktop's lightbox: the picture fitted at most 640 wide, its controls beside it and its
-    // name under it, over the dimmed window (3.6556.2 `cb1b78cfa`).
+    // name under it, over the dimmed window.
     let mut shown = limn::ImageViewer::new(base, true, name.clone(), IMAGE_CLOSE, palette)
         .viewport(window)
         .lightbox(true)
@@ -3619,11 +3602,10 @@ fn link_menu(ui: &Ui, base: Element, window: Size) -> Element {
     Element::stack(vec![base, placed]).size(Some(window.width), Some(window.height))
 }
 
-/// How long a copy button shows its check, as Desktop's (3.6556.2 `VA`).
+/// How long a copy button shows its check, as Desktop's.
 pub const COPIED_FOR: std::time::Duration = std::time::Duration::from_millis(1200);
 
-/// The row under a reply while the pointer is on it, in Desktop's order [3.6556.2/c96d752d0
-/// `KA`]: copy, fork from here, then the time it came. Read aloud is the person's newer
+/// The row under a reply while the pointer is on it, in Desktop's order: copy, fork from here, then the time it came. Read aloud is the person's newer
 /// Desktop's, with the system's own voice; its pin, a chapter
 /// mark, is left out while quill has no chapters.
 fn reply_actions(
@@ -3699,8 +3681,7 @@ fn rewound_line() -> Element {
     .size(None, Some(24.0))
 }
 
-/// The row under the person's message while the pointer is on it, as Desktop's (3.6556.2
-/// `c96d752d0` `kA`, the person's capture of 2026-10-27): when it was sent, copy, "Rewind to
+/// The row under the person's message while the pointer is on it, as Desktop's: when it was sent, copy, "Rewind to
 /// here" (not while the agent works) and "Fork from here", which both go on from the
 /// agent's message before it; the first message has nothing to fork from.
 fn user_actions(
@@ -3787,7 +3768,7 @@ pub(crate) fn ago_from(seconds: u64) -> String {
 }
 
 /// The line under the turn: quill's pen writing (in place of Desktop's orange
-/// dots, as the person chose on 2026-10-27), then the step running, or the
+/// dots, as the person chose), then the step running, or the
 /// turn's clock, its tokens, the work running beside it and whether the model thinks, muted,
 /// at the transcript's size. Waiting on the person it says so; with only background work
 /// left, it counts it.
@@ -3913,8 +3894,7 @@ pub fn elapsed(secs: u64) -> String {
     }
 }
 
-/// A token count as the running line writes it: "140 tokens", "30.7k tokens"
-///.
+/// A token count as the running line writes it: "140 tokens", "30.7k tokens".
 pub fn tokens(count: u64) -> String {
     match count {
         0..1000 => format!("{count} tokens"),
@@ -4092,8 +4072,7 @@ pub struct Step<'a> {
     pub running: bool,
 }
 
-/// The task tools keep the list shown over the running line; Desktop lists no step for them
-///.
+/// The task tools keep the list shown over the running line; Desktop lists no step for them.
 pub fn is_task_tool(name: &str) -> bool {
     matches!(
         name,
@@ -4101,8 +4080,7 @@ pub fn is_task_tool(name: &str) -> bool {
     )
 }
 
-/// Steps Desktop sets on their own line, out of any group
-///.
+/// Steps Desktop sets on their own line, out of any group.
 fn stands_alone(name: &str) -> bool {
     matches!(name, "AskUserQuestion" | "ExitPlanMode")
 }
@@ -4670,7 +4648,7 @@ fn inflect(phrase: &str, verb: impl Fn(&str) -> String) -> String {
     }
 }
 
-/// A browser tool's step in Desktop's words (3.6556.2 `shared-130`, notes): "Opening
+/// A browser tool's step in Desktop's words: "Opening
 /// localhost:3000", "Reading page", "Filling in a field", "Clicking", "Capturing page".
 fn browser_step(tool: &str, input: &Value, done: bool) -> (String, String) {
     let said = |key: &str| input[key].as_str().unwrap_or_default().to_owned();
@@ -4815,7 +4793,7 @@ fn opened_tab(name: &str, result: Option<&ToolResult>) -> Option<Value> {
     (card["type"] == "browser").then_some(card)
 }
 
-/// Desktop's "Opened in Browser" card [notes]: the page's title, "{host} · Opened in
+/// Desktop's "Opened in Browser" card: the page's title, "{host} · Opened in
 /// Browser" (or that the tab closed), and "Open", which shows the pane on that tab. A globe
 /// stands where Desktop has a thumbnail: a surface is not resampled, so a small one would
 /// show a corner of the page.
@@ -4914,8 +4892,7 @@ fn step_label(step: &Step, done: bool) -> (String, String) {
                 .as_str()
                 .map(str::to_owned)
                 .unwrap_or_else(|| format!("Run {}", said("command")));
-            // Running it reads "Creating a.txt…"; stopped or failed, in its own words
-            //.
+            // Running it reads "Creating a.txt…"; stopped or failed, in its own words.
             let phrase = match step.result {
                 None => progressive(&said),
                 Some(r) if r.stopped || r.is_error => said,
@@ -4969,7 +4946,7 @@ fn step_label(step: &Step, done: bool) -> (String, String) {
         "CloseAgent" => ("Closed an agent", "Closing an agent", String::new()),
         "Skill" => ("Ran skill", "Running skill", said("skill")),
         "ExitPlanMode" => ("Proposed plan", "Proposing plan", String::new()),
-        // The rest in Desktop's words (2.9939.4 `cb6930dae` `$a`, `ao`/`io`). What follows the
+        // The rest in Desktop's words. What follows the
         // verb is quill's where Desktop shows none (inferred): the server, the resource, the
         // command stopped.
         "EnterPlanMode" => ("Started planning", "Making a plan", String::new()),
@@ -5022,7 +4999,7 @@ fn step_label(step: &Step, done: bool) -> (String, String) {
             ("Stopped loop", "Stopping loop", String::new())
         }
         "ScheduleWakeup" => ("Scheduled check-in", "Scheduling check-in", said("reason")),
-        // quill's own session tools, in Desktop's words (3.6556.2 `c96d752d0`, `dZe`).
+        // quill's own session tools, in Desktop's words.
         name if name.ends_with("sessions__start_session") => {
             if input["initiation"] == "own_initiative" {
                 ("Suggested task", "Suggesting task", said("title"))
@@ -5099,7 +5076,7 @@ pub fn group_summary(steps: &[Step]) -> String {
     }
     let mut files: Vec<(String, Vec<String>)> = vec![];
     // The browser's steps by what they did, as Desktop joins up to three ("Read page,
-    // clicked…", 3.6556.2 `shared-130` `KB=3`).
+    // clicked…").
     let mut browsing: Vec<String> = vec![];
     // The only one says what it acted on too: "Opened example.com".
     let mut lone_browsing = None;
@@ -5305,8 +5282,7 @@ fn step_group(
     Element::column(vec![head, card]).gap(8.0)
 }
 
-/// Whether a collapsible is open: Verbose holds every one open, else the person's toggle
-/// (Desktop's `Sp()`, docs/ui.md "Vistas del transcript").
+/// Whether a collapsible is open: Verbose holds every one open, else the person's toggle.
 fn is_open(view: TranscriptView, ui: &Ui, key: &str) -> bool {
     view == TranscriptView::Verbose || ui.expanded.iter().any(|k| k == key)
 }
@@ -5729,10 +5705,9 @@ fn mono(s: impl Into<String>) -> Element {
         .foreground(look::palette().text)
 }
 
-/// The inline approval card, as Desktop 3.6556.2 draws it: a 480 px card with what
+/// The inline approval card, as Desktop draws it: a 480 px card with what
 /// Claude wants to run, Deny, and the way the person allowed last as its main button with
-/// the other in its menu. An edit names its file and shows its diff
-///. Once answered it goes, leaving the tool's row.
+/// the other in its menu. An edit names its file and shows its diff. Once answered it goes, leaving the tool's row.
 fn permission(
     item: &Item,
     agent: &str,
@@ -5831,8 +5806,7 @@ fn permission(
 
 /// The plan Claude proposed, before the person decides: "Claude
 /// proposed a plan" and "Open plan"; Reject, "Revise…", "Accept", and the main button
-/// accepting into the most trusting mode offered, the other modes in its menu
-///.
+/// accepting into the most trusting mode offered, the other modes in its menu.
 fn plan_card(
     store: &Store,
     id: &str,
@@ -5939,7 +5913,7 @@ fn plan_card(
 /// Deny, then the last way of allowing as the main button with its keys, and the other way
 /// in its menu.
 /// The browser asks before the agent opens or uses a site that is not local nor allowed, as
-/// Desktop's site card [notes]: "Allow once", "Always allow for this website" (kept in
+/// Desktop's site card: "Allow once", "Always allow for this website" (kept in
 /// Settings › Browser), "Don't allow".
 fn site_permission(
     id: &str,
@@ -6092,7 +6066,7 @@ fn actions(
         .render()
 }
 
-/// Desktop's composer, as the person's Desktop 2.9939.4 lays it out: a new
+/// Desktop's composer, as Desktop lays it out: a new
 /// session's place and folder as filled chips over a 44 px box that holds only the message
 /// and its return arrow; under the box "+" and the mode on the left, the model, its effort
 /// and the plan's usage on the right.
@@ -6487,8 +6461,7 @@ fn bar_chip(content: Element) -> Element {
         .centered_y()
 }
 
-/// The bar over a session's composer, as the person's Desktop keeps it
-///: the folder and its branch, the lines added and
+/// The bar over a session's composer, as the person's Desktop keeps it: the folder and its branch, the lines added and
 /// removed since the last commit rolling to each new count, the pull
 /// request in the kind last chosen, and a close. It shows while the folder is a repository.
 fn branch_bar(
@@ -6528,7 +6501,7 @@ fn branch_bar(
                 .render()
                 .centered_y()
         };
-        // A click shows the diff, with Desktop's tooltip [3.6556.2/c96d752d0 `x1MuR5VeqW`].
+        // A click shows the diff, with Desktop's tooltip.
         let counts = ComponentPalette {
             hover: look::branch_chip_hover(),
             ..palette
@@ -6703,7 +6676,7 @@ fn plus_menu(session: Option<&Session>, ui: &Ui) -> Element {
             .icon(icons::of(icons::SLASH))
             .into(),
     ];
-    // Desktop's Connectors and Plugins (the person's capture of 2026-10-27): ways to find and
+    // Desktop's Connectors and Plugins: ways to find and
     // manage them, then each one with its switch. A session's connectors are its agent's MCP
     // servers; the plugins are its agent's.
     let mut connectors = vec![
@@ -6742,7 +6715,7 @@ fn plus_menu(session: Option<&Session>, ui: &Ui) -> Element {
             }
         }));
     }
-    // Desktop's Plugins (3.6556.2 `c227f4d5e` `CL`): each plugin on with skills, its one skill
+    // Desktop's Plugins: each plugin on with skills, its one skill
     // or a menu of them, which goes into the message as `/plugin:skill`; then managing and
     // finding plugins.
     let agent = session.map_or(ui.agent.as_str(), |s| s.agent.as_str());
@@ -7508,10 +7481,8 @@ pub fn effort_shown(store: &Store, ui: &Ui) -> Option<String> {
     effort_state(store, ui).map(|s| s.efforts[s.shown].clone())
 }
 
-/// The effort chip and its popover, as the person's Desktop has them
-///: "Effort  High", "Faster … Smarter" over a slider with a stop
-/// per level the model accepts, and "Recommended" under medium. The slider is Desktop's
-/// (3.6556.2 `c2d9b9a76`): a 28 px control whose 24 px track fills from its start to the
+/// The effort chip and its popover, as the person's Desktop has them: "Effort  High", "Faster … Smarter" over a slider with a stop
+/// per level the model accepts, and "Recommended" under medium. The slider is Desktop's: a 28 px control whose 24 px track fills from its start to the
 /// thumb's middle, a white 20 × 24 thumb that grows to 1.12 while held, 3 px dots and a
 /// 3 × 9 tick. On Ultracode the heading turns violet and the track is the reference
 /// selector's pixel field.
@@ -7623,7 +7594,7 @@ fn effort_menu(store: &Store, ui: &Ui) -> Element {
         .size(Some(width), Some(28.0));
     let effort = efforts[shown].clone();
     let name = text(effort_label(&effort)).font_size(BODY);
-    // Ultracode reads in Desktop's "pro" accent [3.6556.2 `shared-7`: text-pro].
+    // Ultracode reads in Desktop's "pro" accent.
     let name = if ultra {
         name.foreground(look::pro())
     } else {
@@ -7721,8 +7692,7 @@ fn pixel_field(ui: &Ui, width: f32, height: f32) -> Element {
     Element::column(rows).size(Some(width), Some(height))
 }
 
-/// What one request changed, under its turn, as Desktop 3.6556.2 draws it (`B0e` in
-/// `c96d752d0`): one file is a single row, its name with Undo, its counts and a chevron;
+/// What one request changed, under its turn, as Desktop draws it: one file is a single row, its name with Undo, its counts and a chevron;
 /// more are "Edited N files" with them over the first three files and "N more". Every row
 /// opens the request's diff, and Undo is a real one (Desktop's asks the agent instead,
 /// engine.md §6).
@@ -8506,7 +8476,7 @@ fn usage_rows(store: &Store, ui: &Ui, width: f32) -> Option<Vec<Element>> {
 }
 
 /// The files the session made or changed and still has, newest first: the panel's Outputs, as
-/// Desktop lists them (3.6556.2 `c21f11e6d` "Outputs").
+/// Desktop lists them.
 fn outputs(session: &Session) -> Vec<String> {
     let mut paths: Vec<String> = vec![];
     for item in session.items.iter().rev() {
@@ -8544,7 +8514,7 @@ fn outputs(session: &Session) -> Vec<String> {
 /// The right panel's Context card, open until folded, as Desktop's rail shows it.
 pub const CONTEXT_CARD: &str = "panel:context";
 
-/// A count of tokens as Desktop writes it: "254", "15.8K", "1M" (3.6556.2 `shared-8` `cX`).
+/// A count of tokens as Desktop writes it: "254", "15.8K", "1M".
 pub(crate) fn compact(n: u64) -> String {
     // Halves round up, as JavaScript's `toFixed` does here, not to even.
     let short = |value: f64, unit: &str| {
@@ -8561,7 +8531,7 @@ pub(crate) fn compact(n: u64) -> String {
     }
 }
 
-/// The Context card open, as Desktop's rail draws it (3.6556.2 `c2d611398`): "N% used" and
+/// The Context card open, as Desktop's rail draws it: "N% used" and
 /// "used / max", a meter of what fills the context, a row per category with its swatch,
 /// tokens and share (the deferred last, with "—"), and the lists under some categories,
 /// each folded. Until the agent told what fills it, the meter is one share of the whole.
@@ -8596,7 +8566,7 @@ fn context_breakdown(session: &Session, ui: &Ui, width: f32) -> Vec<Element> {
         list
     };
     let (taken, buffer, free, deferred) = (of(Used), of(Buffer), of(Free), of(Deferred));
-    // At most six in the meter: past that, the first five and "Other" (Desktop's `te`).
+    // At most six in the meter: past that, the first five and "Other".
     let colored = if taken.len() + buffer.len() > 6 {
         5 - buffer.len().min(1)
     } else {
@@ -8948,7 +8918,7 @@ pub fn plan_text(items: &[Item], id: &str) -> Option<String> {
 }
 
 /// What a session is doing now, as a card row under its title says it: the step it runs
-/// ("Reading CartLineItem.tsx"), or nothing once its turn is over [videos of 2026-10-25].
+/// ("Reading CartLineItem.tsx"), or nothing once its turn is over.
 fn activity(session: &Session) -> Option<String> {
     match session.status {
         SessionStatus::Running | SessionStatus::Starting => {}
@@ -8981,7 +8951,7 @@ fn activity(session: &Session) -> Option<String> {
     })
 }
 
-/// The card of the tasks a turn proposed for sessions of their own [videos of 2026-10-25]:
+/// The card of the tasks a turn proposed for sessions of their own:
 /// "New session" over a single one, "3 suggested tasks" and "Start all" over several. A
 /// waiting task shows its title, its brief in two lines, a close, "Do it here" and "Start";
 /// a started one is a row that follows its session, with what it does now, and opens it.
@@ -9128,7 +9098,7 @@ fn proposals_card(
         .size(Some(width), None)
 }
 
-/// What the sessions it started said, as the session hears it [videos of 2026-10-25]:
+/// What the sessions it started said, as the session hears it:
 /// "Received message from" and the session's name, which opens it, and ▸ to read what it
 /// said. The newest shimmers while the session works on it.
 fn reports_block(
@@ -9194,7 +9164,7 @@ fn reports_block(
     Element::column(rows).gap(10.0)
 }
 
-/// A session beside the one in view: a side chat (`/btw`) [videos of 2026-10-25], or a session
+/// A session beside the one in view: a side chat (`/btw`), or a session
 /// it started, as Desktop opens a thread. Its title, after its
 /// parent's for a started one, with "open on its own", expand and close; its own transcript
 /// and running line; and a field under it: "Reply in this session…" for a side chat, "Steer
@@ -9341,7 +9311,7 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
                 "Appearance".into(),
                 vec![
                     setting("Theme", "", theme),
-                    // Desktop's own words and choices (3.6556.2 registry `cc7db14f1`); its
+                    // Desktop's own words and choices; its
                     // Anthropic Sans and OpenDyslexic are not quill's (docs/ui.md §2.11).
                     setting(
                         "Interface font",
@@ -9450,7 +9420,7 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
                             "",
                             setting_switch("keep_awake_battery", s.keep_awake_on_battery, palette),
                         ),
-                        // Desktop's own words and choices (3.6556.2 registry `cc7db14f1`).
+                        // Desktop's own words and choices.
                         setting(
                             "Archive inactive sessions",
                             "Automatically archive sessions after a period of no activity. Pinned sessions stay.",
@@ -9465,8 +9435,7 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
                     ],
                 ),
                 (
-                    // Desktop's own words and choices (3.6556.2 registry `cc7db14f1`, group
-                    // "local-sessions"); its levels are `c8b630735`. quill has no dock badge,
+                    // Desktop's own words and choices; quill has no dock badge,
                     // so Badge is its own marks in the sidebar and on the window (inferred).
                     "Notifications".into(),
                     vec![
@@ -9568,7 +9537,7 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
         },
     ];
     // The sites the agent may use without asking, which "Always allow for this website" adds
-    // to [notes "Manage allowed sites…"].
+    // to.
     let sites: Vec<Setting> = if s.browser_sites.is_empty() {
         vec![setting(
             "No allowed sites yet.",
@@ -9618,7 +9587,7 @@ fn settings_pages(store: &Store, ui: &Ui, palette: ComponentPalette) -> Vec<Sett
                          From quill's next start.",
                         setting_switch("browser_native", s.browser_native, palette),
                     ),
-                    // Desktop's "Open links in built-in browser" (3.6556.2 `c71860c77`).
+                    // Desktop's "Open links in built-in browser".
                     setting(
                         "Open links in built-in browser",
                         "A link in a conversation opens in the session's browser. Off, it opens in this computer's default browser.",
@@ -9700,7 +9669,7 @@ fn customize_pages() -> Vec<SettingsPage> {
     ]
 }
 
-/// Customize's pages as Desktop's own (3.6556.2, captured 2026-10-26): Skills and Plugins,
+/// Customize's pages as Desktop's own: Skills and Plugins,
 /// each a bold title with its search and buttons, then what each agent's program lists for
 /// the folder a new session starts in, read when the page opens. quill's agents may be
 /// several: the header's buttons act for the first that lists them (shortcut: one agent
@@ -9713,8 +9682,7 @@ fn customize_own(ui: &Ui, window: Size) -> Vec<(String, Element)> {
     ]
 }
 
-/// Customize's Yours | Discover, as Desktop's tabs beside a page's title (3.6556.2
-/// `cd08e92dc`): the one shown on the tab's fill.
+/// Customize's Yours | Discover, as Desktop's tabs beside a page's title: the one shown on the tab's fill.
 fn customize_tabs(tabs: &[(&str, &str, bool)]) -> Element {
     let tab = |id: &str, label: &str, on: bool| {
         let row = Element::row(vec![
@@ -10663,7 +10631,7 @@ fn plugins_page(ui: &Ui, window: Size) -> Element {
     Element::column(column).size(Some(width), None)
 }
 
-/// Discover's directory, as Desktop's (3.6556.2, captured 2026-10-26): a modal of its own over
+/// Discover's directory, as Desktop's: a modal of its own over
 /// Settings, "Plugins" in its column, a search across all that the marketplaces offer, a
 /// filter by marketplace and an add of one, over cards two to a row (the most installed
 /// first), each with its marketplace and installs and "+" to install it (where, in a project).
@@ -10903,7 +10871,7 @@ fn directory_dialog(ui: &Ui, base: Element, window: Size, palette: ComponentPale
     .render()
 }
 
-/// The marketplaces' dialogs, as Desktop's (2.9939.4 `caeab6b9d`): adding one by its source,
+/// The marketplaces' dialogs, as Desktop's: adding one by its source,
 /// warned to trust it first; and those added, each with its "⋯" (check for updates, remove).
 fn marketplace_dialog(ui: &Ui, base: Element, palette: ComponentPalette) -> Element {
     use quill_components::customize;
@@ -11044,7 +11012,7 @@ fn human_count(n: u64) -> String {
 }
 
 /// Customize's question before it removes a plugin, or a marketplace with its plugins,
-/// in Desktop's words (2.9939.4 `c6a2a31c4`).
+/// in Desktop's words.
 fn removing_dialog(ui: &Ui, base: Element) -> Element {
     let (title, words) = match &ui.removing {
         Some(crate::Removing::Plugin(_, plugin)) => (
@@ -11277,8 +11245,7 @@ fn human_bytes(bytes: u64) -> String {
     }
 }
 
-/// The session's MCP servers (`/mcp`), as Desktop's dialog lists them (3.6556.2
-/// `cff0db614`): each server with what ships it, where it was configured and how it is,
+/// The session's MCP servers (`/mcp`), as Desktop's dialog lists them: each server with what ships it, where it was configured and how it is,
 /// and what can be done about it: connect (sign in), reconnect, turn on. A row opens the
 /// server's details: its sign-in (re-authenticate, clear its credentials after asking) and,
 /// quill's own, its tools by what they do. Its words are Desktop's; while a turn runs the
@@ -11327,7 +11294,7 @@ fn mcp_dialog(
             .size(side)
             .render(),
     };
-    // Where it was configured, as Desktop's outlined pill beside the type (`ye`).
+    // Where it was configured, as Desktop's outlined pill beside the type.
     let chip = |label: &str| {
         Element::row(vec![
             hgap(6.0),
@@ -11462,7 +11429,7 @@ fn mcp_dialog(
                 body.push(words(note.to_owned()).padding(8.0));
             }
             // quill's own: the tools, by what their server says they do (Desktop's groups
-            // for its connectors' tools, 2.9939.4 `c4ac4d9d6`).
+            // for its connectors' tools).
             let groups = [
                 ("Read-only tools", 0),
                 ("Write/delete tools", 1),
@@ -11551,7 +11518,7 @@ fn mcp_dialog(
                         }
                     };
                     let name = &server.name;
-                    // Desktop's status cell (`Q`): a check, a spinner, or the one thing to
+                    // Desktop's status cell: a check, a spinner, or the one thing to
                     // do; what it says more is in the server's details.
                     let check = || {
                         Element::icon(icons::of(icons::CHECK))
@@ -11624,7 +11591,7 @@ fn mcp_dialog(
     .backdrop_dismiss(true)
     .scrim(look::scrim())
     .render();
-    // Desktop's question before forgetting a server's credentials (`cff0db614`).
+    // Desktop's question before forgetting a server's credentials.
     let clearing = (mcp.clearing.as_ref())
         .map(|name| {
             let found = servers.and_then(|all| all.iter().find(|s| &s.name == name));

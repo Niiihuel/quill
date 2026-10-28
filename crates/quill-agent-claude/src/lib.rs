@@ -195,7 +195,7 @@ impl Claude {
                     .iter()
                     .map(|(name, description, schema)| {
                         // Loaded with the session rather than found through tool search, as
-                        // Desktop marks its own (`anthropic/alwaysLoad`, 3.6556.2 asar).
+                        // Desktop marks its own the same way.
                         json!({
                             "name": name, "description": description,
                             "inputSchema": serde_json::from_str::<Value>(schema).unwrap_or_default(),
@@ -264,8 +264,7 @@ impl AgentAdapter for Claude {
         "Claude Code"
     }
 
-    /// Desktop waives it in bypass and auto mode (2.9939.4 `askForLaunchSpawn`,
-    /// "consent_waiver_mode_preview_start", modes `YPa`).
+    /// Desktop waives it in bypass and auto mode.
     fn mode_waives_prompts(&self, mode: &str) -> bool {
         matches!(mode, "bypassPermissions" | "auto")
     }
@@ -332,8 +331,7 @@ impl AgentAdapter for Claude {
             if spec.fork {
                 args.push("--fork-session".into());
             }
-            // Desktop's "Fork from here" resumes with `resumeSessionAt` and `forkSession`
-            // (3.6556.2 bundle `bundle`); the CLI takes it in stream-json
+            // Desktop's "Fork from here" resumes the same way; the CLI takes it in stream-json
             // mode too (tried on 2.1.310).
             if let Some(at) = &spec.resume_at {
                 args.push(format!("--resume-session-at={at}"));
@@ -364,7 +362,7 @@ impl AgentAdapter for Claude {
         }
     }
 
-    // Desktop's words for each mode (3.6556.2 `shared-8` `zG`), as the mode menu shows them;
+    // Desktop's words for each mode, as the mode menu shows them;
     // Auto's says who decides without naming the agent.
     fn modes(&self) -> Vec<ModeWords> {
         use quill_agent::ModeTone::*;
@@ -418,8 +416,8 @@ impl AgentAdapter for Claude {
         "default"
     }
 
-    // As Desktop does, through the CLI's own commands (2.9939.4 `DuaKZOPP`, 3.6556.2
-    // `Dcl1UEwM`: `plugin list --json --available`, `plugin install … --scope`), never
+    // As Desktop does, through the CLI's own commands (`plugin list --json --available`,
+    // `plugin install … --scope`), never
     // editing its files.
     // Sign-in is the CLI's own `claude auth …` (Claude Code 2.1.312, observed): quill drives
     // it and never holds a token. Its login prints the page address and then waits on stdin
@@ -549,7 +547,7 @@ impl AgentAdapter for Claude {
             .collect()
     }
 
-    // Desktop's install menu (2.9939.4 `caeab6b9d`), and the CLI's own /skills states.
+    // Desktop's install menu, and the CLI's own /skills states.
     // `claude mcp list` prints no JSON (2.1.311): a line a server, "name: target - ✔ Connected",
     // after checking each one's health.
     fn servers_query(&self) -> Option<Vec<String>> {
@@ -575,7 +573,7 @@ impl AgentAdapter for Claude {
         .into()
     }
 
-    // Desktop's local Claude Code options (3.6556.2 registry `cc7db14f1`, rows `c8b630735`)
+    // Desktop's local Claude Code options
     // that the CLI itself takes: its output style and its sandbox.
     fn options(&self) -> Vec<quill_agent::AgentOption> {
         let option =
@@ -806,7 +804,7 @@ impl AgentAdapter for Claude {
             // As Desktop changes it; verified on CLI 2.1.310, which answers
             // success even to a level it does not know, so only the model's levels are sent.
             // Ultracode is extra high effort with dynamic workflows on, as Desktop applies it
-            // (`{effortLevel: "xhigh", ultracode: true}`, 3.6556.2 `cc43287c9`/`shared-28`);
+            // (`{effortLevel: "xhigh", ultracode: true}`);
             // any other level turns it off again.
             AgentCommand::SetEffort(effort) => {
                 let settings = match effort.as_str() {
@@ -821,14 +819,14 @@ impl AgentAdapter for Claude {
             AgentCommand::Rewind { request, dry_run } => vec![self.request(json!({
                 "subtype": "rewind_files", "user_message_id": request, "dry_run": dry_run,
             }))],
-            // What Desktop's context breakdown asks for (3.6556.2 `shared-104`, `get_context_usage`).
+            // What Desktop's context breakdown asks for.
             AgentCommand::ContextUsage => {
                 let line =
                     self.request(json!({ "subtype": "get_context_usage", "detail": "full" }));
                 self.context_request = Some(self.last_request_id());
                 vec![line]
             }
-            // Desktop's session MCP panel polls these (3.6556.2 `cff0db614`, `mcpServerStatus`);
+            // Desktop's session MCP panel polls these;
             // the shapes are the CLI's own (fixtures/2.1.311/README.md).
             AgentCommand::McpStatus => {
                 let line = self.request(json!({ "subtype": "mcp_status" }));
@@ -838,7 +836,7 @@ impl AgentAdapter for Claude {
             AgentCommand::McpReconnect(name) => vec![self.request(json!({
                 "subtype": "mcp_reconnect", "serverName": name,
             }))],
-            // Desktop's Stop on a background task (3.6556.2 bundle `stopTask`).
+            // Desktop's Stop on a background task.
             AgentCommand::StopTask(id) => vec![self.request(json!({
                 "subtype": "stop_task", "task_id": id,
             }))],
@@ -863,7 +861,7 @@ impl AgentAdapter for Claude {
                 self.skills_request = Some(self.last_request_id());
                 vec![line]
             }
-            // What Desktop sends its idle sessions when plugins change (2.9939.4 `zC`).
+            // What Desktop sends its idle sessions when plugins change.
             AgentCommand::ReloadPlugins => {
                 vec![self.request(json!({ "subtype": "reload_plugins" }))]
             }
@@ -1011,7 +1009,7 @@ impl AgentAdapter for Claude {
                 id: text(&msg["task_id"]),
                 call: msg["tool_use_id"].as_str().map(str::to_owned),
                 description: text(&msg["description"]),
-                // Desktop's names for the CLI's task types (3.6556.2 `cccc2cf0a` `PM`).
+                // Desktop's names for the CLI's task types.
                 kind: match msg["task_type"].as_str().unwrap_or_default() {
                     "local_agent" | "in_process_teammate" | "remote_agent" => "agent",
                     "local_bash" => "command",
@@ -1208,12 +1206,11 @@ const LAUNCH_GUIDE: &str = "# Dev servers\n\npreview_start {name} runs a dev ser
 const BROWSER_SERVER: &str = "browser";
 
 /// When to start or propose another session, appended to the agent's system prompt. quill's
-/// words for what Desktop says in its own section on starting other sessions (3.6556.2
-/// `bundle` `bundle`).
+/// words for what Desktop says in its own section on starting other sessions.
 const SESSIONS_GUIDE: &str = "# Other sessions\n\nWith start_session you can start a separate session for a task of its own, or propose one. A session is for work that outlives this turn and ends in something of its own (a branch, a PR, a change elsewhere); searching or reading widely, independent parts of one change, and testing or checking what you built stay here or go to a subagent. When the user asks in words for separate, parallel or background work, start it (initiation \"user_asked\"). When your work turns up follow-up that belongs in its own session and the user has not asked for it, propose it (initiation \"own_initiative\") rather than only mentioning it: the user sees a card and starts it with a click. Give every session a brief that stands alone. When the user says something meant for a session you started (a change to its task, a detail it needs, an answer it waits for), pass it on with send_to_session instead of doing that part here. Sessions you start report back to you in a message when their turn ends; then carry on with what their results unblock, or tell the user the outcome in a line or two. Start nothing the user did not ask for.";
 
 /// The effort level Desktop adds over the model's own, its slider's last stop
-/// ("Added Ultracode to the effort slider", 3.6556.2 `cb63ed069`).
+/// ("Added Ultracode to the effort slider").
 const ULTRACODE: &str = "ultracode";
 
 /// Whether `/effort` takes `ultracode`, as its argument hint says ([F:simple]:
@@ -1261,8 +1258,7 @@ fn slash_commands(list: &Value) -> Vec<AgentSlashCommand> {
 }
 
 /// The answer to `get_context_usage` (CLI 2.1.310): its categories, each with a `kind`, and
-/// the lists Desktop opens under them, MCP tools, memory files and custom agents
-/// (3.6556.2 `c2d611398`).
+/// the lists Desktop opens under them, MCP tools, memory files and custom agents.
 fn context_usage(body: &Value) -> ContextUsage {
     let number = |v: &Value| v.as_u64().unwrap_or(0);
     let categories = body["categories"]
@@ -1349,7 +1345,7 @@ fn ready(body: &Value, ultracode: bool) -> AgentEvent {
                 efforts
             },
             // Auto mode is the model's to offer (CLI 2.1.311 `supportsAutoMode`), as Desktop
-            // lists it only for a model that has it (3.6556.2 `shared-8` `IG`).
+            // lists it only for a model that has it.
             modes: if m["supportsAutoMode"].as_bool() == Some(true) {
                 vec!["auto".into()]
             } else {
@@ -1478,8 +1474,7 @@ fn skills(body: &Value) -> Vec<Skill> {
     .collect()
 }
 
-/// A marketplace's source as a person may paste it, cleaned as Desktop's add dialog does
-/// (2.9939.4 `caeab6b9d` `Ge`): the command around it dropped, and an ssh address of GitHub
+/// A marketplace's source as a person may paste it, cleaned as Desktop's add dialog does: the command around it dropped, and an ssh address of GitHub
 /// made https.
 fn marketplace_source(pasted: &str) -> String {
     let mut source = pasted.trim();

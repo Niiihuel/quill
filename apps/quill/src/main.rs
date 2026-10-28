@@ -1531,7 +1531,7 @@ fn open_url(url: &str) -> bool {
 
 /// Show `path` of the folder `root`, or the folder, in `editor` at `line` when given: quill-ide
 /// in its window of that folder when one is open, else a new one; the others by their URL
-/// link, as Desktop opens them (2.9939.4): `vscode://file/<path>:<line>`.
+/// link, as Desktop opens them: `vscode://file/<path>:<line>`.
 fn open_in_editor(
     editor: &str,
     handler: Option<&Vec<String>>,

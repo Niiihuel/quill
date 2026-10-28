@@ -350,7 +350,7 @@ pub fn dialog(
             content.push(muted("No settings match your search.").font_size(15.0));
         }
     }
-    // Desktop's words when a setting is not kept [2.9939.4 `cf4f70727`], over the page.
+    // Desktop's words when a setting is not kept, over the page.
     if let Some(error) = failed {
         content.insert(
             0,

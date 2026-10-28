@@ -1,6 +1,6 @@
 //! The first screen: quill's pen writes "welcome", as the icon's pen writes its line, then
 //! a line about quill and Get started. Desktop's own first screen is its mark, a title, a
-//! subtitle and one wide button near the bottom ; the
+//! subtitle and one wide button near the bottom; the
 //! written word is quill's.
 
 use crate::Ui;

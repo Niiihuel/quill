@@ -1,4 +1,4 @@
-//! The "@" list over the composer, as Desktop's mention menu (3.6556.2: `shared-28-DNYlf4wu.js`
+//! The "@" list over the composer, as Desktop's mention menu
 //! for the trigger, `epitaxy-sessions` and `ccd-files` for the rows; spec §2). Its rows are the
 //! other sessions first, then the files of the session's folder; a pick writes `@path ` for a
 //! file, and `@[title] ` for a session, which the next task reads (not yet sent).
@@ -208,7 +208,7 @@ pub(crate) fn heard(ui: &mut Ui, event: &Event) {
 }
 
 /// The list over `anchor` while it is open: rows as the "/" palette's, 560 wide with each
-/// session's folder after its title, as Desktop's mention popup (the person's capture; `Qj`).
+/// session's folder after its title, as Desktop's mention popup.
 pub fn list(store: &Store, ui: &Ui, anchor: Element, width: f32) -> Element {
     let Some((_, rows)) = open(store, ui) else {
         return anchor;

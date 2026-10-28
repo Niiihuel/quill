@@ -39,7 +39,7 @@ pub struct Cdp {
     alive: Arc<AtomicBool>,
 }
 
-/// How long a command may go unanswered; Desktop gives its tools 30 s [notes].
+/// How long a command may go unanswered; Desktop gives its tools 30 s.
 pub const TIMEOUT: Duration = Duration::from_secs(30);
 
 impl Cdp {

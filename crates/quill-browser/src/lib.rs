@@ -38,7 +38,7 @@ pub enum Grant {
 }
 
 /// Asks the person whether `owner`'s agent may open or use the site `host` (`url` is what it
-/// wants); the answer comes on the receiver. Desktop's card [notes]: "Allow once",
+/// wants); the answer comes on the receiver. Desktop's card: "Allow once",
 /// "Always allow for this website", "Don't allow".
 pub type Permit =
     Arc<dyn Fn(Owner, SiteAsk) -> tokio::sync::oneshot::Receiver<Grant> + Send + Sync>;
@@ -51,7 +51,7 @@ pub struct SiteAsk {
     pub opening: bool,
 }
 
-/// Desktop stops at nine tabs counting its seed tab [notes].
+/// Desktop stops at nine tabs counting its seed tab.
 pub const MAX_TABS: usize = 8;
 /// How long Chromium runs with no tab open before it is closed, as Desktop destroys a hidden
 /// pane's views after 5 minutes.
@@ -149,7 +149,7 @@ pub(crate) struct Tab {
     cursor_asked: Option<Instant>,
     pub(crate) console: VecDeque<String>,
     pub(crate) network: VecDeque<Request>,
-    /// The page opened it: the agent may not act in it (Desktop's rule, notes).
+    /// The page opened it: the agent may not act in it (Desktop's rule).
     pub(crate) popup: bool,
 }
 
@@ -1347,7 +1347,7 @@ fn on_event(browser: &Browser, run: &Arc<Run>, message: Message, scale: f32) {
             tokio::spawn(async move { picked(&browser, &run, &session, node).await });
         }
         // The person sees what a page says; nothing waits on an answer (Desktop suppresses
-        // dialogs for the agent, notes).
+        // dialogs for the agent).
         "Page.javascriptDialogOpening" => {
             let session = message.session.unwrap_or_default();
             let kind = params["type"].as_str().unwrap_or_default();

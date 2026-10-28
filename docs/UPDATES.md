@@ -63,7 +63,7 @@ still working» con **Cancel**, **Update anyway** y **Wait for agents**: esta
 última deja la tira en «Restarting when agents finish» (con una x que lo
 cancela) e instala la primera vez que no queda ninguna sesión ocupada. La
 descarga y la búsqueda no muestran nada en la barra lateral: su progreso está
-sólo en Ajustes › Sistema. Es el comportamiento de Claude Desktop 2.9939.4
+sólo en Ajustes › Sistema. Es el comportamiento de Claude Desktop
 (la tira, el punto y el diálogo; no tiene aviso emergente ni entrada de menú);
 las palabras del diálogo dicen «agents» porque quill no nombra a ningún
 proveedor.

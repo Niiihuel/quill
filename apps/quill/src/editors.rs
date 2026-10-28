@@ -1,4 +1,4 @@
-//! The editors on this computer, found as Desktop finds them (2.9939.4, from its code): by the
+//! The editors on this computer, found as Desktop finds them: by the
 //! app the desktop has for each one's URL scheme. On Linux that is a `.desktop` file declaring
 //! `x-scheme-handler/<scheme>`; its icon is the one the desktop shows for it.
 
