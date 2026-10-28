@@ -1150,9 +1150,12 @@ pub struct Ui {
     pub diff_menu: Option<String>,
     /// Whether the menu of the sidebar's foot, the person's, is open.
     pub account_menu: bool,
-    /// quill's own update, as the engine last reported it, and the version whose toast is up.
+    /// quill's own update, as the engine last reported it.
     pub update: quill_model::UpdateState,
-    pub update_toast: Option<String>,
+    /// "Agents are still working" is up, and "Wait for agents" was chosen (the update installs
+    /// the first time none is busy).
+    pub update_asking: bool,
+    pub restart_when_idle: bool,
     /// A fork was asked for: the session the engine makes next is it, and opens.
     pub waiting_fork: bool,
     /// Words the host puts back in the message box: a message rewound or forked from, or a
@@ -1885,7 +1888,8 @@ impl Ui {
             settings_page: None,
             account_menu: false,
             update: quill_model::UpdateState::Idle,
-            update_toast: None,
+            update_asking: false,
+            restart_when_idle: false,
             settings_query: String::new(),
             settings_menu: None,
             storage: None,
@@ -2573,6 +2577,11 @@ pub fn composer_key(ui: &mut Ui, focused: Option<&str>, event: &limn::UiEvent) {
     }
 }
 
+/// After the store took an event: what "Wait for agents" was waiting for.
+pub fn settled(store: &Store, ui: &mut Ui) -> Vec<Intent> {
+    updates::settled(store, ui)
+}
+
 pub fn update(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Intent> {
     let mut intents = match files::action(store, ui, action) {
         Some(intents) => intents,
@@ -3155,7 +3164,7 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         ui.take_defaults();
         return vec![];
     }
-    if let Some(intents) = updates::clicked(ui, id) {
+    if let Some(intents) = updates::clicked(store, ui, id) {
         return intents;
     }
     if let Some(intents) = tour::clicked(ui, id) {

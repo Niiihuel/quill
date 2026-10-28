@@ -51,11 +51,22 @@ Los estados que ve la persona (`quill_model::UpdateState`):
 | Al día | «quill está al día · Revisado hace 5 min» |
 | Disponible | «La versión 0.3.0 está disponible», con las notas |
 | Descargando | progreso; si es obligatoria, una ventana sin cerrar |
-| Lista | «Reiniciar para actualizar» (botón principal, el menú de la cuenta y un aviso de una vez) |
+| Lista | En la barra lateral, sobre el botón de la cuenta, una tira «Relaunch to update · v0.3.0» (con la barra oculta, un punto en el botón de mostrarla); en Ajustes, «Restart to update». Sin aviso emergente ni entrada en el menú de la cuenta |
 | Error | el motivo, en una línea discreta, con **Reintentar** |
 | Compilado desde el código | «Compilado desde el código: actualiza con git pull» |
 | Sin instalar | «Ejecuta quill --install para mantenerlo actualizado» |
 | Sin acceso | «Las actualizaciones necesitan acceso al repositorio privado…» |
+
+Pulsar la tira (o el botón de Ajustes) reinicia al instante si ninguna sesión
+trabaja. Si alguna está en marcha o esperando a la persona, abre «Agents are
+still working» con **Cancel**, **Update anyway** y **Wait for agents**: esta
+última deja la tira en «Restarting when agents finish» (con una x que lo
+cancela) e instala la primera vez que no queda ninguna sesión ocupada. La
+descarga y la búsqueda no muestran nada en la barra lateral: su progreso está
+sólo en Ajustes › Sistema. Es el comportamiento de Claude Desktop 2.9939.4
+(la tira, el punto y el diálogo; no tiene aviso emergente ni entrada de menú);
+las palabras del diálogo dicen «agents» porque quill no nombra a ningún
+proveedor.
 
 Una copia compilada desde el código (bajo una carpeta `target`, o con
 `QUILL_NO_UPDATE` puesto) no busca, no descarga y no se instala sola. Una copia

@@ -695,8 +695,9 @@ impl eframe::App for App {
                 prompt.push_str(block);
                 self.set_prompt(prompt);
             }
-            let intents = self.ui.applied(&event);
+            let mut intents = self.ui.applied(&event);
             self.store.apply(event);
+            intents.extend(quill_ui::settled(&self.store, &mut self.ui));
             self.dispatch(intents);
         }
         self.apply_look(&ctx);

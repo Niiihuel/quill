@@ -1551,20 +1551,29 @@ fn session_title(session: &Session) -> String {
     }
 }
 
+/// The toggle's tooltip. Hidden with a version waiting it carries the dot's words (Desktop
+/// 2.9939.4, ION/shared-24 `qC5Uj7uEv+`).
+pub(crate) fn sidebar_toggle_label(ui: &Ui) -> &'static str {
+    if ui.sidebar.open {
+        "Hide sidebar"
+    } else if crate::updates::ready(ui).is_some() {
+        "Restart needed. Show sidebar for details."
+    } else {
+        "Show sidebar"
+    }
+}
+
 /// The sidebar's toggle, "Hide sidebar Ctrl+B"; it stays at the bar's start while the sidebar
 /// is hidden, on the active fill.
 fn sidebar_toggle(ui: &Ui) -> Element {
-    toggle(
+    let toggle = toggle(
         SIDEBAR_TOGGLE,
         icons::of(icons::SIDEBAR),
-        if ui.sidebar.open {
-            "Hide sidebar"
-        } else {
-            "Show sidebar"
-        },
+        sidebar_toggle_label(ui),
         !ui.sidebar.open,
         Some("Ctrl+B"),
-    )
+    );
+    crate::updates::toggle_dot(ui, toggle)
 }
 
 /// "Open in" as Desktop lists it (2.9939.4, inferred from its code): quill-ide, then the
@@ -2032,12 +2041,12 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
         Element::row(account).gap(6.0).size(None, Some(32.0)),
     ))
     .radius(8.0);
-    let mut entries = crate::updates::account_entries(ui);
-    entries.push(
-        limn::DropdownMenuItem::new(crate::tour::START, "Take the tour")
-            .icon(icons::of(icons::QUESTION))
-            .into(),
-    );
+    let mut entries: Vec<limn::DropdownMenuEntry> =
+        vec![
+            limn::DropdownMenuItem::new(crate::tour::START, "Take the tour")
+                .icon(icons::of(icons::QUESTION))
+                .into(),
+        ];
     entries.push(
         limn::DropdownMenuItem::new(SETTINGS_OPEN, "Settings")
             .icon(icons::of(icons::SETTINGS))
@@ -2052,15 +2061,20 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
         260.0,
         limn::PopoverPlacement::TopStart,
     );
-    Element::column(vec![
-        Element::column(rows)
-            .gap(2.0)
-            .padding(8.0)
-            .flex(1.0)
-            .clip_children(),
-        hline(look::SIDEBAR_WIDTH - 1.0, look::divider()),
-        Element::row(vec![account, Element::spacer().flex(1.0)]).padding(8.0),
-    ])
+    Element::column(
+        vec![
+            Element::column(rows)
+                .gap(2.0)
+                .padding(8.0)
+                .flex(1.0)
+                .clip_children(),
+            hline(look::SIDEBAR_WIDTH - 1.0, look::divider()),
+        ]
+        .into_iter()
+        .chain(crate::updates::sidebar_strip(ui, palette))
+        .chain([Element::row(vec![account, Element::spacer().flex(1.0)]).padding(8.0)])
+        .collect(),
+    )
     .background(look::sidebar())
     .size(Some(look::SIDEBAR_WIDTH - 1.0), Some(height))
 }

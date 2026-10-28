@@ -4964,28 +4964,97 @@ fn the_logos_of_connectors_and_plugins_are_asked_once_and_only_while_shown() {
     assert!(ui.logos_due(&store).is_empty());
 }
 
-#[test]
-fn a_ready_update_is_offered_in_the_menu_and_restarts_on_click() {
-    let (store, mut ui) = store_with_session();
+fn ready_update(ui: &mut Ui, mandatory: bool) {
     ui.applied(&Event::Update(quill_model::UpdateState::Ready {
         version: "0.3.0".into(),
-        mandatory: false,
+        mandatory,
     }));
-    click(&store, &mut ui, view::ACCOUNT_MENU);
+}
+
+fn set_status(store: &mut Store, id: SessionId, status: quill_model::SessionStatus) {
+    store
+        .sessions
+        .iter_mut()
+        .find(|s| s.id == id)
+        .expect("the session")
+        .status = status;
+}
+
+fn drawn_words(store: &Store, ui: &Ui, words: &str) -> bool {
     let window = limn::Size::new(1408.0, 844.0);
-    let frame = UiTree::new(view(&store, &ui, window)).layout(window);
-    let drawn = |words: &str| {
-        frame.commands.iter().any(|command| {
-            matches!(command, limn::DrawCommand::Text { text, .. } if text.contains(words))
-        })
-    };
-    assert!(drawn("Restart to update"));
-    assert!(drawn("quill 0.3.0 is ready"));
+    let frame = UiTree::new(view(store, ui, window)).layout(window);
+    frame.commands.iter().any(
+        |command| matches!(command, limn::DrawCommand::Text { text, .. } if text.contains(words)),
+    )
+}
+
+#[test]
+fn the_sidebar_strip_shows_for_an_optional_ready_update_and_there_is_no_toast_or_menu_entry() {
+    let (store, mut ui) = store_with_session();
+    assert!(!drawn_words(&store, &ui, "Relaunch to update"));
+    ready_update(&mut ui, true);
+    assert!(!drawn_words(&store, &ui, "Relaunch to update"));
+    ready_update(&mut ui, false);
+    assert!(drawn_words(&store, &ui, "Relaunch to update"));
+    assert!(drawn_words(&store, &ui, "v0.3.0"));
+    assert!(!drawn_words(&store, &ui, "is ready"));
+    click(&store, &mut ui, view::ACCOUNT_MENU);
+    assert!(!drawn_words(&store, &ui, "Restart to update"));
+    // Idle agents: the click installs at once.
     assert_eq!(
-        click(&store, &mut ui, updates::UPDATE_RESTART),
+        click(&store, &mut ui, updates::UPDATE_STRIP),
         vec![Intent::InstallUpdate]
     );
-    assert!(!ui.account_menu && ui.update_toast.is_none());
+}
+
+#[test]
+fn restarting_with_agents_at_work_asks_and_waiting_installs_once_they_are_idle() {
+    let (mut store, mut ui) = store_with_session();
+    let id = ui.selected.expect("a session");
+    set_status(&mut store, id, quill_model::SessionStatus::Running);
+    ready_update(&mut ui, false);
+    assert!(click(&store, &mut ui, updates::UPDATE_STRIP).is_empty());
+    assert!(ui.update_asking);
+    assert!(drawn_words(&store, &ui, "Agents are still working"));
+    // Wait: nothing is sent while the agent is busy.
+    assert!(click(&store, &mut ui, updates::UPDATE_ASK_WAIT).is_empty());
+    assert!(!ui.update_asking && ui.restart_when_idle);
+    assert!(drawn_words(&store, &ui, "Restarting when agents finish"));
+    assert!(updates::settled(&store, &mut ui).is_empty());
+    set_status(&mut store, id, quill_model::SessionStatus::Idle);
+    assert_eq!(
+        updates::settled(&store, &mut ui),
+        vec![Intent::InstallUpdate]
+    );
+    // Sent once.
+    assert!(updates::settled(&store, &mut ui).is_empty());
+}
+
+#[test]
+fn update_anyway_installs_and_cancel_forgets_the_wait() {
+    let (mut store, mut ui) = store_with_session();
+    let id = ui.selected.expect("a session");
+    set_status(&mut store, id, quill_model::SessionStatus::Awaiting);
+    ready_update(&mut ui, false);
+    click(&store, &mut ui, updates::UPDATE_STRIP);
+    assert_eq!(
+        click(&store, &mut ui, updates::UPDATE_ASK_NOW),
+        vec![Intent::InstallUpdate]
+    );
+    click(&store, &mut ui, updates::UPDATE_STRIP);
+    click(&store, &mut ui, updates::UPDATE_ASK_WAIT);
+    click(&store, &mut ui, updates::UPDATE_WAIT_CANCEL);
+    assert!(!ui.restart_when_idle);
+}
+
+#[test]
+fn a_hidden_sidebar_says_a_restart_is_needed() {
+    let (store, mut ui) = store_with_session();
+    ui.sidebar.open = false;
+    assert!(!drawn_words(&store, &ui, "Restart needed"));
+    ready_update(&mut ui, false);
+    // The words ride on the toggle's tooltip, which is built with the toggle.
+    assert!(view::sidebar_toggle_label(&ui).starts_with("Restart needed"));
 }
 
 #[test]
@@ -5171,7 +5240,7 @@ fn a_ready_update_puts_restart_in_the_settings_row() {
     let restart = at("Restart to update").expect("the row draws Restart to update");
     let check = at("Check for updates").expect("the row draws Check for updates");
     assert!((restart.y - check.y).abs() < 0.5 && restart.x < check.x);
-    // And the row's own button answers, not only the menu's entry.
+    // And the row's own button answers, as the strip does.
     assert_eq!(
         click(&store, &mut ui, updates::UPDATE_RESTART_ROW),
         vec![Intent::InstallUpdate]
