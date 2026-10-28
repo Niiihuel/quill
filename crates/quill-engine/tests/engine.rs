@@ -897,3 +897,97 @@ fn a_queue_kept_across_a_restart_comes_back_held_and_waits_for_the_person() {
     );
     let _ = std::fs::remove_file(&database);
 }
+
+/// An engine whose fake agent starts signed out, with the marker that flips it in a folder of
+/// the test's own (the agent's environment setting reaches the account commands too).
+fn signed_out_engine(name: &str) -> (Engine, Receiver<Event>, std::path::PathBuf) {
+    let (engine, rx) = engine();
+    let marker = workdir(name).join("marker");
+    let mut settings = quill_model::Settings::default();
+    settings.agents.insert(
+        "claude".into(),
+        quill_model::AgentSettings {
+            env: vec![
+                "QUILL_FAKE_AUTH=signed-out".into(),
+                format!("QUILL_FAKE_AUTH_MARKER={}", marker.display()),
+            ],
+            ..Default::default()
+        },
+    );
+    engine.send(Intent::SaveSettings(settings));
+    (engine, rx, marker)
+}
+
+fn state(rx: &Receiver<Event>) -> quill_model::AuthState {
+    let seen = until(rx, |e| matches!(e, Event::Auth { .. }));
+    match seen.last() {
+        Some(Event::Auth { state, .. }) => state.clone(),
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn signing_in_through_the_program_ends_signed_in_and_signing_out_ends_signed_out() {
+    let (engine, rx, _) = signed_out_engine("auth-flow");
+    let agent = "claude".to_string();
+    engine.send(Intent::CheckSignIn {
+        agent: agent.clone(),
+    });
+    assert_eq!(state(&rx), quill_model::AuthState::SignedOut);
+
+    engine.send(Intent::SignIn {
+        agent: agent.clone(),
+        method: "claudeai".into(),
+    });
+    let seen = until(&rx, |e| matches!(e, Event::SignInUrl { .. }));
+    // The OSC 8 wrapper is gone: a plain address.
+    assert!(matches!(
+        seen.last(),
+        Some(Event::SignInUrl { url, .. }) if url.starts_with("https://claude.com/cai/oauth/authorize?")
+            && !url.contains('\x1b') && !url.contains('\x07')
+    ));
+    engine.send(Intent::SubmitSignInCode {
+        agent: agent.clone(),
+        code: "abc#state".into(),
+    });
+    assert!(
+        matches!(state(&rx), quill_model::AuthState::SignedIn { email: Some(e), .. } if e == "ada@example.com")
+    );
+
+    engine.send(Intent::SignOut { agent });
+    assert_eq!(state(&rx), quill_model::AuthState::SignedOut);
+}
+
+#[test]
+fn a_rejected_code_says_what_the_program_said_and_cancel_ends_the_login() {
+    let (engine, rx, marker) = signed_out_engine("auth-fail");
+    let agent = "claude".to_string();
+    let sign_in = || Intent::SignIn {
+        agent: "claude".into(),
+        method: "console".into(),
+    };
+    engine.send(sign_in());
+    until(&rx, |e| matches!(e, Event::SignInUrl { .. }));
+    engine.send(Intent::SubmitSignInCode {
+        agent: agent.clone(),
+        code: "fail".into(),
+    });
+    let seen = until(&rx, |e| matches!(e, Event::SignInFailed { .. }));
+    assert!(matches!(
+        seen.last(),
+        Some(Event::SignInFailed { message, .. }) if message == "Login failed: the code was not accepted"
+    ));
+
+    // Cancelled, the program is killed before it can accept a code: nothing follows.
+    engine.send(sign_in());
+    until(&rx, |e| matches!(e, Event::SignInUrl { .. }));
+    engine.send(Intent::CancelSignIn {
+        agent: agent.clone(),
+    });
+    engine.send(Intent::SubmitSignInCode {
+        agent,
+        code: "abc#state".into(),
+    });
+    assert!(rx.recv_timeout(Duration::from_millis(700)).is_err());
+    assert!(!marker.exists());
+}

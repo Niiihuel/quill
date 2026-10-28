@@ -4,11 +4,11 @@
 
 use quill_agent::{
     AgentAdapter, AgentCapabilities, AgentCommand, AgentEvent, AgentId, AgentSlashCommand,
-    CommandRun, ContextCategory, ContextKind, ContextUsage, Decision, Decoded, ExtensionOp,
-    FileChange, LaunchPlan, Marketplace, McpServer, McpSource, McpStatus, McpTool, ModelInfo,
-    PlanLimits, Plugin, PluginOffer, ProgramRun, SessionSpec, Skill, Suggestion, TaskUsage,
-    ToolContent, Usage, UsageWindow, WebSearchRun, WebSource, BROWSER_GUIDE, BROWSER_TOOLS,
-    HOST_TOOLS,
+    AuthState, Choices, CommandRun, ContextCategory, ContextKind, ContextUsage, Decision, Decoded,
+    ExtensionOp, FileChange, LaunchPlan, Marketplace, McpServer, McpSource, McpStatus, McpTool,
+    ModelInfo, PlanLimits, Plugin, PluginOffer, ProgramRun, SessionSpec, Skill, Suggestion,
+    TaskUsage, ToolContent, Usage, UsageWindow, WebSearchRun, WebSource, BROWSER_GUIDE,
+    BROWSER_TOOLS, HOST_TOOLS,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -37,6 +37,9 @@ pub struct Claude {
     /// `mcp_authenticate` requests waiting for their answers, with their server.
     sign_ins: HashMap<String, String>,
     interrupted: bool,
+    /// The turn's answer was the CLI's `authentication_failed` (cli-auth.md §4): its result
+    /// ends the turn with `AuthRequired`.
+    auth_failed: bool,
     /// `can_use_tool` waiting for a decision: its tool call and input, echoed back on allow.
     pending: HashMap<String, (Value, Value)>,
     /// Each tool call's name and input, to describe its result.
@@ -348,6 +351,70 @@ impl AgentAdapter for Claude {
     // As Desktop does, through the CLI's own commands (2.9939.4 `DuaKZOPP`, 3.6556.2
     // `Dcl1UEwM`: `plugin list --json --available`, `plugin install … --scope`), never
     // editing its files.
+    // Sign-in is the CLI's own `claude auth …` (Claude Code 2.1.312, observed): quill drives
+    // it and never holds a token. Its login prints the page address and then waits on stdin
+    // for `CODE#STATE`, the code the manual page shows, while a local callback also listens.
+    fn sign_in_methods(&self) -> Choices {
+        [
+            ("claudeai", "Claude subscription"),
+            ("console", "Anthropic Console"),
+        ]
+        .map(|(key, label)| (key.to_owned(), label.to_owned()))
+        .into()
+    }
+
+    fn auth_query(&self) -> Option<Vec<String>> {
+        Some(["auth", "status", "--json"].map(String::from).into())
+    }
+
+    fn auth_state(&self, stdout: &str, exit: i32) -> AuthState {
+        // `status` exits 1 when signed out, and prints the same JSON either way.
+        let Ok(status) = serde_json::from_str::<Value>(stdout) else {
+            return AuthState::Unknown(format!("claude auth status exited {exit}"));
+        };
+        let word = |key: &str| status[key].as_str().map(str::to_owned);
+        match status["loggedIn"].as_bool() {
+            Some(true) => AuthState::SignedIn {
+                method: word("authMethod").unwrap_or_default(),
+                email: word("email"),
+                org: word("orgName"),
+                plan: word("subscriptionType"),
+            },
+            Some(false) => AuthState::SignedOut,
+            None => AuthState::Unknown("claude auth status gave no loggedIn".into()),
+        }
+    }
+
+    fn login_run(&self, method: &str) -> Option<ProgramRun> {
+        let flag = match method {
+            "claudeai" => "--claudeai",
+            "console" => "--console",
+            _ => return None,
+        };
+        Some(ProgramRun {
+            args: ["auth", "login", flag].map(String::from).into(),
+            stdin: None,
+            timeout: 600,
+        })
+    }
+
+    /// The address is wrapped in an OSC 8 hyperlink even without a terminal
+    /// (`ESC]8;;URL BEL URL ESC]8;; BEL`); only the address is taken, and only a secure one.
+    fn login_url(&self, line: &str) -> Option<String> {
+        let from = line.find("https://")?;
+        let rest = &line[from..];
+        let end = rest.find(['\x07', '\x1b', ' ']).unwrap_or(rest.len());
+        Some(rest[..end].trim().to_owned())
+    }
+
+    fn logout_run(&self) -> Option<ProgramRun> {
+        Some(ProgramRun {
+            args: ["auth", "logout"].map(String::from).into(),
+            stdin: None,
+            timeout: 60,
+        })
+    }
+
     fn plugins_query(&self) -> Option<Vec<String>> {
         Some(
             ["plugin", "list", "--json", "--available"]
@@ -931,6 +998,9 @@ impl AgentAdapter for Claude {
                 }
             }
             ("assistant", _) => {
+                if msg["error"] == "authentication_failed" {
+                    self.auth_failed = true;
+                }
                 let usage = &msg["message"]["usage"];
                 if parent.is_none() && usage.is_object() {
                     self.context = [
@@ -993,6 +1063,9 @@ impl AgentAdapter for Claude {
                 let errors = msg["errors"]
                     .as_array()
                     .map(|e| e.iter().map(text).collect::<Vec<_>>().join("\n"));
+                if std::mem::take(&mut self.auth_failed) {
+                    decoded.events.push(AgentEvent::AuthRequired);
+                }
                 decoded.events.push(AgentEvent::TurnFinished {
                     ok: msg["is_error"] != true,
                     interrupted,

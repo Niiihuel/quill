@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 pub use quill_agent::{
-    AgentCapabilities, AgentEvent, AgentOption, AgentSlashCommand, ConfiguredServer,
+    AgentCapabilities, AgentEvent, AgentOption, AgentSlashCommand, AuthState, ConfiguredServer,
     ContextCategory, ContextKind, ContextUsage, Decision, ExtensionOp, Extensions, FileChange,
     Marketplace, McpServer, McpSource, McpStatus, McpTool, ModelInfo, NewServer, PlanLimits,
     Plugin, PluginOffer, Skill, Suggestion, TaskUsage, ToolContent, Usage, UsageWindow,
@@ -323,6 +323,9 @@ pub struct AgentInfo {
     /// Its logo, an SVG in `currentColor`, as its adapter ships it.
     #[serde(default)]
     pub icon: Option<String>,
+    /// The ways to sign in to its program, as (key, label); none when it has no sign-in of its own.
+    #[serde(default)]
+    pub sign_in_methods: Vec<(String, String)>,
 }
 
 /// Where a message sent while a turn runs goes.
@@ -583,6 +586,28 @@ pub enum Intent {
     Servers {
         agent: String,
         folder: PathBuf,
+    },
+    /// Ask an agent's program whether the person is signed in; answered by `Event::Auth`.
+    CheckSignIn {
+        agent: String,
+    },
+    /// Sign in to an agent by one of its `sign_in_methods`; its program opens the page in the
+    /// browser. Answered by `Event::SignInUrl`, then `Event::Auth` or `Event::SignInFailed`.
+    SignIn {
+        agent: String,
+        method: String,
+    },
+    /// The code the sign-in page showed, for the sign-in under way.
+    SubmitSignInCode {
+        agent: String,
+        code: String,
+    },
+    CancelSignIn {
+        agent: String,
+    },
+    /// Sign out of an agent's program (it is signed out wherever that program runs).
+    SignOut {
+        agent: String,
     },
     /// Servers the public MCP registry lists for `query`; answered by `Event::ServersFound`.
     FindServers {
@@ -1115,6 +1140,21 @@ pub enum Event {
         scopes: Vec<(String, String)>,
         error: Option<String>,
     },
+    /// Who the agent's program says is signed in. The program keeps the account, so nothing
+    /// of it is stored: it is asked again at each start.
+    Auth {
+        agent: String,
+        state: AuthState,
+    },
+    /// The page where the person signs in, which the engine also opened in their browser.
+    SignInUrl {
+        agent: String,
+        url: String,
+    },
+    SignInFailed {
+        agent: String,
+        message: String,
+    },
     /// What the MCP registry lists for `query`, or why it could not be asked.
     ServersFound {
         query: String,
@@ -1212,7 +1252,10 @@ impl Event {
             | Event::Update(_)
             | Event::Extensions { .. }
             | Event::Servers { .. }
-            | Event::ServersFound { .. } => 0,
+            | Event::ServersFound { .. }
+            | Event::Auth { .. }
+            | Event::SignInUrl { .. }
+            | Event::SignInFailed { .. } => 0,
         }
     }
 }

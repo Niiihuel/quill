@@ -2,6 +2,7 @@
 //! is doing ([`Ui`]), what their actions ask ([`update`]) and the window ([`view`]).
 //! Layout and colors follow Claude Desktop's Code surface (docs/ui.md, features/code-*.md).
 
+mod account;
 pub mod annotate;
 mod files;
 mod mention;
@@ -70,6 +71,8 @@ pub enum Item {
         interrupted: bool,
         cost: Option<f64>,
         error: Option<String>,
+        /// The turn failed because the person is not signed in: its row offers Sign in.
+        sign_in: bool,
     },
     /// Something quill left out of a message, shown where the message is.
     Notice { text: String },
@@ -110,6 +113,8 @@ pub struct ToolResult {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Session {
+    /// The agent said it needs the person signed in, for the turn that ends next.
+    sign_in: bool,
     pub id: SessionId,
     pub agent: String,
     pub cwd: PathBuf,
@@ -247,6 +252,7 @@ impl Store {
                 agent,
                 cwd,
             } => self.sessions.push(Session {
+                sign_in: false,
                 id: session,
                 agent,
                 cwd,
@@ -584,7 +590,10 @@ impl Store {
             | Event::Update(_)
             | Event::Extensions { .. }
             | Event::Servers { .. }
-            | Event::ServersFound { .. } => {}
+            | Event::ServersFound { .. }
+            | Event::Auth { .. }
+            | Event::SignInUrl { .. }
+            | Event::SignInFailed { .. } => {}
         }
     }
 }
@@ -610,6 +619,8 @@ fn agent_event(s: &mut Session, event: AgentEvent) {
             }
         }
         AgentEvent::ModeChanged { mode } => s.mode = mode,
+        // The turn's end follows, and carries it.
+        AgentEvent::AuthRequired => s.sign_in = true,
         AgentEvent::Tokens { tokens } => s.tokens = tokens,
         AgentEvent::ContextUsage(usage) => s.context_usage = Some(usage),
         AgentEvent::McpServers(servers) => s.mcp = Some(servers),
@@ -828,6 +839,7 @@ fn agent_event(s: &mut Session, event: AgentEvent) {
                 interrupted,
                 cost: usage.cost_usd,
                 error,
+                sign_in: std::mem::take(&mut s.sign_in),
             });
         }
         _ => {}
@@ -1150,6 +1162,8 @@ pub struct Ui {
     pub diff_menu: Option<String>,
     /// Whether the menu of the sidebar's foot, the person's, is open.
     pub account_menu: bool,
+    /// The agent's account and the sign-in screen (`account`).
+    pub account: account::Account,
     /// quill's own update, as the engine last reported it.
     pub update: quill_model::UpdateState,
     /// "Agents are still working" is up, and "Wait for agents" was chosen (the update installs
@@ -1887,6 +1901,7 @@ impl Ui {
             agents: vec![],
             settings_page: None,
             account_menu: false,
+            account: Default::default(),
             update: quill_model::UpdateState::Idle,
             update_asking: false,
             restart_when_idle: false,
@@ -2238,7 +2253,8 @@ impl Ui {
         mention::heard(self, event);
         updates::heard(self, event);
         tour::heard(self, event);
-        let mut intents = files::heard(self, event);
+        let mut intents = account::heard(self, event);
+        intents.extend(files::heard(self, event));
         intents.extend(self.mcp_heard(event));
         intents.extend(self.applied_to_view(event));
         intents
@@ -2626,6 +2642,11 @@ fn update_action(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Int
             }
             vec![]
         }
+        UiAction::InputChanged { id, value } if id.starts_with(account::CODE) => {
+            ui.account.code = value.clone();
+            vec![]
+        }
+        UiAction::Submitted { id, .. } if id.starts_with(account::CODE) => account::submit(ui),
         UiAction::InputChanged { id, value } if id.starts_with("revise-text:") => {
             ui.revision = value.clone();
             vec![]
@@ -3165,6 +3186,9 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         return vec![];
     }
     if let Some(intents) = updates::clicked(store, ui, id) {
+        return intents;
+    }
+    if let Some(intents) = account::clicked(ui, id) {
         return intents;
     }
     if let Some(intents) = tour::clicked(ui, id) {

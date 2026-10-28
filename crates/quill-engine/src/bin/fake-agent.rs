@@ -10,6 +10,9 @@
 use std::io::{BufRead, Write};
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("auth") {
+        return auth();
+    }
     let path =
         std::fs::read_to_string(".fake-agent").expect(".fake-agent in the working directory");
     let path = path.trim();
@@ -41,6 +44,63 @@ fn main() {
     }
     // The real CLI stays until its stdin closes.
     for _ in input {}
+}
+
+/// `auth status|login|logout` as Claude Code 2.1.312 answers them (cli-auth.md §1-3). The
+/// account starts as `QUILL_FAKE_AUTH` says (`signed-in`, the default, or `signed-out`); a login
+/// or a logout flips it through a marker file (`QUILL_FAKE_AUTH_MARKER`, else `.fake-auth` in the
+/// working directory), so the next `status` agrees.
+fn auth() {
+    let args: Vec<String> = std::env::args().collect();
+    let marker = std::env::var("QUILL_FAKE_AUTH_MARKER").unwrap_or_else(|_| ".fake-auth".into());
+    let base = std::env::var("QUILL_FAKE_AUTH").as_deref() != Ok("signed-out");
+    let set = |signed_in: bool| {
+        if signed_in == base {
+            let _ = std::fs::remove_file(&marker);
+        } else {
+            let _ = std::fs::write(&marker, "");
+        }
+    };
+    let signed_in = base != std::path::Path::new(&marker).exists();
+    match args.get(2).map(String::as_str) {
+        Some("status") if signed_in => {
+            println!(
+                r#"{{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","email":"ada@example.com","orgName":"Analytical Engines","subscriptionType":"max"}}"#
+            );
+        }
+        Some("status") => {
+            println!(r#"{{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}}"#);
+            std::process::exit(1);
+        }
+        Some("login") => {
+            // The real one wraps the address in an OSC 8 link even without a terminal, and
+            // its last line has no newline.
+            let url = "https://claude.com/cai/oauth/authorize?code=true&client_id=fake&state=fake";
+            println!("Opening browser to sign in\u{2026}");
+            println!("If the browser didn't open, visit: \x1b]8;;{url}\x07{url}\x1b]8;;\x07");
+            print!("Paste code here if prompted > ");
+            let _ = std::io::stdout().flush();
+            for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+                // `fail…` stands for a rejected code: the program gives up.
+                if line.starts_with("fail") {
+                    eprintln!("Login failed: the code was not accepted");
+                    std::process::exit(1);
+                }
+                if line.contains('#') {
+                    set(true);
+                    println!("Login successful.");
+                    return;
+                }
+                eprintln!("Invalid code. Please make sure the full code was copied.");
+            }
+            std::process::exit(130);
+        }
+        Some("logout") => {
+            set(false);
+            println!("Successfully logged out from your Anthropic account.");
+        }
+        _ => std::process::exit(2),
+    }
 }
 
 /// Do what the captured tool calls did, in this directory. Paths under `/work/` (the

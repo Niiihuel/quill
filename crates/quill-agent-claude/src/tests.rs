@@ -1115,3 +1115,62 @@ fn web_search_results_keep_their_query_and_sources() {
         "https://blog.rust-lang.org/2026/07/09/Rust-1.97.0/"
     );
 }
+
+// `claude auth status --json` as 2.1.312 printed it (cli-auth.md §2).
+#[test]
+fn auth_state_reads_the_cli_status() {
+    let claude = Claude::new();
+    let signed_in = r#"{"loggedIn":true,"authMethod":"claude.ai","email":"a@b.c","orgName":"Org","subscriptionType":"max"}"#;
+    assert_eq!(
+        claude.auth_state(signed_in, 0),
+        AuthState::SignedIn {
+            method: "claude.ai".into(),
+            email: Some("a@b.c".into()),
+            org: Some("Org".into()),
+            plan: Some("max".into()),
+        }
+    );
+    // Signed out exits 1 and still prints the JSON.
+    let out = r#"{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}"#;
+    assert_eq!(claude.auth_state(out, 1), AuthState::SignedOut);
+    let key = r#"{"loggedIn":true,"authMethod":"api_key","apiKeySource":"ANTHROPIC_API_KEY"}"#;
+    assert!(matches!(
+        claude.auth_state(key, 0),
+        AuthState::SignedIn { method, email: None, .. } if method == "api_key"
+    ));
+    assert!(matches!(
+        claude.auth_state("oops", 2),
+        AuthState::Unknown(_)
+    ));
+}
+
+#[test]
+fn login_url_strips_the_osc_8_wrapper() {
+    let line = "If the browser didn't open, visit: \x1b]8;;https://claude.com/cai/oauth/authorize?code=true&state=x\x07https://claude.com/cai/oauth/authorize?code=true&state=x\x1b]8;;\x07";
+    assert_eq!(
+        Claude::new().login_url(line).as_deref(),
+        Some("https://claude.com/cai/oauth/authorize?code=true&state=x")
+    );
+    assert_eq!(Claude::new().login_url("Opening browser to sign in…"), None);
+}
+
+#[test]
+fn an_unauthenticated_turn_asks_to_sign_in() {
+    let mut claude = Claude::new();
+    let mut events = claude.decode(r#"{"type":"assistant","error":"authentication_failed","message":{"content":[{"type":"text","text":"Not logged in"}]}}"#).events;
+    events.extend(
+        claude
+            .decode(
+                r#"{"type":"result","subtype":"success","is_error":true,"result":"Not logged in"}"#,
+            )
+            .events,
+    );
+    assert!(matches!(
+        &events[..],
+        [
+            AgentEvent::Text { .. },
+            AgentEvent::AuthRequired,
+            AgentEvent::TurnFinished { ok: false, .. }
+        ]
+    ));
+}

@@ -440,6 +440,9 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     if crate::welcoming(ui) {
         return crate::welcome::view(ui, window);
     }
+    if crate::account::visible(ui) {
+        return crate::account::screen(ui, window);
+    }
     let palette = look::palette();
     let session = ui.selected.and_then(|id| store.session(id));
     let layout = layout(store, ui, window);
@@ -573,6 +576,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     let root = marketplace_dialog(ui, root, palette);
     let root = server_dialog(ui, root, palette);
     let root = crate::updates::dialogs(ui, root, palette);
+    let root = crate::account::dialogs(ui, root);
     let root = removing_dialog(ui, root);
     let root = image_viewer(ui, root, window, palette);
     let root = annotator(ui, root, window, palette);
@@ -2008,21 +2012,20 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
             ));
         }
     }
-    // At its foot over a line, the person: their initial, name and plan, opening the menu
+    // At its foot over a line, the person: their initials, name and plan, opening the menu
     // that holds Settings, as Desktop's (3.6556.2, captured 2026-10-27). Its other entries
-    // are claude.ai's pages; quill keeps none.
-    let name = ui.name.clone().unwrap_or_default();
-    let initial = name.chars().next().map(|c| c.to_uppercase().to_string());
+    // are claude.ai's pages; quill keeps none. The agent's program says who it is.
+    let (initial, name, signed_plan) = crate::account::identity(ui);
     let mut account = vec![hgap(0.0)];
-    account.extend(initial.map(|initial| {
+    account.push(
         Element::row(vec![muted(initial).font_size(10.0).centered().flex(1.0)])
             .size(Some(20.0), Some(20.0))
             .background(look::active())
             .radius(10.0)
-            .centered_y()
-    }));
+            .centered_y(),
+    );
     account.push(text(name).centered_y());
-    if let Some(plan) = account_plan(store, None) {
+    if let Some(plan) = signed_plan.or_else(|| account_plan(store, None)) {
         account.push(muted(format!("\u{b7} {plan}")).font_size(12.0).centered_y());
     }
     account.push(
@@ -2041,18 +2044,22 @@ fn sidebar(store: &Store, ui: &Ui, height: f32, palette: ComponentPalette) -> El
         Element::row(account).gap(6.0).size(None, Some(32.0)),
     ))
     .radius(8.0);
-    let mut entries: Vec<limn::DropdownMenuEntry> =
-        vec![
-            limn::DropdownMenuItem::new(crate::tour::START, "Take the tour")
-                .icon(icons::of(icons::QUESTION))
-                .into(),
-        ];
+    let mut entries = vec![
+        crate::account::menu_header(ui),
+        limn::DropdownMenuEntry::Separator,
+    ];
     entries.push(
         limn::DropdownMenuItem::new(SETTINGS_OPEN, "Settings")
             .icon(icons::of(icons::SETTINGS))
             .shortcut("Ctrl+,")
             .into(),
     );
+    entries.push(
+        limn::DropdownMenuItem::new(crate::tour::START, "Take the tour")
+            .icon(icons::of(icons::QUESTION))
+            .into(),
+    );
+    entries.extend(crate::account::menu_end(ui));
     let account = menu(
         account,
         entries,
@@ -3972,6 +3979,17 @@ fn item(
             interrupted: true,
             ..
         } => muted("Interrupted"),
+        Item::TurnEnd {
+            ok: false,
+            sign_in: true,
+            ..
+        } => Element::row(vec![
+            text("Not signed in")
+                .foreground(look::removed())
+                .centered_y(),
+            keyed_button(crate::account::SIGN_IN, "Sign in", "", false, true, palette),
+        ])
+        .gap(12.0),
         Item::TurnEnd {
             ok: false, error, ..
         } => text(error.clone().unwrap_or_else(|| "The turn failed".into()))

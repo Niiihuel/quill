@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 
+mod auth;
 mod bridge;
 mod images;
 mod logos;
@@ -88,6 +89,8 @@ pub struct Config {
     pub browser: Option<PathBuf>,
     /// Whether quill looks for its own updates (update.rs): the app does, the tests do not.
     pub updates: bool,
+    /// Whether a sign-in page opens in the person's browser: the app does, the tests do not.
+    pub open_pages: bool,
     /// Where the browser leaves its pages' frames for the window to present.
     pub frames: quill_browser::Frames,
     /// Chromium inside the window, when the host started it (`Native::start`).
@@ -114,6 +117,7 @@ impl Config {
             logos: Some(data.join("quill/logos")),
             browser: Some(data.join("quill/browser")),
             updates: true,
+            open_pages: true,
             ..Self::default()
         }
     }
@@ -317,6 +321,8 @@ struct Router {
     awake: Option<Child>,
     /// quill's own updates: checked, downloaded and installed off this thread (update.rs).
     updates: update::Updates,
+    /// Each agent's sign-in under way: where the person's code or cancel goes.
+    logins: HashMap<String, UnboundedSender<auth::Login>>,
 }
 
 impl Router {
@@ -455,6 +461,7 @@ impl Router {
             settings: Default::default(),
             awake: None,
             updates,
+            logins: HashMap::new(),
         }
     }
 
@@ -473,6 +480,7 @@ impl Router {
                 tested: a.tested().iter().map(|v| (*v).to_owned()).collect(),
                 options: a.options(),
                 icon: a.icon().map(str::to_owned),
+                sign_in_methods: a.sign_in_methods(),
             })
             .collect();
         (self.ui)(Event::Settings {
@@ -488,6 +496,84 @@ impl Router {
             .get(agent)
             .cloned()
             .or_else(|| self.settings.agent(agent).program)
+    }
+
+    /// The agent's program with `args`, in the environment its sessions get (the settings'
+    /// variables included: an API key in them changes who is signed in), away from any folder.
+    fn account_command(&self, agent: &str, args: &[String]) -> Option<Command> {
+        let adapter = adapter(agent)?;
+        let plan = adapter.launch(&SessionSpec::default());
+        let mut command = Command::new(self.program(agent).unwrap_or(plan.program));
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        command
+            .args(args)
+            .current_dir(home.unwrap_or_else(std::env::temp_dir));
+        for (key, value) in &plan.env {
+            command.env(key, value);
+        }
+        for key in &plan.env_remove {
+            command.env_remove(key);
+        }
+        command.envs(env_pairs(&self.settings.agent(agent).env));
+        Some(command)
+    }
+
+    /// Ask an agent's program who is signed in; answered by `Event::Auth`.
+    fn check_sign_in(&self, agent: String) {
+        let Some(adapter) = adapter(&agent) else {
+            return;
+        };
+        let Some(command) = adapter
+            .auth_query()
+            .and_then(|args| self.account_command(&agent, &args))
+        else {
+            return;
+        };
+        let ui = self.ui.clone();
+        tokio::spawn(async move { auth::check(adapter, agent, command, &ui).await });
+    }
+
+    fn sign_in(&mut self, agent: String, method: String) {
+        let Some(adapter) = adapter(&agent) else {
+            return;
+        };
+        let Some(run) = adapter.login_run(&method) else {
+            return;
+        };
+        let Some(mut command) = self.account_command(&agent, &run.args) else {
+            return;
+        };
+        // quill opens the page itself, so the program's own opening of a browser is made a
+        // no-op (`BROWSER` is the convention for it); the code is pasted into quill.
+        command.env("BROWSER", "true");
+        let status = adapter
+            .auth_query()
+            .and_then(|args| self.account_command(&agent, &args));
+        let login = auth::login(
+            adapter,
+            agent.clone(),
+            run,
+            command,
+            status,
+            self.ui.clone(),
+            self.config.open_pages,
+        );
+        // A new sign-in replaces one under way: the old sender drops and cancels it.
+        self.logins.insert(agent, login);
+    }
+
+    fn sign_out(&mut self, agent: String) {
+        let Some(adapter) = adapter(&agent) else {
+            return;
+        };
+        let Some(logout) =
+            (adapter.logout_run()).and_then(|run| self.account_command(&agent, &run.args))
+        else {
+            return;
+        };
+        let status = (adapter.auth_query()).and_then(|args| self.account_command(&agent, &args));
+        let ui = self.ui.clone();
+        tokio::spawn(async move { auth::logout(adapter, agent, logout, status, &ui).await });
     }
 
     /// An agent's plugins, marketplaces and skills for `folder`, read from its program
@@ -1222,6 +1308,30 @@ impl Router {
             }
             Intent::Servers { agent, folder } => {
                 self.servers(agent, folder);
+                return;
+            }
+            Intent::CheckSignIn { agent } => {
+                self.check_sign_in(agent);
+                return;
+            }
+            Intent::SignIn { agent, method } => {
+                self.sign_in(agent, method);
+                return;
+            }
+            Intent::SubmitSignInCode { agent, code } => {
+                if let Some(login) = self.logins.get(&agent) {
+                    let _ = login.send(auth::Login::Code(code));
+                }
+                return;
+            }
+            Intent::CancelSignIn { agent } => {
+                if let Some(login) = self.logins.remove(&agent) {
+                    let _ = login.send(auth::Login::Cancel);
+                }
+                return;
+            }
+            Intent::SignOut { agent } => {
+                self.sign_out(agent);
                 return;
             }
             // The registry, asked with the computer's own `curl` (Linux, macOS, Windows 10 on).

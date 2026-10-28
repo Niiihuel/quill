@@ -278,6 +278,23 @@ pub struct NewServer {
     pub headers: Vec<String>,
 }
 
+/// Whether the person is signed in to an agent, as its own program reports it: the account
+/// belongs to the program, quill keeps none of it.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum AuthState {
+    SignedIn {
+        /// How, in the program's words ("claude.ai", "api_key"); not shown as it is.
+        method: String,
+        email: Option<String>,
+        org: Option<String>,
+        /// The subscription, as the program names it ("max").
+        plan: Option<String>,
+    },
+    SignedOut,
+    /// An answer that was not understood, kept whole (the program may be a newer one).
+    Unknown(String),
+}
+
 /// What to run for an [`ExtensionOp`]: the program's arguments and what goes to its stdin.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProgramRun {
@@ -550,6 +567,8 @@ pub enum AgentEvent {
         name: String,
         input: Value,
     },
+    /// The turn could not run because the person is not signed in to the agent.
+    AuthRequired,
     /// A line the adapter does not understand, kept whole.
     Unknown(Value),
 }
@@ -747,6 +766,35 @@ pub trait AgentAdapter: Send {
     }
     /// Why `op` failed, in what its run printed although it exited well.
     fn extension_failed(&self, _stdout: &str) -> Option<String> {
+        None
+    }
+    /// The ways to sign in to the agent's program, as (key, label) to [`login_run`](Self::login_run);
+    /// empty when it has none of its own.
+    fn sign_in_methods(&self) -> Choices {
+        vec![]
+    }
+    /// The arguments that make the program say whether the person is signed in, read by
+    /// [`auth_state`](Self::auth_state) with the exit code.
+    fn auth_query(&self) -> Option<Vec<String>> {
+        None
+    }
+    fn auth_state(&self, _stdout: &str, _exit: i32) -> AuthState {
+        AuthState::Unknown(String::new())
+    }
+    /// What to run to sign in by `method`; the program prints a page address, waits for the
+    /// code that page shows (or for the browser to come back to it) and exits.
+    fn login_run(&self, _method: &str) -> Option<ProgramRun> {
+        None
+    }
+    /// The page address in a line [`login_run`](Self::login_run) printed.
+    fn login_url(&self, _line: &str) -> Option<String> {
+        None
+    }
+    /// What goes to the program's stdin for the code the person pasted.
+    fn login_code(&self, code: &str) -> String {
+        format!("{code}\n")
+    }
+    fn logout_run(&self) -> Option<ProgramRun> {
         None
     }
     /// Lines for `command`. Commands the agent answers get an id, reported back as [`AgentEvent::Reply`].

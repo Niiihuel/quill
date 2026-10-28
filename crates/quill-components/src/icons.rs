@@ -200,6 +200,9 @@ pub const SIDEBAR: &str =
 pub const PANEL_RIGHT: &str =
     icon!("<rect x='1.75' y='3.5' width='16.5' height='13' rx='2.75'/><path d='M14 7v6'/>");
 
+/// An arrow leaving a door: signing out.
+pub const LOGOUT: &str =
+    icon!("<path d='M8 3.5H5.5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2H8M12.5 6.5L16 10l-3.5 3.5M16 10H8'/>");
 pub const QUESTION: &str = icon!(
     "<circle cx='10' cy='10' r='7.5'/><path d='M7.75 7.75a2.35 2.35 0 0 1 4.55.75c0 1.6-2.3 2-2.3 3.25'/><circle cx='10' cy='14.25' r='0.7' fill='currentColor' stroke='none'/>"
 );

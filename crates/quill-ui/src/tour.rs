@@ -121,6 +121,10 @@ pub(crate) fn clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
 /// would. `None` when `target` is not the current step's.
 pub fn skip_missing(ui: &mut Ui, target: &str) -> Option<Vec<Intent>> {
     let step = STEPS.get(ui.tour?)?;
+    // Behind the sign-in screen no control is laid out: the tour waits for it to go.
+    if crate::account::visible(ui) {
+        return None;
+    }
     (step.targets[0] == target).then(|| advance(ui))
 }
 

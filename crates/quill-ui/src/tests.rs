@@ -1416,6 +1416,7 @@ fn an_adapters_switch_flips_and_its_list_chooses() {
             option("style", &[("", "Default"), ("x", "X")], ""),
         ],
         icon: None,
+        sign_in_methods: vec![],
     }];
     click(&store, &mut ui, view::SETTINGS_OPEN);
     let saved = |intents: Vec<Intent>| match intents.as_slice() {
@@ -2041,6 +2042,7 @@ fn the_sidebars_customize_and_the_persons_menu_open_settings() {
             tested: vec![],
             options: vec![],
             icon: None,
+            sign_in_methods: vec![],
         }],
     });
     ui.cwd = "/work".into();
@@ -2074,6 +2076,7 @@ fn customize_lists_and_changes_an_agents_plugins_marketplaces_and_skills() {
             tested: vec![],
             options: vec![],
             icon: None,
+            sign_in_methods: vec![],
         }],
     });
     // A project folder: plugins install for it, and skills' states are kept there.
@@ -2781,6 +2784,7 @@ fn settings_save_through_the_engine_and_shape_what_comes_next() {
                 tested: vec!["2.1.310".into()],
                 options: vec![],
                 icon: None,
+                sign_in_methods: vec![],
             }],
         });
     };
@@ -4926,6 +4930,7 @@ fn the_logos_of_connectors_and_plugins_are_asked_once_and_only_while_shown() {
             tested: vec![],
             options: vec![],
             icon: None,
+            sign_in_methods: vec![],
         }],
     });
     ui.applied(&Event::Servers {
@@ -5071,6 +5076,7 @@ fn the_welcome_shows_once_the_settings_are_known_until_get_started() {
             tested: vec![],
             options: vec![],
             icon: None,
+            sign_in_methods: vec![],
         }],
     });
     assert!(crate::welcoming(&ui));
@@ -5094,6 +5100,7 @@ fn an_agent_known() -> Vec<quill_model::AgentInfo> {
         tested: vec![],
         options: vec![],
         icon: None,
+        sign_in_methods: vec![],
     }]
 }
 
@@ -5245,4 +5252,172 @@ fn a_ready_update_puts_restart_in_the_settings_row() {
         click(&store, &mut ui, updates::UPDATE_RESTART_ROW),
         vec![Intent::InstallUpdate]
     );
+}
+
+fn claude_with_sign_in() -> Vec<quill_model::AgentInfo> {
+    let mut agents = an_agent_known();
+    agents[0].sign_in_methods = vec![
+        ("claudeai".into(), "Claude subscription".into()),
+        ("console".into(), "Anthropic Console".into()),
+    ];
+    agents
+}
+
+fn signed_in() -> quill_model::AuthState {
+    quill_model::AuthState::SignedIn {
+        method: "claude.ai".into(),
+        email: Some("ada@example.com".into()),
+        org: Some("Analytical Engines".into()),
+        plan: Some("max".into()),
+    }
+}
+
+#[test]
+fn the_first_settings_ask_each_agent_who_is_signed_in_and_signed_out_shows_the_sign_in_screen() {
+    let (store, mut ui) = store_with_session();
+    ui.skip_welcome = true;
+    let asked = ui.applied(&Event::Settings {
+        settings: Settings::default(),
+        agents: claude_with_sign_in(),
+    });
+    assert!(
+        matches!(&asked[..], [Intent::CheckSignIn { agent }] if agent == "claude"),
+        "{asked:?}"
+    );
+    ui.agents = claude_with_sign_in();
+    assert!(!crate::account::visible(&ui));
+    ui.applied(&Event::Auth {
+        agent: "claude".into(),
+        state: quill_model::AuthState::SignedOut,
+    });
+    assert!(crate::account::visible(&ui));
+    // The method buttons start the sign-in; the page's address brings the code field.
+    let started = click(&store, &mut ui, "account:method:console");
+    assert!(
+        matches!(&started[..], [Intent::SignIn { agent, method }] if agent == "claude" && method == "console"),
+        "{started:?}"
+    );
+    ui.applied(&Event::SignInUrl {
+        agent: "claude".into(),
+        url: "https://example.com/authorize".into(),
+    });
+    click(&store, &mut ui, crate::account::COPY_LINK);
+    assert_eq!(
+        ui.files_copy.as_deref(),
+        Some("https://example.com/authorize")
+    );
+    // Nothing goes with an empty code; the pasted one goes once.
+    assert!(click(&store, &mut ui, "account:continue").is_empty());
+    let field = format!("{}{}", crate::account::CODE, ui.account.attempt);
+    update(
+        &store,
+        &mut ui,
+        &UiAction::InputChanged {
+            id: field,
+            value: " abc#def \n".into(),
+        },
+    );
+    let sent = click(&store, &mut ui, "account:continue");
+    assert!(
+        matches!(&sent[..], [Intent::SubmitSignInCode { code, .. }] if code == "abc#def"),
+        "{sent:?}"
+    );
+    assert!(click(&store, &mut ui, "account:continue").is_empty());
+    // A failure shows up with Try again; signing in takes the screen away.
+    ui.applied(&Event::SignInFailed {
+        agent: "claude".into(),
+        message: "Login failed".into(),
+    });
+    assert_eq!(
+        ui.account.phase,
+        crate::account::Phase::Failed("Login failed".into())
+    );
+    click(&store, &mut ui, "account:retry");
+    ui.applied(&Event::Auth {
+        agent: "claude".into(),
+        state: signed_in(),
+    });
+    assert!(!crate::account::visible(&ui));
+    assert_eq!(ui.account.phase, crate::account::Phase::Choose);
+}
+
+#[test]
+fn cancelling_a_sign_in_tells_the_engine_and_the_tour_waits_behind_the_screen() {
+    let (store, mut ui) = store_with_session();
+    ui.skip_welcome = true;
+    ui.agents = claude_with_sign_in();
+    ui.account.states.insert("claude".into(), signed_out());
+    ui.tour = Some(0);
+    assert_eq!(crate::tour::skip_missing(&mut ui, view::COMPOSER), None);
+    assert_eq!(ui.tour, Some(0));
+    click(&store, &mut ui, "account:method:claudeai");
+    let cancelled = click(&store, &mut ui, "account:cancel");
+    assert!(matches!(&cancelled[..], [Intent::CancelSignIn { .. }]));
+    assert_eq!(ui.account.phase, crate::account::Phase::Choose);
+}
+
+fn signed_out() -> quill_model::AuthState {
+    quill_model::AuthState::SignedOut
+}
+
+#[test]
+fn the_account_menu_names_who_is_signed_in_and_signing_out_asks_first() {
+    let (store, mut ui) = store_with_session();
+    ui.skip_welcome = true;
+    ui.agents = claude_with_sign_in();
+    ui.account.states.insert("claude".into(), signed_in());
+    ui.name = Some("Ada Lovelace".into());
+    let (initials, name, plan) = crate::account::identity(&ui);
+    assert_eq!(
+        (initials.as_str(), name.as_str(), plan.as_deref()),
+        ("AL", "Ada Lovelace", Some("Max"))
+    );
+    // Without a name the email stands in, and a lone word gives one letter.
+    ui.name = None;
+    let (initials, name, _) = crate::account::identity(&ui);
+    assert_eq!((initials.as_str(), name.as_str()), ("A", "ada@example.com"));
+
+    ui.account_menu = true;
+    let first = click(&store, &mut ui, crate::account::SIGN_OUT);
+    assert!(first.is_empty() && ui.account.confirming && !ui.account_menu);
+    assert!(click(&store, &mut ui, "account:sign-out:no").is_empty());
+    assert!(!ui.account.confirming);
+    click(&store, &mut ui, crate::account::SIGN_OUT);
+    let out = click(&store, &mut ui, "account:sign-out:yes");
+    assert!(
+        matches!(&out[..], [Intent::SignOut { agent }] if agent == "claude"),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn a_turn_that_needed_a_sign_in_offers_it_and_the_button_opens_the_screen() {
+    let (store, mut ui) = store_with_session();
+    ui.skip_welcome = true;
+    ui.agents = claude_with_sign_in();
+    ui.account.states.insert("claude".into(), signed_in());
+    let mut store = store;
+    for event in [
+        AgentEvent::AuthRequired,
+        AgentEvent::TurnFinished {
+            ok: false,
+            interrupted: false,
+            usage: Default::default(),
+            error: None,
+        },
+    ] {
+        store.apply(Event::Agent {
+            session: 1,
+            request: Some("r1".into()),
+            event,
+        });
+    }
+    let last = store.session(1).unwrap().items.last().cloned();
+    assert!(
+        matches!(last, Some(Item::TurnEnd { sign_in: true, .. })),
+        "{last:?}"
+    );
+    assert!(!crate::account::visible(&ui));
+    click(&store, &mut ui, crate::account::SIGN_IN);
+    assert!(crate::account::visible(&ui));
 }

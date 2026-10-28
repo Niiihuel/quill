@@ -57,7 +57,10 @@ impl Store {
             | Event::Extensions { .. }
             | Event::FilesFound { .. }
             | Event::Servers { .. }
-            | Event::ServersFound { .. } => false,
+            | Event::ServersFound { .. }
+            | Event::Auth { .. }
+            | Event::SignInUrl { .. }
+            | Event::SignInFailed { .. } => false,
             // What a session's browser shows is the moment's; its tabs' addresses are kept.
             Event::Browser { update, .. } => {
                 matches!(update, quill_model::BrowserUpdate::Kept(_))

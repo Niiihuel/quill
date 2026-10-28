@@ -33,3 +33,17 @@ Lo que un CLI no tenga se declara en `AgentCapabilities` y la UI lo muestra degr
 ## Transportes
 
 El contrato cubre CLIs por **stdio con líneas JSON**: Claude Code (stream-json) y Codex (`app-server`, JSON-RPC). Un CLI que expone un **servidor HTTP** (OpenCode) necesita otro transporte en el motor, que entrega al adaptador cada evento SSE como una "línea". Ese segundo transporte se agrega cuando se implemente el primer adaptador HTTP.
+
+## Cuenta (`sign_in_methods`, `auth_query`, `login_run`, `logout_run`)
+
+El adaptador declara cómo se conecta la persona; el motor corre esos comandos fuera del hilo de la UI (`quill-engine/src/auth.rs`) y la UI sólo ve `AuthState` y los eventos `Auth`, `SignInUrl` y `SignInFailed`. Opcionales: un agente sin ellos no muestra pantalla de inicio de sesión.
+
+| Concepto | Contrato | Claude Code 2.1.312 (observado, `cli-auth.md`) |
+|---|---|---|
+| Métodos | `sign_in_methods()` → (clave, etiqueta) | `claudeai` "Claude subscription", `console` "Anthropic Console" |
+| Estado | `auth_query()` + `auth_state(stdout, exit)` | `auth status --json`; sale con 1 sin sesión pero imprime el mismo JSON (`loggedIn`, `authMethod`, `email`, `orgName`, `subscriptionType`) |
+| Login | `login_run(método)`, `login_url(línea)`, `login_code(código)` | `auth login --claudeai\|--console`: imprime la URL dentro de un hipervínculo OSC 8 (se quita) y espera en stdin `CODE#STATE`; espera sin límite, quill corta a los 600 s |
+| Logout | `logout_run()` | `auth logout` (cierra también la sesión del CLI en la terminal) |
+| Turno sin sesión | `AgentEvent::AuthRequired` | `assistant` con `error: "authentication_failed"` antes del `result` |
+
+El motor abre la URL con `xdg-open` (como la de un servidor MCP) y lanza el login con `BROWSER=true` para que el CLI no abra otra pestaña. El estado se pregunta con el mismo entorno que las sesiones (las variables del agente en Settings incluidas): con `ANTHROPIC_API_KEY` el CLI dice `api_key`. Cancelar mata el proceso hijo por su PID.

@@ -1713,6 +1713,8 @@ fn main() -> eframe::Result {
                             .collect(),
                         frames: frames.clone(),
                         native: native.clone(),
+                        // The stand-in's sign-in page opens too, so the flow can be watched.
+                        open_pages: true,
                         ..Default::default()
                     },
                 ),
