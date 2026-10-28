@@ -34,6 +34,10 @@ Lo que un CLI no tenga se declara en `AgentCapabilities` y la UI lo muestra degr
 
 El contrato cubre CLIs por **stdio con líneas JSON**: Claude Code (stream-json) y Codex (`app-server`, JSON-RPC). Un CLI que expone un **servidor HTTP** (OpenCode) necesita otro transporte en el motor, que entrega al adaptador cada evento SSE como una "línea". Ese segundo transporte se agrega cuando se implemente el primer adaptador HTTP.
 
+## Modos de permiso (`modes`, `default_mode`)
+
+El adaptador da las palabras de sus modos, que la UI no conoce: `modes() → Vec<ModeWords{id, label, about, tone, listed}>` (con los inseguros incluidos) y `default_mode()`. `tone` es uno de `Ask | Edits | Plan | Auto | Read | Unsafe` y decide ícono y tinta; viaja a la UI en `AgentInfo`. Claude: Manual, Accept edits, Plan, Auto, Bypass permissions (las palabras de Desktop). Codex: Read only, Auto, Full access.
+
 ## Cuenta (`sign_in_methods`, `auth_query`, `login_run`, `logout_run`)
 
 El adaptador declara cómo se conecta la persona; el motor corre esos comandos fuera del hilo de la UI (`quill-engine/src/auth.rs`) y la UI sólo ve `AuthState` y los eventos `Auth`, `SignInUrl` y `SignInFailed`. Opcionales: un agente sin ellos no muestra pantalla de inicio de sesión.
@@ -42,6 +46,7 @@ El adaptador declara cómo se conecta la persona; el motor corre esos comandos f
 |---|---|---|
 | Métodos | `sign_in_methods()` → (clave, etiqueta) | `claudeai` "Claude subscription", `console` "Anthropic Console" |
 | Estado | `auth_query()` + `auth_state(stdout, exit)` | `auth status --json`; sale con 1 sin sesión pero imprime el mismo JSON (`loggedIn`, `authMethod`, `email`, `orgName`, `subscriptionType`) |
+| Código | `login_takes_code()` (por defecto sí) | Claude: la página muestra un código que se pega de vuelta. Codex: no, el navegador vuelve solo al servidor local de `codex login`, y la pantalla solo espera |
 | Login | `login_run(método)`, `login_url(línea)`, `login_code(código)` | `auth login --claudeai\|--console`: imprime la URL dentro de un hipervínculo OSC 8 (se quita) y espera en stdin `CODE#STATE`; espera sin límite, quill corta a los 600 s |
 | Logout | `logout_run()` | `auth logout` (cierra también la sesión del CLI en la terminal) |
 | Turno sin sesión | `AgentEvent::AuthRequired` | `assistant` con `error: "authentication_failed"` antes del `result` |

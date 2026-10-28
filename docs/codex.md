@@ -92,7 +92,7 @@ Se declara en `AgentCapabilities` y la interfaz lo muestra degradado, como dice 
 
 ## Elegir el agente
 
-Hoy el motor registra solo `claude` (`quill-engine/src/lib.rs`, `adapter()`). Con dos agentes, la página de sesión nueva necesita elegir uno: un chip más junto a "Local" / carpeta, hecho con los componentes de limn. Es lo único visual nuevo; el resto reusa lo que hay.
+Con dos agentes registrados, la página de sesión nueva elige uno con un chip junto a "Local" / carpeta (logo y nombre, y un menú limn). Es lo único visual nuevo; el resto reusa lo que hay. Hecho en la fase 5, ver abajo.
 
 ## Fases
 
@@ -105,8 +105,8 @@ Hoy el motor registra solo `claude` (`quill-engine/src/lib.rs`, `adapter()`). Co
    Las capturas se anonimizan (`/work/`, email) y quedan en `crates/quill-agent-codex/fixtures/0.163.0/`. Codex guarda esos threads en `~/.codex/sessions` como cualquier sesión suya.
 2. **Adaptador** `quill-agent-codex`: `launch`, `encode` y `decode`, capacidades, la traducción de ítems y los modos. Tests que reproducen cada captura, como los de Claude.
 3. **Motor:** registrar `codex` y hacer que la exención de modo sea del adaptador. El agente falso ya reproduce cualquier captura (no depende del protocolo).
-4. **Cuenta:** `login status` / `login` / `logout` con el agente falso para los tests.
-5. **Interfaz:** el chip para elegir agente, el nombre "Codex" desde el adaptador y la verificación en pantalla de cada escenario, en tema claro y oscuro.
+4. **Cuenta:** `login status` / `login` / `logout` con el agente falso para los tests. (Hecho.)
+5. **Interfaz:** el chip para elegir agente, las palabras de los modos desde el adaptador, el nombre "Codex" y la verificación en pantalla de cada escenario, en tema claro y oscuro. (Hecho.)
 6. **Después:** el login por el protocolo, la historia de sesiones (`thread/list`), skills en el menú `/`, `thread/revert`, y los diseños de review, imágenes y herramientas dinámicas.
 
 ## Fase 1: lo observado
@@ -185,3 +185,35 @@ El adaptador está en `crates/quill-agent-codex` (`Codex`, con `tested() = ["0.1
 - **Motor.** `waives_server_consent` ya no nombra modos: pregunta al adaptador (`AgentAdapter::mode_waives_prompts`). Claude: `bypassPermissions` y `auto`; Codex: solo `full-access` (su `auto` sí pregunta, no es el de Claude). El mapa de modos del motor ahora guarda (agente, modo).
 - **Fuera de alcance, queda `Unknown` o sin respuesta:** `collabAgentToolCall`, `subAgentActivity`, `imageView`, `contextCompaction`, `plan` (ítem), `dynamicToolCall`, `imageGeneration`, review, `sleep`, `functionCallOutput`; `Rewind`, `ContextUsage`, `McpStatus` y compañía, `Skills`, herramientas del anfitrión (`HostTool`, navegador) y `SessionSpec.resume_at` (fork desde un mensaje: `thread/fork` tiene `lastTurnId`, pero el evento `Text` no lleva el id del turno). Las imágenes del prompt van como `{type:"image", url:"data:…;base64,…"}` (inferido del esquema).
 - **Replay.** `fork` pasa dentro de un solo proceso en la captura, pero quill forkea lanzando uno nuevo (`fork: true`): el test lo comprueba como dos corridas. Por el mismo motivo, el agente falso no puede reproducir `fork` entero (el segundo `thread/fork` de la captura no sale nunca). `resume` sí, porque el motor relanza el programa.
+
+## Fases 4 y 5: cuenta e interfaz
+
+Hecho en `feat/codex`. Lo nuevo es genérico (nada de la UI nombra un proveedor); lo de Codex vive en su adaptador.
+
+- **Palabras de los modos desde el adaptador.** `AgentAdapter::modes()` y `default_mode()` (ver `docs/agents.md`). Se quitó el `match` fijo de `view.rs`: el menú, el chip, el menú `/permissions` y la página del agente buscan en las palabras del agente elegido. Claude devuelve las de siempre (Manual, Accept edits, Plan, Auto, Bypass permissions, mismos íconos y tintas). Codex: **Read only** ("Asks before anything but reading", tono `Read`, ojo), **Auto** ("Works in this folder; asks to go beyond it", tono `Auto`, por defecto) y **Full access** ("No sandbox, never asks", tono `Unsafe`, solo con "allow unsafe" en Settings, como el bypass de Claude). Las palabras de Codex son de quill (inferido: el CLI no da textos para estos presets).
+- **Selector de agente** (`docs/ui.md` §2.3). El logo de Codex es el de svgl.app ("Codex", marca de OpenAI, recoloreado a `currentColor`), igual que el de Claude: `crates/quill-agent-codex/assets/codex.svg`, citado en `Codex::icon`. `Settings.default_agent` recuerda la elección; el agente de arranque era `"claude"` fijo y ahora es el recordado o el primero disponible. Antes de que exista una sesión, los modelos y esfuerzos del selector salen de la última sesión del mismo agente (`agent_capabilities`): con Codex, la primera vez, el chip de modelo dice "Default" hasta que arranca una sesión.
+- **Nombre del agente en las tarjetas.** Las tarjetas decían "Allow Claude to…" fijo. Ahora usan la primera palabra del nombre del agente, y un comando sin descripción (los de Codex) dice "Allow Codex to run this command?" con el comando en la tarjeta. "Claude is working" del botón de PR pasó a "The agent is working".
+- **Cuenta por agente.** La pantalla de inicio de sesión y el menú de la cuenta ya seguían a `ui.agent`; ahora la pantalla, si ese agente no tiene sesión, ofrece "Use {otro} instead" (si no, quien tiene dos agentes y uno sin sesión no podría volver al otro). `AgentAdapter::login_takes_code()` (Codex: no) quita el campo del código: el navegador vuelve solo al servidor local de `codex login`, así que la pantalla dice "Waiting for the browser…" con Copy link y Cancel.
+- **Agente falso** (`fake-agent`): contesta `login status` ("Logged in using ChatGPT" por stderr y 0; "Not logged in" y 1 con `QUILL_FAKE_AUTH=signed-out` o `QUILL_FAKE_AUTH_CODEX`), `login` (las líneas de stderr de la fuente `codex-rs/cli/src/login.rs`, con la URL sola en su línea, espera `QUILL_FAKE_LOGIN_MS` y da la sesión por iniciada con el marcador) y `logout`. Las salidas de `login` y `logout` salen de la fuente, no de una corrida (inferido). La ruta de Claude (`auth …`) no cambió. Test del motor: `codex_signs_in_and_out_through_its_own_commands`.
+- **Tests de la UI:** el chip solo con 2 o más agentes, elegir resetea modo/modelo/esfuerzo y guarda `default_agent` (y un arranque lo recuerda), las palabras de cada agente (Claude igual, las de Codex, `full-access` solo con Settings), y la cuenta del agente elegido.
+
+### Verificación en pantalla (fase 5)
+
+Con el agente falso reproduciendo los fixtures de `0.163.0` (`QUILL_PROGRAMS=claude=…,codex=…`, Xvfb 1408×844), elegido Codex en el selector y mandado el prompt de cada captura. Mirado en tema oscuro, y claro para el selector y una tarjeta de aprobación:
+
+| Escenario | Resultado |
+|---|---|
+| `simple` | Respuesta, contexto y límites de uso de Codex (258.4K de ventana) |
+| `edit-bash` | Tarjeta de aprobación de un archivo nuevo y de una edición (con su diff), la fila "Created and edited notes.txt, ran 2 commands", y las filas Bash y Edit desplegadas con el diff |
+| `deny` | Tarjeta "Allow Codex to run this command?", Deny, la fila "Run a command Stopped" y la respuesta del modelo |
+| `plan` | La lista de tareas (Create a.txt, Create b.txt, List the files) sobre el composer |
+| `websearch` | "Searched 12 sites" con las tarjetas de fuentes |
+| `ask` | La tarjeta de pregunta con Red / Blue / Other; contestada, el modelo responde "Red". No queda la tarjeta de "respuestas dadas" que Claude deja (el pedido de Codex no es una herramienta) |
+| `steer` | El mensaje entra en el turno en curso y el modelo termina en 5 |
+| `interrupt` | "Interrupted" tras parar el turno |
+| Modos | Read only (ojo) y Auto con sus textos, marca de Auto |
+| Modelos | Los 8 modelos de `model/list` |
+| Selector | Logos y nombres de Claude Code y Codex, el elegido marcado |
+| Cuenta | Con Codex sin sesión: "Sign in to Codex" con "ChatGPT account" y "Use Claude Code instead"; tras el clic, "Continue in your browser" sin campo de código; al iniciar, la página nueva. Menú de la cuenta con Sign out |
+
+Sin verificar en pantalla ni con un CLI real: `resume` y `fork` (`fork` no se reproduce entero con el agente falso, ver Fases 2 y 3), que `default_agent` sobreviva a un reinicio (con `QUILL_PROGRAMS` quill no lee ni guarda Settings; lo cubre un test de la UI), el menú de modos con Full access (lo cubre un test), y `codex login` / `codex logout` reales (no se corrieron). El icono de saludo de la página nueva ("What's up next") sigue siendo la chispa de Desktop para cualquier agente.
