@@ -7,9 +7,9 @@
 
 use quill_agent::{
     AgentAdapter, AgentCapabilities, AgentCommand, AgentEvent, AgentId, AuthState, Choices,
-    CommandRun, ContextUsage, Decision, Decoded, FileChange, LaunchPlan, ModeWords, ModelInfo,
-    PlanLimits, ProgramRun, PromptImage, SessionSpec, Suggestion, Usage, UsageWindow, WebSearchRun,
-    WebSource,
+    CommandRun, ContextCategory, ContextKind, ContextUsage, Decision, Decoded, FileChange,
+    LaunchPlan, ModeWords, ModelInfo, PlanLimits, ProgramRun, PromptImage, SessionSpec, Suggestion,
+    Usage, UsageWindow, WebSearchRun, WebSource,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -376,6 +376,7 @@ impl Codex {
                 events.push(AgentEvent::ContextUsage(ContextUsage {
                     used: self.context,
                     max: self.window,
+                    categories: context_categories(last, self.window),
                     ..Default::default()
                 }));
             }
@@ -867,9 +868,10 @@ impl AgentAdapter for Codex {
             AgentCommand::Decide { id, decision } => self.decide(id, decision),
             // The mode, model and effort travel with the next `turn/start`. A mode is told back
             // with a request that costs nothing, because Codex has none that changes a thread.
+            // Full access is the engine's to allow (Settings, asked at the change): Codex takes
+            // any policy per turn, so a session started before it was allowed can switch too.
             AgentCommand::SetMode(mode) => {
-                let allowed = self.spec.lock().unwrap().allow_unsafe;
-                if !(MODES.contains(&mode.as_str()) || (mode == FULL_ACCESS && allowed)) {
+                if !(MODES.contains(&mode.as_str()) || mode == FULL_ACCESS) {
                     return vec![];
                 }
                 self.mode = mode.clone();
@@ -966,6 +968,41 @@ fn result(
 
 /// The models `model/list` offers, the default first, hidden ones left out
 /// (account.jsonl:7).
+/// What fills the context, from the last request's token counts (edit-bash.jsonl:58). Codex
+/// names no categories as Claude Code does; its input counts the cached part and its output
+/// the reasoning, as OpenAI's usage does (inferred), so each is split off.
+fn context_categories(last: &Value, window: u64) -> Vec<ContextCategory> {
+    let (input, cached) = (
+        number(&last["inputTokens"]),
+        number(&last["cachedInputTokens"]),
+    );
+    let (output, reasoning) = (
+        number(&last["outputTokens"]),
+        number(&last["reasoningOutputTokens"]),
+    );
+    let used = |name: &str, tokens: u64| ContextCategory {
+        name: name.into(),
+        tokens,
+        kind: ContextKind::Used,
+    };
+    let mut categories = vec![
+        used("Cached input", cached),
+        used("New input", input.saturating_sub(cached)),
+        used("Reasoning", reasoning),
+        used("Output", output.saturating_sub(reasoning)),
+    ];
+    categories.retain(|c| c.tokens > 0);
+    let total = number(&last["totalTokens"]);
+    if window > total {
+        categories.push(ContextCategory {
+            name: "Free space".into(),
+            tokens: window - total,
+            kind: ContextKind::Free,
+        });
+    }
+    categories
+}
+
 /// Who quill says it is to Codex: itself, never another client (AGENTS.md).
 fn client() -> Value {
     json!({ "name": "quill", "title": "quill", "version": env!("CARGO_PKG_VERSION") })

@@ -418,9 +418,9 @@ fn a_mode_a_model_and_an_effort_apply_to_the_next_turn() {
         (&turn["params"]["model"], &turn["params"]["effort"]),
         (&json!("gpt-6.1-sol"), &json!("high"))
     );
-    // Full access is not taken without the person's allowance.
+    // Full access is taken: whether the person allows it is the engine's check, at the change.
     run.send(AgentCommand::SetMode("full-access".into()));
-    assert_eq!(run.codex.mode, "read-only");
+    assert_eq!(run.codex.mode, "full-access");
 }
 
 #[test]
@@ -1007,4 +1007,22 @@ fn the_models_are_asked_without_a_thread() {
     assert!(codex
         .models_answer(&entries("account")[1].1.to_string())
         .is_none());
+}
+
+#[test]
+fn the_context_is_split_into_what_fills_it() {
+    // edit-bash.jsonl:58: 21450 in (7168 cached), 78 out, a 258400 window.
+    let last = json!({ "inputTokens": 21450, "cachedInputTokens": 7168, "outputTokens": 78,
+        "reasoningOutputTokens": 0, "totalTokens": 21528 });
+    let split: Vec<(String, u64)> = context_categories(&last, 258_400)
+        .into_iter()
+        .map(|c| (c.name, c.tokens))
+        .collect();
+    let want = [
+        ("Cached input", 7168),
+        ("New input", 14282),
+        ("Output", 78),
+        ("Free space", 236_872),
+    ];
+    assert_eq!(split, want.map(|(n, t)| (n.to_owned(), t)));
 }

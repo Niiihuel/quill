@@ -1122,6 +1122,15 @@ impl Router {
             ),
             Intent::Interrupt { session } => (session, Input::Command(AgentCommand::Interrupt)),
             Intent::SetMode { session, mode } => {
+                // A mode that skips every approval goes through only while Settings allows it
+                // for the agent: asked now, not when the session started.
+                let agent = self.started.get(&session).map(|new| new.agent.clone());
+                let skips = agent
+                    .as_deref()
+                    .is_some_and(|a| skips_every_approval(a, &mode));
+                if skips && !agent.is_some_and(|a| self.settings.agent(&a).allow_unsafe) {
+                    return;
+                }
                 (session, Input::Command(AgentCommand::SetMode(mode)))
             }
             // Kept with the session, for its next launch, a restart and a fork of it.
@@ -3270,6 +3279,13 @@ fn report_text(reports: &[quill_model::Report]) -> String {
     text
 }
 
+/// Whether `mode` is one of the agent's modes that skip every approval (its adapter's words).
+fn skips_every_approval(agent: &str, mode: &str) -> bool {
+    adapter(agent).is_some_and(|a| {
+        (a.modes().iter()).any(|m| m.id == mode && matches!(m.tone, quill_agent::ModeTone::Unsafe))
+    })
+}
+
 /// Whether the agent's permission mode starts a dev server without a card: the adapter says,
 /// so the engine names no vendor's modes.
 fn waives_server_consent(agent: Option<&str>, mode: Option<&str>) -> bool {
@@ -3279,6 +3295,14 @@ fn waives_server_consent(agent: Option<&str>, mode: Option<&str>) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_modes_that_skip_every_approval_are_the_adapters_unsafe_ones() {
+        assert!(super::skips_every_approval("codex", "full-access"));
+        assert!(super::skips_every_approval("claude", "bypassPermissions"));
+        assert!(!super::skips_every_approval("codex", "auto"));
+        assert!(!super::skips_every_approval("nobody", "full-access"));
+    }
+
     #[test]
     fn bypass_and_auto_start_a_dev_server_without_asking() {
         let waives = |agent, mode| super::waives_server_consent(Some(agent), Some(mode));

@@ -7022,13 +7022,23 @@ pub(crate) fn menu_modes(store: &Store, session: Option<&Session>, ui: &Ui) -> V
     let mut modes = offered_modes(store, session, ui);
     let agent = session.map_or(ui.agent.as_str(), |s| s.agent.as_str());
     if ui.settings.agent(agent).allow_unsafe {
-        modes.extend(
-            agent_capabilities(store, session, ui)
-                .map(|c| c.unsafe_modes.clone())
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|m| mode_entry(ui, agent, m).is_some()),
-        );
+        // The session's word, else the adapter's: before any session of the agent, too.
+        let mut unsafe_modes = agent_capabilities(store, session, ui)
+            .map(|c| c.unsafe_modes.clone())
+            .unwrap_or_default();
+        let words = ui.agents.iter().find(|a| a.id == agent).map(|a| &a.modes);
+        for word in words.into_iter().flatten() {
+            if matches!(word.tone, quill_model::ModeTone::Unsafe)
+                && !unsafe_modes.contains(&word.id)
+            {
+                unsafe_modes.push(word.id.clone());
+            }
+        }
+        for mode in unsafe_modes {
+            if !modes.contains(&mode) && mode_entry(ui, agent, &mode).is_some() {
+                modes.push(mode);
+            }
+        }
     }
     modes
 }

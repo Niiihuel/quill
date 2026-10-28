@@ -5835,3 +5835,38 @@ fn both_programs_top_effort_is_drawn_alive() {
     assert!(view::ultra_effort("ultracode") && view::ultra_effort("ultra"));
     assert!(!view::ultra_effort("max"));
 }
+
+#[test]
+fn full_access_is_offered_once_allowed_even_before_any_codex_session() {
+    let store = Store::default();
+    let mut ui = Ui::new("/work".into());
+    let word = |id: &str, tone| quill_model::ModeWords {
+        id: id.into(),
+        label: id.into(),
+        about: String::new(),
+        tone,
+        listed: !matches!(tone, quill_model::ModeTone::Unsafe),
+    };
+    ui.agents = vec![quill_model::AgentInfo {
+        id: "codex".into(),
+        name: "Codex".into(),
+        tested: vec![],
+        options: vec![],
+        icon: None,
+        sign_in_methods: vec![],
+        sign_in_code: false,
+        modes: vec![
+            word("auto", quill_model::ModeTone::Auto),
+            word("full-access", quill_model::ModeTone::Unsafe),
+        ],
+        default_mode: "auto".into(),
+    }];
+    ui.agent = "codex".into();
+    assert!(!view::menu_modes(&store, None, &ui).contains(&"full-access".to_owned()));
+    ui.settings
+        .agents
+        .entry("codex".into())
+        .or_default()
+        .allow_unsafe = true;
+    assert!(view::menu_modes(&store, None, &ui).contains(&"full-access".to_owned()));
+}
