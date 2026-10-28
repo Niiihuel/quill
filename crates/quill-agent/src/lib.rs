@@ -38,6 +38,42 @@ pub struct SessionSpec {
     /// The person's values for the adapter's own options ([`AgentAdapter::options`]), by key.
     #[serde(default)]
     pub options: std::collections::BTreeMap<String, String>,
+    /// The "All agents" servers the session adds, already chosen for this agent by the engine
+    /// (docs/agents.md "All agents"). They carry no secret: only the name of the variable of
+    /// the process that holds it.
+    #[serde(default)]
+    pub servers: Vec<InjectedServer>,
+    /// Folders of skills the session adds (`<folder>/<name>/SKILL.md`).
+    #[serde(default)]
+    pub skill_roots: Vec<PathBuf>,
+}
+
+/// An "All agents" MCP server as one session gets it. Plain values are written as they are;
+/// a secret is `(key, variable)`, the variable being one of the agent process's environment.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct InjectedServer {
+    pub name: String,
+    pub target: String,
+    pub args: Vec<String>,
+    /// Reached by an address (else a command)...
+    pub remote: bool,
+    /// ...by the older server-sent-events transport rather than streamable HTTP.
+    pub sse: bool,
+    pub env: Vec<(String, String)>,
+    pub env_vars: Vec<(String, String)>,
+    pub headers: Vec<(String, String)>,
+    pub header_vars: Vec<(String, String)>,
+}
+
+/// What an adapter can add to a session without touching the agent's own files.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SessionExtras {
+    pub servers: bool,
+    /// Takes servers by the older SSE transport too.
+    pub sse: bool,
+    /// Gives a secret to a server's environment only under the variable's own name.
+    pub env_by_name: bool,
+    pub skills: bool,
 }
 
 /// One of an agent's own settings, as its adapter declares it, which quill's Settings shows on
@@ -380,6 +416,8 @@ pub enum McpSource {
     Plugin,
     Account,
     App,
+    /// quill's own "All agents" layer, which the engine marks (adapters never do).
+    Global,
     Other,
 }
 
@@ -776,6 +814,10 @@ pub trait AgentAdapter: Send {
     /// The versions of the agent's program quill was tested with.
     fn tested(&self) -> &'static [&'static str];
     fn launch(&self, spec: &SessionSpec) -> LaunchPlan;
+    /// What the session can be given from quill's "All agents" layer.
+    fn session_extras(&self) -> SessionExtras {
+        SessionExtras::default()
+    }
     /// Whether, in this permission `mode`, the agent starts a dev server without a card: the
     /// modes that skip every approval, or in which it decides alone.
     fn mode_waives_prompts(&self, _mode: &str) -> bool {

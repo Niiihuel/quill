@@ -1197,3 +1197,68 @@ fn the_mode_words_are_desktops_and_the_default_is_manual() {
     assert_eq!(claude.default_mode(), "default");
     assert!(claude.login_takes_code());
 }
+
+#[test]
+fn global_servers_ride_in_mcp_config_with_only_the_names_of_their_secrets() {
+    use quill_agent::InjectedServer;
+    let dir = std::env::temp_dir().join(format!("quill-claude-plugin-{}", std::process::id()));
+    let plan = Claude::new().launch(&SessionSpec {
+        cwd: "/work".into(),
+        servers: vec![
+            InjectedServer {
+                name: "github".into(),
+                target: "npx".into(),
+                args: vec!["-y".into(), "server-github".into()],
+                env: vec![("LOG".into(), "warn".into())],
+                env_vars: vec![(
+                    "GITHUB_TOKEN".into(),
+                    "QUILL_MCP_GITHUB_GITHUB_TOKEN".into(),
+                )],
+                ..Default::default()
+            },
+            InjectedServer {
+                name: "linear".into(),
+                target: "https://mcp.linear.app/mcp".into(),
+                remote: true,
+                sse: true,
+                header_vars: vec![(
+                    "Authorization".into(),
+                    "QUILL_MCP_LINEAR_H_AUTHORIZATION".into(),
+                )],
+                ..Default::default()
+            },
+        ],
+        skill_roots: vec![dir.join("skills")],
+        ..Default::default()
+    });
+    let at = plan.args.iter().position(|a| a == "--mcp-config").unwrap();
+    let config: serde_json::Value = serde_json::from_str(&plan.args[at + 1]).unwrap();
+    let github = &config["mcpServers"]["github"];
+    assert_eq!(github["type"], "stdio");
+    assert_eq!(
+        github["env"]["GITHUB_TOKEN"],
+        "${QUILL_MCP_GITHUB_GITHUB_TOKEN}"
+    );
+    assert_eq!(github["env"]["LOG"], "warn");
+    let linear = &config["mcpServers"]["linear"];
+    assert_eq!(linear["type"], "sse");
+    assert_eq!(
+        linear["headers"]["Authorization"],
+        "${QUILL_MCP_LINEAR_H_AUTHORIZATION}"
+    );
+    // The generated plugin the skills come in.
+    let plugin = plan.args.iter().position(|a| a == "--plugin-dir").unwrap();
+    assert_eq!(plan.args[plugin + 1], dir.to_string_lossy());
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join(".claude-plugin/plugin.json")).unwrap())
+            .unwrap();
+    assert_eq!(manifest["name"], "quill");
+    let _ = std::fs::remove_dir_all(dir);
+    // Without any, the launch is as it was.
+    let plain = Claude::new().launch(&SessionSpec::default());
+    assert!(!plain
+        .args
+        .iter()
+        .any(|a| a == "--mcp-config" || a == "--plugin-dir"));
+    assert!(Claude::new().session_extras().sse);
+}

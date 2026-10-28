@@ -280,6 +280,15 @@ impl AgentAdapter for Claude {
         &["2.1.310"]
     }
 
+    fn session_extras(&self) -> quill_agent::SessionExtras {
+        quill_agent::SessionExtras {
+            servers: true,
+            sse: true,
+            env_by_name: false,
+            skills: true,
+        }
+    }
+
     fn launch(&self, spec: &SessionSpec) -> LaunchPlan {
         let mut args: Vec<String> = [
             "--output-format",
@@ -330,6 +339,7 @@ impl AgentAdapter for Claude {
                 args.push(format!("--resume-session-at={at}"));
             }
         }
+        args.extend(inject::args(spec));
         // Same switches Desktop sets; quill does not claim to be Desktop (spec.md D2).
         let env = [
             ("CLAUDE_CODE_ENABLE_ASK_USER_QUESTION_TOOL", "true"),
@@ -1623,6 +1633,8 @@ fn file_changes(structured: &Value) -> Vec<FileChange> {
         after,
     }]
 }
+
+mod inject;
 
 #[cfg(test)]
 mod tests;

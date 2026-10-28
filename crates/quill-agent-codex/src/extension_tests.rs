@@ -397,3 +397,73 @@ fn a_skill_picked_from_the_slash_menu_is_a_mention_and_a_path_is_not() {
     assert_eq!(extensions::skill_mention("fix the bug"), "fix the bug");
     assert_eq!(extensions::skill_mention("/"), "/");
 }
+
+#[test]
+fn global_servers_and_skills_are_set_in_the_handshake_and_the_thread_with_no_secret() {
+    use quill_agent::InjectedServer;
+    let mut codex = Codex::new();
+    codex.launch(&SessionSpec {
+        cwd: "/work".into(),
+        servers: vec![
+            InjectedServer {
+                name: "github".into(),
+                target: "npx".into(),
+                args: vec!["-y".into(), "server-github".into()],
+                env: vec![("LOG".into(), "warn".into())],
+                env_vars: vec![("GITHUB_TOKEN".into(), "GITHUB_TOKEN".into())],
+                ..Default::default()
+            },
+            InjectedServer {
+                name: "linear".into(),
+                target: "https://mcp.linear.app/mcp".into(),
+                remote: true,
+                headers: vec![("X-Team".into(), "core".into())],
+                header_vars: vec![(
+                    "Authorization".into(),
+                    "QUILL_MCP_LINEAR_H_AUTHORIZATION".into(),
+                )],
+                ..Default::default()
+            },
+        ],
+        skill_roots: vec!["/cfg/quill/injected/codex/skills".into()],
+        ..Default::default()
+    });
+    codex.encode(AgentCommand::Start);
+    let init = codex.decode(r#"{"id":1,"result":{"userAgent":"quill/0.163.0 (Linux)"}}"#);
+    let sent: Vec<Value> = init
+        .replies
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let methods: Vec<&str> = sent.iter().map(|m| m["method"].as_str().unwrap()).collect();
+    assert_eq!(
+        methods,
+        [
+            "initialized",
+            "model/list",
+            "skills/extraRoots/set",
+            "thread/start"
+        ]
+    );
+    assert_eq!(
+        sent[2]["params"]["extraRoots"][0],
+        "/cfg/quill/injected/codex/skills"
+    );
+    let servers = &sent[3]["params"]["config"]["mcp_servers"];
+    assert_eq!(servers["github"]["command"], "npx");
+    assert_eq!(servers["github"]["env_vars"], json!(["GITHUB_TOKEN"]));
+    assert_eq!(servers["github"]["env"]["LOG"], "warn");
+    assert_eq!(servers["linear"]["url"], "https://mcp.linear.app/mcp");
+    assert_eq!(servers["linear"]["http_headers"]["X-Team"], "core");
+    assert_eq!(
+        servers["linear"]["env_http_headers"]["Authorization"],
+        "QUILL_MCP_LINEAR_H_AUTHORIZATION"
+    );
+    // The answer to the roots is not an event.
+    assert!(codex
+        .decode(r#"{"id":"quill-skill-roots","result":{}}"#)
+        .events
+        .is_empty());
+    let extras = codex.session_extras();
+    assert!(!extras.sse && extras.env_by_name);
+}

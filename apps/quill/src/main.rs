@@ -1754,6 +1754,10 @@ fn main() -> eframe::Result {
                         open_pages: true,
                         // GitHub's picture is kept like the real app's, so the foot can show it.
                         avatars: quill_engine::Config::default_database().avatars,
+                        // The "All agents" layer is kept, but its secrets never reach the
+                        // real keychain while programs are stand-ins.
+                        extensions: quill_engine::Config::default_database().extensions,
+                        secrets: Some(Arc::new(quill_engine::MemorySecrets::default())),
                         ..Default::default()
                     },
                 ),

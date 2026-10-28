@@ -33,11 +33,16 @@ const MODELS_ID: &str = "quill-models";
 /// Per-thread config (not `~/.codex/config.toml`): `update_plan` is off by default
 /// (plan.jsonl, two attempts without it) and `request_user_input` only exists in Plan mode
 /// unless this feature is on (ask.jsonl:9).
-fn thread_config() -> Value {
-    json!({
+fn thread_config(servers: &[quill_agent::InjectedServer]) -> Value {
+    let mut config = json!({
         "tools": { "update_plan": { "enabled": true } },
         "features": { "default_mode_request_user_input": true },
-    })
+    });
+    // The "All agents" servers ride in the request, not in argv or a file (docs/agents.md).
+    if !servers.is_empty() {
+        config["mcp_servers"] = extensions::mcp_servers_config(servers);
+    }
+    config
 }
 
 /// Notifications that carry nothing quill shows; not `Unknown`, not events.
@@ -180,7 +185,7 @@ impl Codex {
         let (approval, sandbox, _) = preset(&self.mode);
         let mut params = json!({
             "cwd": spec.cwd.to_string_lossy(), "approvalPolicy": approval, "sandbox": sandbox,
-            "config": thread_config(),
+            "config": thread_config(&spec.servers),
         });
         if let Some(model) = &self.model {
             params["model"] = json!(model);
@@ -340,6 +345,19 @@ impl Codex {
                 out.replies.push(
                     json!({ "id": MODELS_ID, "method": "model/list", "params": {} }).to_string(),
                 );
+                // The "All agents" skills: folders the app-server reads besides its own.
+                let roots = self.spec.lock().unwrap().skill_roots.clone();
+                if !roots.is_empty() {
+                    let roots: Vec<_> = roots.iter().map(|r| r.to_string_lossy()).collect();
+                    let id = "quill-skill-roots";
+                    let line = self.named(
+                        id,
+                        "skills/extraRoots/set",
+                        json!({ "extraRoots": roots }),
+                        Pending::Ignore,
+                    );
+                    out.replies.push(line);
+                }
                 let thread = self.open_thread();
                 out.replies.push(thread);
             }
@@ -1036,6 +1054,17 @@ impl AgentAdapter for Codex {
     fn tested(&self) -> &'static [&'static str] {
         // The version the fixtures were captured from.
         &["0.163.0"]
+    }
+
+    fn session_extras(&self) -> quill_agent::SessionExtras {
+        // No SSE in Codex (`McpServerTransportConfig`: stdio and streamable HTTP only), and a
+        // server's environment takes a variable only under its own name (`env_vars`).
+        quill_agent::SessionExtras {
+            servers: true,
+            sse: false,
+            env_by_name: true,
+            skills: true,
+        }
     }
 
     fn launch(&self, spec: &SessionSpec) -> LaunchPlan {

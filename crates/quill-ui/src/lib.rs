@@ -603,6 +603,7 @@ impl Store {
             | Event::Update(_)
             | Event::Extensions { .. }
             | Event::Servers { .. }
+            | Event::Global(_)
             | Event::ServersFound { .. }
             | Event::Auth { .. }
             | Event::AgentModels { .. }
@@ -1268,6 +1269,10 @@ pub struct Ui {
     pub extensions: std::collections::HashMap<String, Extensions>,
     /// Customize › Connectors.
     pub connectors: Connectors,
+    /// quill's "All agents" servers and skills, and how each agent treats them.
+    pub global: quill_model::GlobalState,
+    /// "New skill" or "Import skill" for "All agents", as typed.
+    pub skill_dialog: Option<SkillDialog>,
     /// What Customize asks before removing, while it asks.
     pub removing: Option<Removing>,
     /// The marketplace being typed in Customize › Plugins, and the agents it is added to.
@@ -1956,6 +1961,8 @@ impl Ui {
             settings_error: None,
             extensions: std::collections::HashMap::new(),
             connectors: Connectors::default(),
+            global: Default::default(),
+            skill_dialog: None,
             removing: None,
             marketplace_field: String::new(),
             market_targets: vec![],
@@ -2022,6 +2029,7 @@ impl Ui {
                 folder: folder.clone(),
             });
         }
+        intents.push(Intent::Global(quill_model::GlobalOp::Load));
         if self.connectors.found.is_none() {
             intents.push(Intent::FindServers {
                 query: self.connectors.query.clone(),
@@ -2041,7 +2049,9 @@ impl Ui {
             agent: a.id.clone(),
             folder: folder.clone(),
         });
-        agents.collect()
+        agents
+            .chain([Intent::Global(quill_model::GlobalOp::Load)])
+            .collect()
     }
 
     /// The logos the open Connectors or Plugins page, or MCP dialog, shows and nothing asked for
@@ -2384,6 +2394,10 @@ impl Ui {
         }
         if let Event::SettingsNotSaved { error } = event {
             self.settings_error = Some(error.clone());
+            return vec![];
+        }
+        if let Event::Global(state) = event {
+            self.global = state.clone();
             return vec![];
         }
         if let Event::Servers {
@@ -2831,9 +2845,22 @@ fn update_action(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Int
                     "name" => &mut adding.name,
                     "target" => &mut adding.target,
                     "env" => &mut adding.env,
+                    "secret-env" => &mut adding.secret_env,
+                    "secret-headers" => &mut adding.secret_headers,
                     _ => &mut adding.headers,
                 };
                 *field = value.clone();
+            }
+            vec![]
+        }
+        UiAction::InputChanged { id, value } if id.starts_with(view::GSK_FIELD) => {
+            match (ui.skill_dialog.as_mut(), &id[view::GSK_FIELD.len()..]) {
+                (Some(SkillDialog::New { name, .. }), "name") => *name = value.clone(),
+                (Some(SkillDialog::New { description, .. }), "description") => {
+                    *description = value.clone()
+                }
+                (Some(SkillDialog::Import { path }), "path") => *path = value.clone(),
+                _ => {}
             }
             vec![]
         }
@@ -4038,6 +4065,20 @@ pub struct AddServer {
     pub headers: String,
     /// Where it goes, by agent; an agent's first scope without one.
     pub scopes: std::collections::BTreeMap<String, String>,
+    /// Added to quill's "All agents" layer instead (`agents` is then not used).
+    pub all: bool,
+    /// For "All agents": an address that speaks the older SSE transport.
+    pub sse: bool,
+    /// For "All agents": `KEY=value` and `Name: value` lines kept in the keychain.
+    pub secret_env: String,
+    pub secret_headers: String,
+}
+
+/// "New skill" or "Import skill" for "All agents": what is typed.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SkillDialog {
+    New { name: String, description: String },
+    Import { path: String },
 }
 
 impl AddServer {
@@ -4054,22 +4095,61 @@ impl AddServer {
                 .map(str::to_owned)
                 .collect()
         };
-        (!name.is_empty() && !self.agents.is_empty()).then(|| quill_model::NewServer {
-            name: name.to_owned(),
-            target: first.to_owned(),
-            args: if remote {
-                vec![]
-            } else {
-                words.map(str::to_owned).collect()
-            },
-            remote,
-            scope: None,
-            env: lines(&self.env, '='),
-            headers: if remote {
-                lines(&self.headers, ':')
-            } else {
-                vec![]
-            },
+        (!name.is_empty() && (self.all || !self.agents.is_empty())).then(|| {
+            quill_model::NewServer {
+                name: name.to_owned(),
+                target: first.to_owned(),
+                args: if remote {
+                    vec![]
+                } else {
+                    words.map(str::to_owned).collect()
+                },
+                remote,
+                scope: None,
+                env: lines(&self.env, '='),
+                headers: if remote {
+                    lines(&self.headers, ':')
+                } else {
+                    vec![]
+                },
+            }
+        })
+    }
+
+    /// The server for quill's "All agents" layer: the plain lines as they are, the secret ones
+    /// marked so the engine keeps them in the keychain.
+    pub fn global(&self) -> Option<quill_model::GlobalServer> {
+        let server = self.server().filter(|_| self.all)?;
+        let vars = |plain: &[String], secret: &str, mark: char| -> Vec<quill_model::GlobalVar> {
+            let pair = |line: &str, secret| {
+                let (key, value) = line.split_once(mark)?;
+                Some(quill_model::GlobalVar {
+                    key: key.trim().to_owned(),
+                    value: Some(value.trim().to_owned()),
+                    secret,
+                })
+            };
+            let secrets = secret.lines().filter_map(|l| pair(l, true));
+            plain
+                .iter()
+                .filter_map(|l| pair(l, false))
+                .chain(secrets)
+                .collect()
+        };
+        let secret_headers = if server.remote {
+            &self.secret_headers
+        } else {
+            ""
+        };
+        Some(quill_model::GlobalServer {
+            sse: self.sse && server.remote,
+            env: vars(&server.env, &self.secret_env, '='),
+            headers: vars(&server.headers, secret_headers, ':'),
+            name: server.name,
+            remote: server.remote,
+            target: server.target,
+            args: server.args,
+            except: vec![],
         })
     }
 
@@ -4399,6 +4479,61 @@ fn plus_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
     }
 }
 
+/// The "All agents" layer's clicks: an item's "Use in" and removal, and the skill dialogs.
+/// `None` when `id` is none of them.
+fn global_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
+    use quill_model::GlobalOp;
+    let rest = id.strip_prefix("glob:")?;
+    let parts: Vec<&str> = rest.split(':').collect();
+    let op = match parts[..] {
+        ["use", kind, name, agent] => {
+            let skill = kind == "skill";
+            let off = if skill {
+                (ui.global.skills.iter().find(|s| s.name == name)).map(|s| &s.except)
+            } else {
+                (ui.global.servers.iter().find(|s| s.name == name)).map(|s| &s.except)
+            };
+            GlobalOp::Use {
+                skill,
+                name: name.to_owned(),
+                agent: agent.to_owned(),
+                on: off?.iter().any(|a| a == agent),
+            }
+        }
+        ["remove", "server", name] => GlobalOp::RemoveServer(name.to_owned()),
+        ["remove", _, name] => GlobalOp::RemoveSkill(name.to_owned()),
+        ["skill-new"] => {
+            ui.settings_menu = None;
+            ui.skill_dialog = Some(SkillDialog::New {
+                name: String::new(),
+                description: String::new(),
+            });
+            return Some(vec![]);
+        }
+        ["skill-import"] => {
+            ui.settings_menu = None;
+            ui.skill_dialog = Some(SkillDialog::Import {
+                path: String::new(),
+            });
+            return Some(vec![]);
+        }
+        ["skill-cancel"] => {
+            ui.skill_dialog = None;
+            return Some(vec![]);
+        }
+        ["skill-save"] => match ui.skill_dialog.take()? {
+            SkillDialog::New { name, description } => GlobalOp::NewSkill {
+                name: name.trim().to_owned(),
+                description: description.trim().to_owned(),
+            },
+            SkillDialog::Import { path } => GlobalOp::ImportSkill(path.trim().into()),
+        },
+        _ => return None,
+    };
+    ui.settings_menu = None;
+    Some(vec![Intent::Global(op)])
+}
+
 /// Customize › Connectors' clicks: its tabs; "Add custom connector", empty or from an offer of
 /// the registry; where the server goes; adding it; and a server's menu and removal. `None`
 /// when `id` is none of them.
@@ -4433,12 +4568,22 @@ fn connectors_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
                 target: target.join(" "),
                 env: offer.env.join("\n"),
                 headers: offer.headers.join("\n"),
-                scopes: Default::default(),
+                ..AddServer::default()
             });
+        }
+        // "All agents" is a choice of its own: quill adds it to each session.
+        ("to", "*") => {
+            let adding = c.adding.as_mut()?;
+            adding.all = !adding.all;
+        }
+        ("sse", _) => {
+            let adding = c.adding.as_mut()?;
+            adding.sse = !adding.sse;
         }
         // An agent the server goes to, ticked or not; one stays.
         ("to", agent) => {
             let adding = c.adding.as_mut()?;
+            adding.all = false;
             match adding.agents.iter().position(|a| a == agent) {
                 Some(at) if adding.agents.len() > 1 => drop(adding.agents.remove(at)),
                 Some(_) => {}
@@ -4458,7 +4603,12 @@ fn connectors_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
             let adding = c.adding.take()?;
             adding.server()?;
             let mut intents = vec![];
-            for agent in &adding.agents {
+            if adding.all {
+                intents.push(Intent::Global(quill_model::GlobalOp::SetServer(
+                    adding.global()?,
+                )));
+            }
+            for agent in adding.agents.iter().filter(|_| !adding.all) {
                 let op = quill_model::ExtensionOp::AddServer(adding.server_for(agent)?);
                 c.listed.entry(agent.clone()).or_default().working = true;
                 intents.push(Intent::ExtensionOp {
@@ -4696,6 +4846,9 @@ fn settings_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
         return Some(intents);
     }
     if let Some(intents) = extensions_clicked(ui, id) {
+        return Some(intents);
+    }
+    if let Some(intents) = global_clicked(ui, id) {
         return Some(intents);
     }
     if let Some(intents) = connectors_clicked(ui, id) {

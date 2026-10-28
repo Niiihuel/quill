@@ -36,6 +36,14 @@ fn main() {
         return;
     };
     let path = path.trim();
+    // What the engine launched it with, for tests: its arguments, then the variables the
+    // "All agents" layer sets (`QUILL_MCP_…` and the like) as `NAME=value`.
+    let launched = std::env::args().skip(1).collect::<Vec<_>>().join("\n");
+    let vars: String = std::env::vars()
+        .filter(|(k, _)| k.starts_with("QUILL_MCP_") || k == "GITHUB_TOKEN")
+        .map(|(k, v)| format!("\n{k}={v}"))
+        .collect();
+    let _ = std::fs::write(".fake-launch", launched + &vars);
     let text = std::fs::read_to_string(path).expect("fixture");
     let mut out = std::io::stdout().lock();
     let pace: Option<f64> = std::env::var("QUILL_FAKE_PACE")

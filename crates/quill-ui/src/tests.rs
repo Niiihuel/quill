@@ -1354,7 +1354,7 @@ fn a_custom_connector_is_an_address_or_a_command_with_its_settings() {
         target: "https://mcp.context7.com/mcp".into(),
         env: "A=1\nnot a pair".into(),
         headers: "X-Key: 1".into(),
-        scopes: Default::default(),
+        ..Default::default()
     };
     let server = adding.server().unwrap();
     assert!(server.remote && server.name == "ctx" && server.args.is_empty());
@@ -2054,10 +2054,13 @@ fn the_sidebars_customize_and_the_persons_menu_open_settings() {
     ui.cwd = "/work".into();
     assert_eq!(
         click(&store, &mut ui, view::CUSTOMIZE_OPEN),
-        vec![Intent::Extensions {
-            agent: "claude".into(),
-            folder: "/work".into()
-        }]
+        vec![
+            Intent::Extensions {
+                agent: "claude".into(),
+                folder: "/work".into()
+            },
+            Intent::Global(quill_model::GlobalOp::Load)
+        ]
     );
     assert_eq!(ui.settings_page.as_deref(), Some(view::SETTINGS_SKILLS));
     click(&store, &mut ui, view::SETTINGS_CLOSE);
@@ -2095,10 +2098,13 @@ fn customize_lists_and_changes_an_agents_plugins_marketplaces_and_skills() {
     let page = format!("settings:page:{}", view::SETTINGS_PLUGINS);
     assert_eq!(
         click(&store, &mut ui, &page),
-        vec![Intent::Extensions {
-            agent: "claude".into(),
-            folder: folder.clone()
-        }]
+        vec![
+            Intent::Extensions {
+                agent: "claude".into(),
+                folder: folder.clone()
+            },
+            Intent::Global(quill_model::GlobalOp::Load)
+        ]
     );
     let window = limn::Size::new(1408.0, 844.0);
     let shows = |ui: &Ui, words: &str| {
@@ -6553,6 +6559,120 @@ fn the_add_dialog_asks_for_which_agents_and_adds_with_each_ones_own_program() {
     assert_eq!(sent, vec![add("claude", Some("user")), add("codex", None)]);
     assert!(ui.connectors.listed["claude"].working && ui.connectors.listed["codex"].working);
     assert!(ui.connectors.adding.is_none());
+}
+
+#[test]
+fn all_agents_is_the_first_section_and_its_dialog_keeps_secrets_apart() {
+    use quill_model::{AppliedTo, Applies, GlobalOp, GlobalServer, GlobalState, GlobalVar};
+    let (store, mut ui) = two_agents_on(view::SETTINGS_CONNECTORS);
+    let applied = |agent: &str, applies| AppliedTo {
+        agent: agent.into(),
+        name: "github".into(),
+        skill: false,
+        applies,
+    };
+    ui.applied(&Event::Global(GlobalState {
+        servers: vec![GlobalServer {
+            name: "github".into(),
+            target: "npx".into(),
+            except: vec!["codex".into()],
+            ..Default::default()
+        }],
+        applied: vec![
+            applied("claude", Applies::Replaced),
+            applied("codex", Applies::Excluded),
+        ],
+        keychain: true,
+        ..Default::default()
+    }));
+    assert!(drawn(&store, &ui, "All agents") && drawn(&store, &ui, "Replaced in Claude Code"));
+    assert!(drawn(&store, &ui, "off in Codex"));
+    // Turning it back on for Codex asks the engine; removing it too.
+    assert_eq!(
+        click(&store, &mut ui, "glob:use:server:github:codex"),
+        vec![Intent::Global(GlobalOp::Use {
+            skill: false,
+            name: "github".into(),
+            agent: "codex".into(),
+            on: true
+        })]
+    );
+    assert_eq!(
+        click(&store, &mut ui, "glob:remove:server:github"),
+        vec![Intent::Global(GlobalOp::RemoveServer("github".into()))]
+    );
+    // The dialog's "All agents" sends a global server, its secret lines marked.
+    click(&store, &mut ui, "srv:add:");
+    click(&store, &mut ui, "srv:to:*");
+    assert!(drawn(&store, &ui, "Secret variables"));
+    for (key, value) in [
+        ("name", "pg"),
+        ("target", "npx -y @x/pg"),
+        ("env", "LOG=warn"),
+        ("secret-env", "TOKEN=abc"),
+    ] {
+        update(
+            &store,
+            &mut ui,
+            &UiAction::InputChanged {
+                id: format!("{}{key}", view::SRV_FIELD),
+                value: value.into(),
+            },
+        );
+    }
+    let var = |key: &str, value: &str, secret| GlobalVar {
+        key: key.into(),
+        value: Some(value.into()),
+        secret,
+    };
+    assert_eq!(
+        click(&store, &mut ui, "srv:save"),
+        vec![Intent::Global(GlobalOp::SetServer(GlobalServer {
+            name: "pg".into(),
+            target: "npx".into(),
+            args: vec!["-y".into(), "@x/pg".into()],
+            env: vec![var("LOG", "warn", false), var("TOKEN", "abc", true)],
+            ..Default::default()
+        }))]
+    );
+}
+
+#[test]
+fn a_global_skill_is_made_or_imported_from_its_dialog() {
+    use quill_model::{GlobalOp, GlobalSkill, GlobalState};
+    let (store, mut ui) = two_agents_on(view::SETTINGS_SKILLS);
+    ui.applied(&Event::Global(GlobalState {
+        skills: vec![GlobalSkill {
+            name: "release-notes".into(),
+            description: "Writes notes".into(),
+            except: vec![],
+        }],
+        ..Default::default()
+    }));
+    assert!(drawn(&store, &ui, "release-notes") && drawn(&store, &ui, "All agents"));
+    click(&store, &mut ui, "glob:skill-new");
+    assert!(drawn(&store, &ui, "New skill"));
+    for (key, value) in [("name", " my-skill "), ("description", "Does it")] {
+        update(
+            &store,
+            &mut ui,
+            &UiAction::InputChanged {
+                id: format!("{}{key}", view::GSK_FIELD),
+                value: value.into(),
+            },
+        );
+    }
+    assert_eq!(
+        click(&store, &mut ui, "glob:skill-save"),
+        vec![Intent::Global(GlobalOp::NewSkill {
+            name: "my-skill".into(),
+            description: "Does it".into()
+        })]
+    );
+    click(&store, &mut ui, "glob:skill-import");
+    assert!(drawn(&store, &ui, "Import skill"));
+    click(&store, &mut ui, "glob:skill-cancel");
+    assert!(ui.skill_dialog.is_none());
 }
 
 #[test]

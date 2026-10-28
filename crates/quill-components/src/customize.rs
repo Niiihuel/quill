@@ -192,6 +192,42 @@ pub fn agent_marks(id: &str, agents: &[(&'static str, String)]) -> Element {
     Element::row(marks.collect()).gap(6.0)
 }
 
+/// How an "All agents" item stands in one agent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Standing {
+    /// Added to the agent's sessions.
+    On,
+    /// The person turned it off for this agent.
+    Off,
+    /// The agent has one of its own that wins.
+    Replaced,
+    /// The agent cannot use it.
+    Refused,
+}
+
+/// Every agent's logo at an item's end, inked by how the item stands there (the text's ink
+/// when on, faint when off, amber when replaced, red when refused), with the reason as its
+/// tooltip. `id` tells the item's marks from another's.
+pub fn agent_standing(id: &str, agents: &[(&'static str, String, Standing)]) -> Element {
+    let marks = agents
+        .iter()
+        .enumerate()
+        .map(|(at, (logo, why, standing))| {
+            let ink = match standing {
+                Standing::On => look::palette().text,
+                Standing::Off => look::customize_edge(),
+                Standing::Replaced => look::awaiting(),
+                Standing::Refused => look::failed(),
+            };
+            let mark = Element::icon(icons::of(logo))
+                .foreground(ink)
+                .size(Some(14.0), Some(14.0))
+                .centered_y();
+            limn::Tooltip::new(mark, format!("{id}:{at}"), why.as_str(), look::palette()).render()
+        });
+    Element::row(marks.collect()).gap(6.0)
+}
+
 /// The folder a section is about, outlined, its icon before its name (Desktop's "work"), 28
 /// high as the header's buttons.
 pub fn folder_chip(id: &str, name: &str) -> Element {

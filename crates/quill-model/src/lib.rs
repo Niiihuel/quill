@@ -11,6 +11,98 @@ pub use quill_agent::{
     ToolContent, Usage, UsageWindow, WebSearchRun, WebSource,
 };
 
+/// One environment variable or header of a global server. A secret lives in the system's
+/// keychain: the file and the UI never hold its value (`value` is `None`); an intent that adds
+/// the server carries it once, in `value`.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct GlobalVar {
+    pub key: String,
+    pub value: Option<String>,
+    #[serde(default)]
+    pub secret: bool,
+}
+
+/// An MCP server of the "All agents" layer (`extensions.json`, docs/agents.md): quill adds it
+/// to the sessions of every agent that can use it, but the agents' own files stay as they are.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct GlobalServer {
+    pub name: String,
+    /// An address (else a command with `args`), by SSE rather than streamable HTTP.
+    pub remote: bool,
+    pub sse: bool,
+    pub target: String,
+    pub args: Vec<String>,
+    pub env: Vec<GlobalVar>,
+    pub headers: Vec<GlobalVar>,
+    /// The agents the person turned it off for; a new agent gets it.
+    #[serde(default)]
+    pub except: Vec<String>,
+}
+
+/// A skill in quill's own folder (`<config>/quill/skills/<name>/SKILL.md`).
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct GlobalSkill {
+    pub name: String,
+    pub description: String,
+    pub except: Vec<String>,
+}
+
+/// What an agent does with one global server or skill.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum Applies {
+    Active,
+    /// The person turned it off for this agent.
+    Excluded,
+    /// The agent has one of its own with the same name, which wins; the global one is not added.
+    Replaced,
+    /// The agent cannot use it, and why.
+    Refused(String),
+}
+
+/// How one agent treats one global item.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AppliedTo {
+    pub agent: String,
+    pub name: String,
+    pub skill: bool,
+    pub applies: Applies,
+}
+
+/// Everything the "All agents" layer holds and how each agent treats it.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct GlobalState {
+    pub servers: Vec<GlobalServer>,
+    pub skills: Vec<GlobalSkill>,
+    pub applied: Vec<AppliedTo>,
+    /// Why the last change failed, or why the layer could not be read.
+    pub error: Option<String>,
+    /// The system keychain answers; without it a secret cannot be kept.
+    pub keychain: bool,
+}
+
+/// A change to the "All agents" layer; answered by `Event::Global`.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum GlobalOp {
+    Load,
+    /// Add or replace a server by its name.
+    SetServer(GlobalServer),
+    RemoveServer(String),
+    /// Turn a server or skill on or off for one agent.
+    Use {
+        skill: bool,
+        name: String,
+        agent: String,
+        on: bool,
+    },
+    /// Copy a folder with a `SKILL.md` into quill's skills.
+    ImportSkill(PathBuf),
+    NewSkill {
+        name: String,
+        description: String,
+    },
+    RemoveSkill(String),
+}
+
 /// quill's own id of a session.
 pub type SessionId = u64;
 /// quill's own id of one message the person sent; the agent receives it as the prompt's id.
@@ -628,6 +720,9 @@ pub enum Intent {
         agent: String,
         folder: PathBuf,
     },
+    /// Change quill's "All agents" layer of servers and skills, or read it; answered by
+    /// `Event::Global`.
+    Global(GlobalOp),
     /// Look for a newer quill now; answered by `Event::Update`.
     CheckUpdates,
     /// Download the newer quill found, if it is not here yet; answered by `Event::Update`.
@@ -1201,6 +1296,8 @@ pub enum Event {
         extensions: Extensions,
         error: Option<String>,
     },
+    /// The "All agents" layer and how each agent treats it; written before it is announced.
+    Global(GlobalState),
     /// An agent's MCP servers for a folder, where one can be added, or why they could not be
     /// listed.
     Servers {
@@ -1339,6 +1436,7 @@ impl Event {
             | Event::SettingsNotSaved { .. }
             | Event::Update(_)
             | Event::Extensions { .. }
+            | Event::Global(_)
             | Event::Servers { .. }
             | Event::ServersFound { .. }
             | Event::Auth { .. }

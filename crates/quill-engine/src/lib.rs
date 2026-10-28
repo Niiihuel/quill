@@ -16,6 +16,7 @@ mod auth;
 #[cfg(unix)]
 mod bridge;
 mod github;
+mod global;
 mod images;
 mod logos;
 mod registry;
@@ -72,6 +73,8 @@ fn adapter(agent: &str) -> Option<Box<dyn AgentAdapter>> {
     }
 }
 
+pub use global::{Keychain, MemorySecrets, Secrets};
+
 pub struct Engine {
     intents: UnboundedSender<Intent>,
     _runtime: tokio::runtime::Runtime,
@@ -94,6 +97,11 @@ pub struct Config {
     pub avatars: Option<PathBuf>,
     /// The built-in browser's Chromium profile; `None` puts one in the temporary folder.
     pub browser: Option<PathBuf>,
+    /// The "All agents" layer's `extensions.json`, with its `skills/` folder beside it; `None`
+    /// keeps none.
+    pub extensions: Option<PathBuf>,
+    /// Where those servers' secrets are kept; `None` is the system keychain.
+    pub secrets: Option<Arc<dyn global::Secrets>>,
     /// Whether quill looks for its own updates (update.rs): the app does, the tests do not.
     pub updates: bool,
     /// Whether a sign-in page opens in the person's browser: the app does, the tests do not.
@@ -116,6 +124,7 @@ impl Config {
             logos: Some(data.join("quill/logos")),
             avatars: Some(data.join("quill/avatars")),
             browser: Some(data.join("quill/browser")),
+            extensions: Some(config.join("quill/extensions.json")),
             updates: true,
             open_pages: true,
             ..Self::default()
@@ -318,6 +327,11 @@ struct Router {
         tokio::task::JoinHandle<()>,
     )>,
     settings: quill_model::Settings,
+    /// quill's "All agents" servers and skills.
+    global: global::Layer,
+    /// What each agent has of its own, as its lists were last read: what the global layer
+    /// leaves to it.
+    own: Arc<Mutex<HashMap<String, global::Own>>>,
     /// What keeps the computer from idle sleep while an agent works.
     awake: Option<Child>,
     /// quill's own updates: checked, downloaded and installed off this thread (update.rs).
@@ -441,6 +455,13 @@ impl Router {
         };
         // Settings are read after this, and say whether a found version downloads at once.
         let updates = update::Updates::start(ui.clone(), config.updates, true);
+        let global = global::Layer::new(
+            config.extensions.clone(),
+            config
+                .secrets
+                .clone()
+                .unwrap_or_else(|| Arc::new(global::Keychain)),
+        );
         Self {
             store,
             ui,
@@ -468,6 +489,8 @@ impl Router {
             busy: Default::default(),
             reading: None,
             settings: Default::default(),
+            global,
+            own: Arc::default(),
             awake: None,
             updates,
             logins: HashMap::new(),
@@ -665,6 +688,7 @@ impl Router {
         let program = (self.program(&agent))
             .unwrap_or_else(|| adapter.launch(&SessionSpec::default()).program);
         let ui = self.ui.clone();
+        let (layer, own) = (self.global.clone(), self.own.clone());
         tokio::spawn(async move {
             let mut error = None;
             if let Some(op) = &op {
@@ -689,6 +713,13 @@ impl Router {
                     Err(e) => drop(error.get_or_insert(e)),
                 }
             }
+            // What the agent has of its own is what the global layer leaves to it.
+            if error.is_none() && adapter.servers_query().is_some() {
+                let names = servers.iter().map(|s| s.name.clone()).collect();
+                global::remember(&own, adapter.id(), |o| o.servers = Some(names));
+                let (layer, own, ui) = (layer.clone(), own.clone(), ui.clone());
+                tokio::task::spawn_blocking(move || announce_global(&layer, &own, &ui, None));
+            }
             ui(Event::Servers {
                 agent,
                 folder,
@@ -710,6 +741,7 @@ impl Router {
             .map(|(_, tx)| tx.clone())
             .collect();
         let ui = self.ui.clone();
+        let (layer, own) = (self.global.clone(), self.own.clone());
         tokio::spawn(async move {
             // A folder that went away reads as the person's own.
             let folder = if folder.is_dir() {
@@ -760,6 +792,12 @@ impl Router {
             (extensions.scopes, extensions.skill_states) = adapter.extension_words();
             extensions.kinds = adapter.extension_kinds();
             extensions.skills = skills_of(adapter, &program, &folder).await;
+            let names = extensions.skills.iter().map(|s| s.name.clone()).collect();
+            global::remember(&own, &agent, |o| o.skills = Some(names));
+            {
+                let (layer, own, ui) = (layer.clone(), own.clone(), ui.clone());
+                tokio::task::spawn_blocking(move || announce_global(&layer, &own, &ui, None));
+            }
             ui(Event::Extensions {
                 agent,
                 folder,
@@ -767,6 +805,29 @@ impl Router {
                 error,
             });
         });
+    }
+
+    /// Give a session the "All agents" servers and skills its agent can use (global.rs); its
+    /// secrets go in the process's environment, never in the arguments.
+    fn inject(&self, actor: &mut Actor) {
+        let (id, name) = (actor.adapter.id().to_owned(), actor.adapter.name());
+        let agent = global::AgentView {
+            id: &id,
+            name,
+            extras: actor.adapter.session_extras(),
+        };
+        let own = self
+            .own
+            .lock()
+            .unwrap()
+            .get(&id)
+            .cloned()
+            .unwrap_or_default();
+        let plan = tokio::task::block_in_place(|| self.global.plan(&agent, &own, true));
+        actor.spec.servers = plan.servers;
+        actor.spec.skill_roots = plan.skill_roots;
+        actor.env.extend(plan.env);
+        actor.injected = plan.names;
     }
 
     fn bridge_env(&self, session: SessionId) -> Vec<(String, String)> {
@@ -880,6 +941,7 @@ impl Router {
             actor.spec.options = chosen.options.clone();
             actor.env = self.bridge_env(session);
             actor.env.extend(env_pairs(&chosen.env));
+            self.inject(&mut actor);
             // A fork that has said nothing yet still continues where it was forked from.
             if let (None, Some((from, at))) = (&actor.spec.resume, restored.forked) {
                 let mut ids = self.agent_ids.lock().unwrap();
@@ -973,6 +1035,7 @@ impl Router {
         actor.spec.options = chosen.options.clone();
         actor.env = self.bridge_env(id);
         actor.env.extend(env_pairs(&chosen.env));
+        self.inject(&mut actor);
         actor.shadow_root = self.config.snapshots.clone();
         actor.route = Some(self.internal.clone());
         if let Some((from, at)) = fork_of {
@@ -1393,6 +1456,15 @@ impl Router {
             }
             Intent::SaveSettings(settings) => {
                 self.save_settings(settings).await;
+                return;
+            }
+            Intent::Global(op) => {
+                let (layer, own, ui) = (self.global.clone(), self.own.clone(), self.ui.clone());
+                // The keychain can take its time (it may ask to be unlocked): off the router.
+                tokio::task::spawn_blocking(move || {
+                    let error = layer.op(op).err();
+                    announce_global(&layer, &own, &ui, error);
+                });
                 return;
             }
             Intent::Extensions { agent, folder } => {
@@ -2175,8 +2247,11 @@ struct Actor {
     route: Option<UnboundedSender<Internal>>,
     /// The last thing the agent said in the turn under way, for its report.
     last_text: String,
-    /// Added to the agent's environment: the `$BROWSER` bridge.
+    /// Added to the agent's environment: the `$BROWSER` bridge, and the secrets of the global
+    /// servers.
     env: Vec<(String, String)>,
+    /// The global servers this session was given, which its server list marks.
+    injected: Vec<String>,
     /// The resume, fork and resume-at the last rewind replaced, until a message is sent.
     unrewind: Option<(Option<String>, bool, Option<String>)>,
     /// Messages waiting for the turn to end, oldest first, and whether they are held.
@@ -2207,6 +2282,8 @@ impl Actor {
             resume_at: None,
             allow_unsafe: false,
             options: Default::default(),
+            servers: Vec::new(),
+            skill_roots: Vec::new(),
         };
         Self {
             id,
@@ -2227,6 +2304,7 @@ impl Actor {
             route: None,
             last_text: String::new(),
             env: Vec::new(),
+            injected: Vec::new(),
             unrewind: None,
             queue: vec![],
             held: false,
@@ -2783,6 +2861,14 @@ impl Actor {
                     self.ask_skills();
                 }
             }
+            if let AgentEvent::McpServers(servers) = &mut event {
+                for server in servers
+                    .iter_mut()
+                    .filter(|s| self.injected.contains(&s.name))
+                {
+                    server.source = quill_agent::McpSource::Global;
+                }
+            }
             let finished = matches!(event, AgentEvent::TurnFinished { .. });
             (self.sink)(Event::Agent {
                 session: self.id,
@@ -3209,6 +3295,27 @@ async fn skills_of(
         .unwrap_or_default();
     let _ = child.kill().await;
     skills
+}
+
+/// Tell the UI the "All agents" layer and how each agent treats it; whatever changed is
+/// already written.
+fn announce_global(
+    layer: &global::Layer,
+    own: &Mutex<HashMap<String, global::Own>>,
+    ui: &Sink,
+    error: Option<String>,
+) {
+    let adapters: Vec<_> = AGENTS.iter().filter_map(|id| adapter(id)).collect();
+    let views: Vec<_> = adapters
+        .iter()
+        .map(|a| global::AgentView {
+            id: a.id(),
+            name: a.name(),
+            extras: a.session_extras(),
+        })
+        .collect();
+    let own = own.lock().unwrap().clone();
+    ui(Event::Global(layer.state(&views, &own, error)));
 }
 
 fn size_of(path: &std::path::Path) -> u64 {

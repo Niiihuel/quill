@@ -220,6 +220,45 @@ pub(crate) fn mcp_servers(data: &Value) -> Vec<McpServer> {
         .collect()
 }
 
+/// `config.mcp_servers` of `thread/start` (V2): `command`, `args`, `env` and `env_vars` for a
+/// command, `url` and `http_headers` / `env_http_headers` for an address. A secret is only
+/// the name of a variable of the app-server's process.
+pub(crate) fn mcp_servers_config(servers: &[quill_agent::InjectedServer]) -> Value {
+    let map = |pairs: &[(String, String)]| -> Value {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.clone(), json!(v)))
+            .collect::<serde_json::Map<_, _>>()
+            .into()
+    };
+    let mut all = serde_json::Map::new();
+    for s in servers {
+        let mut entry = if s.remote {
+            json!({ "url": s.target })
+        } else {
+            json!({ "command": s.target, "args": s.args })
+        };
+        if s.remote {
+            if !s.headers.is_empty() {
+                entry["http_headers"] = map(&s.headers);
+            }
+            if !s.header_vars.is_empty() {
+                entry["env_http_headers"] = map(&s.header_vars);
+            }
+        } else {
+            if !s.env.is_empty() {
+                entry["env"] = map(&s.env);
+            }
+            if !s.env_vars.is_empty() {
+                // Same name: the variable the server reads is the one the process has.
+                entry["env_vars"] = s.env_vars.iter().map(|(_, var)| json!(var)).collect();
+            }
+        }
+        all.insert(s.name.clone(), entry);
+    }
+    Value::Object(all)
+}
+
 /// What to run for `op`, with Codex's own commands: `codex mcp`, `codex plugin`, and for a
 /// skill's state the app-server, which only answers while its stdin is open.
 pub(crate) fn op(op: &ExtensionOp) -> Option<ProgramRun> {

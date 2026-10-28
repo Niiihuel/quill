@@ -19,6 +19,8 @@ quill-browser = { path = "../quill-browser" }
 # The Files pane's listing and file operations, run on the disk.
 quill-files = { path = "../quill-files" }
 serde_json.workspace = true
+# The derive for global.rs's extensions.json.
+serde.workspace = true
 # Processes, pipes, one actor per session, and the $BROWSER bridge's unix socket.
 tokio = { version = "1", features = ["rt-multi-thread", "process", "io-util", "sync", "macros", "time", "net"] }
 # Sizing the images a message attaches: decode, resize, and JPEG (PNG, JPEG, GIF, WebP only);
@@ -32,5 +34,8 @@ ureq = "3"
 resvg = { version = "0.48.1", default-features = false }
 # Request ids, as the agent receives them for each prompt.
 uuid = { version = "1", features = ["v4"] }
+# The system keychain (Secret Service on Linux) where the secrets of "All agents" servers live,
+# so they reach the agent only as environment variables (global.rs, docs/agents.md).
+keyring = { version = "3", default-features = false, features = ["async-secret-service", "tokio", "crypto-rust", "apple-native", "windows-native"] }
 # Stopping a dev server's whole process group (kill with a negative pid).
 libc = "0.2"

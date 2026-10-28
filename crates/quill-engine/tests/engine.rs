@@ -1381,3 +1381,221 @@ fn a_codex_session_is_told_its_skills_once_it_is_ready() {
     };
     assert!(skills.iter().any(|s| s.name == "review"));
 }
+
+/// quill's "All agents" layer: kept (and written) before it is announced, shadowed by an agent's
+/// own server of the same name, added to the sessions of the agents that can use it with the
+/// secret only in the process's environment, and excluded per agent.
+#[test]
+fn global_servers_are_kept_then_injected_per_session_with_secrets_only_in_the_environment() {
+    use quill_model::{Applies, GlobalOp, GlobalServer, GlobalVar};
+    let dir = workdir("simple");
+    let config_dir = std::env::temp_dir().join(format!("quill-global-{}", uuid_like()));
+    let file = config_dir.join("quill/extensions.json");
+    let link = |program: &str| {
+        let path = dir.join(program);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_fake-agent"), &path).unwrap();
+        path.display().to_string()
+    };
+    let (tx, rx) = channel();
+    let config = quill_engine::Config {
+        programs: HashMap::from([
+            ("claude".to_string(), link("fake-claude")),
+            ("codex".to_string(), link("fake-codex")),
+        ]),
+        extensions: Some(file.clone()),
+        secrets: Some(std::sync::Arc::new(quill_engine::MemorySecrets::default())),
+        ..Default::default()
+    };
+    let engine = Engine::start_with(move |event| drop(tx.send(event)), config);
+    let var = |key: &str, value: &str, secret| GlobalVar {
+        key: key.into(),
+        value: Some(value.into()),
+        secret,
+    };
+    let server = |name: &str| GlobalServer {
+        name: name.into(),
+        target: "npx".into(),
+        args: vec!["-y".into(), "tool".into()],
+        env: vec![
+            var("GITHUB_TOKEN", "ghp_topsecret", true),
+            var("LOG", "warn", false),
+        ],
+        ..Default::default()
+    };
+    let global = |rx: &Receiver<Event>| match until(rx, |e| matches!(e, Event::Global(_))).pop() {
+        Some(Event::Global(state)) => state,
+        _ => unreachable!(),
+    };
+    // Written before announced, and without the secret.
+    engine.send(Intent::Global(GlobalOp::SetServer(server("github"))));
+    let state = global(&rx);
+    let text = std::fs::read_to_string(&file).expect("written before the event");
+    assert!(
+        !text.contains("ghp_topsecret") && state.error.is_none(),
+        "{text} {state:?}"
+    );
+    engine.send(Intent::Global(GlobalOp::SetServer(server("extra"))));
+    global(&rx);
+    // Claude lists a "github" of its own: it wins, and "extra" is still added.
+    engine.send(Intent::Servers {
+        agent: "claude".into(),
+        folder: dir.clone(),
+    });
+    let state = global(&rx);
+    let how = |state: &quill_model::GlobalState, agent: &str, name: &str| {
+        (state.applied.iter())
+            .find(|a| a.agent == agent && a.name == name)
+            .map(|a| a.applies.clone())
+    };
+    assert_eq!(how(&state, "claude", "github"), Some(Applies::Replaced));
+    assert_eq!(how(&state, "claude", "extra"), Some(Applies::Active));
+    assert_eq!(how(&state, "codex", "github"), Some(Applies::Active));
+    // Per-agent exclusion.
+    engine.send(Intent::Global(GlobalOp::Use {
+        skill: false,
+        name: "extra".into(),
+        agent: "codex".into(),
+        on: false,
+    }));
+    assert_eq!(how(&global(&rx), "codex", "extra"), Some(Applies::Excluded));
+    // A Claude session gets "extra" in --mcp-config with only the variable's name, and the
+    // value in its environment; "github" (its own wins) is not added.
+    engine.send(Intent::NewSession(NewSession {
+        agent: "claude".into(),
+        cwd: dir.clone(),
+        model: None,
+        effort: None,
+        mode: None,
+    }));
+    engine.send(Intent::Send {
+        session: 1,
+        text: "hi".into(),
+        mentions: vec![],
+        images: vec![],
+        lane: Lane::Steer,
+    });
+    until(&rx, |e| {
+        matches!(
+            e,
+            Event::Agent {
+                event: AgentEvent::TurnFinished { .. },
+                ..
+            }
+        )
+    });
+    let launched = std::fs::read_to_string(dir.join(".fake-launch")).unwrap();
+    let config = launched
+        .lines()
+        .skip_while(|l| *l != "--mcp-config")
+        .nth(1)
+        .unwrap();
+    assert!(config.contains("${QUILL_MCP_EXTRA_GITHUB_TOKEN}") && !config.contains("\"github\""));
+    assert!(!launched
+        .lines()
+        .any(|l| l.starts_with("--") && l.contains("topsecret")));
+    assert!(!config.contains("topsecret"));
+    assert!(
+        launched.contains("QUILL_MCP_EXTRA_GITHUB_TOKEN=ghp_topsecret"),
+        "{launched}"
+    );
+    let _ = std::fs::remove_dir_all(config_dir);
+}
+
+/// Global skills live in quill's folder; a session gets them through a plugin (Claude) or an
+/// extra root (Codex), and an agent's own skill of the same name wins.
+#[test]
+fn global_skills_are_made_and_added_to_the_session() {
+    use quill_model::{Applies, GlobalOp};
+    let dir = workdir("simple");
+    let config_dir = std::env::temp_dir().join(format!("quill-global-{}", uuid_like()));
+    let (tx, rx) = channel();
+    let engine = Engine::start_with(
+        move |event| drop(tx.send(event)),
+        quill_engine::Config {
+            programs: HashMap::from([(
+                "claude".to_string(),
+                env!("CARGO_BIN_EXE_fake-agent").to_string(),
+            )]),
+            extensions: Some(config_dir.join("quill/extensions.json")),
+            secrets: Some(std::sync::Arc::new(quill_engine::MemorySecrets::default())),
+            ..Default::default()
+        },
+    );
+    let global = |rx: &Receiver<Event>| match until(rx, |e| matches!(e, Event::Global(_))).pop() {
+        Some(Event::Global(state)) => state,
+        _ => unreachable!(),
+    };
+    for name in ["release-notes", "review"] {
+        engine.send(Intent::Global(GlobalOp::NewSkill {
+            name: name.into(),
+            description: format!("The {name} skill"),
+        }));
+        assert!(global(&rx).error.is_none());
+    }
+    assert!(global_skill_file(&config_dir, "release-notes"));
+    engine.send(Intent::Global(GlobalOp::NewSkill {
+        name: "Bad".into(),
+        description: String::new(),
+    }));
+    assert!(global(&rx).error.is_some());
+    // Claude lists a "review" of its own.
+    engine.send(Intent::Extensions {
+        agent: "claude".into(),
+        folder: dir.clone(),
+    });
+    let state = global(&rx);
+    let how = |name: &str| {
+        (state.applied.iter())
+            .find(|a| a.skill && a.name == name)
+            .map(|a| a.applies.clone())
+    };
+    assert_eq!(
+        (how("review"), how("release-notes")),
+        (Some(Applies::Replaced), Some(Applies::Active))
+    );
+    engine.send(Intent::NewSession(NewSession {
+        agent: "claude".into(),
+        cwd: dir.clone(),
+        model: None,
+        effort: None,
+        mode: None,
+    }));
+    engine.send(Intent::Send {
+        session: 1,
+        text: "hi".into(),
+        mentions: vec![],
+        images: vec![],
+        lane: Lane::Steer,
+    });
+    until(&rx, |e| {
+        matches!(
+            e,
+            Event::Agent {
+                event: AgentEvent::TurnFinished { .. },
+                ..
+            }
+        )
+    });
+    let launched = std::fs::read_to_string(dir.join(".fake-launch")).unwrap();
+    let plugin = launched
+        .lines()
+        .skip_while(|l| *l != "--plugin-dir")
+        .nth(1)
+        .unwrap();
+    assert!(plugin.ends_with("injected/claude"), "{plugin}");
+    assert!(std::path::Path::new(plugin)
+        .join("skills/release-notes/SKILL.md")
+        .is_file());
+    assert!(!std::path::Path::new(plugin).join("skills/review").exists());
+    assert!(std::path::Path::new(plugin)
+        .join(".claude-plugin/plugin.json")
+        .is_file());
+    let _ = std::fs::remove_dir_all(config_dir);
+}
+
+fn global_skill_file(config_dir: &std::path::Path, name: &str) -> bool {
+    config_dir
+        .join(format!("quill/skills/{name}/SKILL.md"))
+        .is_file()
+}

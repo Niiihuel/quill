@@ -151,6 +151,8 @@ pub const SETTINGS_CONNECTORS: &str = "connectors";
 /// (`{SRV_FIELD}name`, `target`, `env`, `headers`).
 pub const SRV_SEARCH: &str = "srv-search";
 pub const SRV_FIELD: &str = "srv-field:";
+/// The fields of the dialogs that make or import a skill for "All agents".
+pub const GSK_FIELD: &str = "gsk-field:";
 /// Customize's question before removing, and the marketplace's field (`{id}{agent}`).
 pub const EXT_REMOVE_YES: &str = "ext-remove:yes";
 pub const EXT_REMOVE_NO: &str = "ext-remove:no";
@@ -583,6 +585,7 @@ pub fn view(store: &Store, ui: &Ui, window: Size) -> Element {
     let root = directory_dialog(ui, root, window, palette);
     let root = marketplace_dialog(ui, root, palette);
     let root = server_dialog(ui, root, palette);
+    let root = skill_dialog(ui, root, palette);
     let root = crate::updates::dialogs(ui, root, palette);
     let root = crate::account::dialogs(ui, root);
     let root = crate::github::dialogs(ui, root);
@@ -9769,10 +9772,9 @@ fn connectors_page(ui: &Ui, window: Size) -> Element {
     let mut column = vec![header, Element::spacer().size(None, Some(13.0))];
     let failed = |words: String| text(words).font_size(BODY).foreground(look::failed());
     if !c.discover {
-        for (at, agent) in ui.agents.iter().enumerate() {
-            if at > 0 {
-                column.push(Element::spacer().size(None, Some(16.0)));
-            }
+        column.extend(global_section(ui, false, width));
+        for agent in ui.agents.iter() {
+            column.push(Element::spacer().size(None, Some(16.0)));
             let listed = c.listed.get(&agent.id);
             let servers = listed.and_then(|l| l.servers.as_ref());
             column.push(customize::agent_heading(
@@ -9929,8 +9931,37 @@ fn server_dialog(ui: &Ui, base: Element, palette: ComponentPalette) -> Element {
     };
     let label = |words: &str| text(words).font_size(BODY);
     let note = |words: &str| muted(words).font_size(SMALL);
-    let mut body = vec![
-        note("Make sure you trust a server before you add it: it runs on this computer."),
+    let mut body = vec![note(
+        "Make sure you trust a server before you add it: it runs on this computer.",
+    )];
+    // For which agents: its own program adds it to its own config, which the terminal sees too;
+    // "All agents" is quill's, added to each session.
+    body.push(label("Add to"));
+    let mut targets = vec![keyed_button(
+        "srv:to:*",
+        "All agents",
+        "",
+        adding.all,
+        true,
+        palette,
+    )];
+    targets.extend(ui.agents.iter().map(|agent| {
+        keyed_button(
+            &format!("srv:to:{}", agent.id),
+            &agent.name,
+            "",
+            !adding.all && adding.agents.contains(&agent.id),
+            true,
+            palette,
+        )
+    }));
+    body.push(Element::row(targets).gap(8.0).wrap().max_width(460.0));
+    body.push(note(if adding.all {
+        "quill adds it to each session, so the agents\u{2019} own files stay as they are."
+    } else {
+        "Each one adds it with its own command, so it shows in its terminal too."
+    }));
+    body.extend(vec![
         label("Name"),
         field("name", &adding.name, "my-server"),
         label("Address or command"),
@@ -9942,38 +9973,50 @@ fn server_dialog(ui: &Ui, base: Element, palette: ComponentPalette) -> Element {
         note("An https:// address, or the command that starts it with its arguments."),
         label("Environment variables"),
         area("env", &adding.env, "KEY=value, one a line"),
-    ];
-    if adding.target.trim_start().starts_with("http") {
+    ]);
+    let remote = adding.target.trim_start().starts_with("http");
+    if remote {
         body.push(label("Headers"));
         body.push(area("headers", &adding.headers, "Name: value, one a line"));
     }
-    // For which agents: its own program adds it to its own config, which the terminal sees too.
-    body.push(label("Add to"));
-    body.push(
-        Element::row(
-            ui.agents
-                .iter()
-                .map(|agent| {
-                    keyed_button(
-                        &format!("srv:to:{}", agent.id),
-                        &agent.name,
-                        "",
-                        adding.agents.contains(&agent.id),
-                        true,
-                        palette,
-                    )
-                })
-                .collect(),
-        )
-        .gap(8.0)
-        .wrap()
-        .max_width(460.0),
-    );
-    body.push(note(
-        "Each one adds it with its own command, so it shows in its terminal too.",
-    ));
+    // A secret is kept in the system's keychain and reaches the agent only as a variable of
+    // its process: only quill's own layer has them.
+    if adding.all {
+        body.push(label("Secret variables"));
+        body.push(area(
+            "secret-env",
+            &adding.secret_env,
+            "KEY=value, one a line",
+        ));
+        if remote {
+            body.push(label("Secret headers"));
+            body.push(area(
+                "secret-headers",
+                &adding.secret_headers,
+                "Name: value, one a line",
+            ));
+            body.push(Element::row(vec![keyed_button(
+                "srv:sse",
+                "Older SSE transport",
+                "",
+                adding.sse,
+                true,
+                palette,
+            )]));
+        }
+        let kept = if ui.global.keychain {
+            "Secrets are kept in the system keychain, not in a file."
+        } else {
+            "The system keychain isn\u{2019}t answering: secrets can\u{2019}t be kept."
+        };
+        body.push(note(kept));
+    }
     // Where it goes in each of them, in that agent's words.
-    for agent in ui.agents.iter().filter(|a| adding.agents.contains(&a.id)) {
+    for agent in ui
+        .agents
+        .iter()
+        .filter(|a| !adding.all && adding.agents.contains(&a.id))
+    {
         let scopes = (ui.connectors.listed.get(&agent.id)).map_or(&[][..], |l| &l.scopes[..]);
         if scopes.len() < 2 {
             continue;
@@ -10035,6 +10078,174 @@ fn server_dialog(ui: &Ui, base: Element, palette: ComponentPalette) -> Element {
     .backdrop_dismiss(true)
     .scrim(look::scrim())
     .render()
+}
+
+/// The "All agents" section of Connectors (`skills` false) or Skills: quill's own items, with
+/// how each agent treats each (docs/agents.md "All agents"). Nothing while there are none and
+/// only one agent: it would say nothing the agent's own section does not.
+fn global_section(ui: &Ui, skills: bool, width: f32) -> Option<Element> {
+    use quill_components::customize::{self, Standing};
+    use quill_model::Applies;
+    let g = &ui.global;
+    let names: Vec<(&str, String, &[String])> = if skills {
+        (g.skills.iter())
+            .map(|s| (s.name.as_str(), cut(&s.description, 200), &s.except[..]))
+            .collect()
+    } else {
+        (g.servers.iter())
+            .map(|s| {
+                let mut target = vec![s.target.clone()];
+                target.extend(s.args.iter().cloned());
+                (s.name.as_str(), target.join(" "), &s.except[..])
+            })
+            .collect()
+    };
+    let mut column = vec![customize::agent_heading(
+        icons::GLOBE,
+        "All agents",
+        Some(names.len()),
+        width,
+    )];
+    if let Some(error) = &g.error {
+        column.push(
+            text(format!("Couldn\u{2019}t do that. {error}"))
+                .font_size(BODY)
+                .foreground(look::failed()),
+        );
+    }
+    if names.is_empty() {
+        column.push(customize::empty(
+            if skills { icons::FILE } else { icons::PLUG },
+            if skills {
+                "No skills for all agents yet. quill adds them to each session."
+            } else {
+                "No connectors for all agents yet. Add one with \u{201c}All agents\u{201d}."
+            },
+            width,
+        ));
+    }
+    let kind = if skills { "skill" } else { "server" };
+    for (name, words, _) in &names {
+        let mut notes = vec![];
+        let mut marks = vec![];
+        let mut entries: Vec<limn::DropdownMenuEntry> = vec![];
+        for agent in &ui.agents {
+            let how = (g.applied.iter())
+                .find(|a| a.skill == skills && a.name == *name && a.agent == agent.id)
+                .map(|a| a.applies.clone());
+            let (standing, why) = match how {
+                Some(Applies::Excluded) => (Standing::Off, format!("Off in {}", agent.name)),
+                Some(Applies::Replaced) => (
+                    Standing::Replaced,
+                    format!("Replaced in {}: it has its own {name}", agent.name),
+                ),
+                Some(Applies::Refused(why)) => (Standing::Refused, why),
+                _ => (Standing::On, format!("Used in {}", agent.name)),
+            };
+            match standing {
+                Standing::Off => notes.push(format!("off in {}", agent.name)),
+                Standing::Replaced => notes.push(format!("replaced in {}", agent.name)),
+                Standing::Refused => notes.push(format!("not in {}", agent.name)),
+                Standing::On => {}
+            }
+            marks.push((icons::agent(agent.icon.as_deref()), why, standing));
+            entries.push(
+                limn::DropdownMenuItem::new(
+                    format!("glob:use:{kind}:{name}:{}", agent.id),
+                    format!("Use in {}", agent.name),
+                )
+                .radio(standing != Standing::Off)
+                .into(),
+            );
+        }
+        entries.push(limn::DropdownMenuEntry::Separator);
+        entries.push(
+            limn::DropdownMenuItem::new(format!("glob:remove:{kind}:{name}"), "Remove")
+                .icon(icons::of(icons::CLOSE))
+                .destructive(look::failed())
+                .into(),
+        );
+        let menu = format!("cz:more:glob:{kind}:{name}");
+        let open = ui.settings_menu.as_deref() == Some(menu.as_str());
+        let mut said = format!("from quill \u{b7} {words}");
+        if !notes.is_empty() {
+            said = format!("{} \u{b7} {}", capital(&notes.join(", ")), said);
+        }
+        column.push(customize::item(
+            if skills { icons::FILE } else { icons::PLUG },
+            name,
+            &said,
+            Some(customize::agent_standing(
+                &format!("glob:marks:{kind}:{name}"),
+                &marks,
+            )),
+            Some(customize::more(&menu, entries, open)),
+            width,
+        ));
+    }
+    Some(Element::column(column))
+}
+
+fn capital(words: &str) -> String {
+    let mut chars = words.chars();
+    chars
+        .next()
+        .map(|c| c.to_uppercase().collect::<String>() + chars.as_str())
+        .unwrap_or_default()
+}
+
+/// "New skill" and "Import skill" for "All agents".
+fn skill_dialog(ui: &Ui, base: Element, palette: ComponentPalette) -> Element {
+    use crate::SkillDialog;
+    let Some(dialog) = &ui.skill_dialog else {
+        return base;
+    };
+    let field = |key: &str, value: &str, hint: &str| {
+        limn::TextField::new(format!("{GSK_FIELD}{key}"), value, hint, palette)
+            .render()
+            .size(Some(460.0), Some(32.0))
+    };
+    let label = |words: &str| text(words).font_size(BODY);
+    let note = |words: &str| muted(words).font_size(SMALL);
+    let (title, body, ready) = match dialog {
+        SkillDialog::New { name, description } => (
+            "New skill",
+            vec![
+                label("Name"),
+                field("name", name, "my-skill"),
+                note("Lowercase words joined by dashes."),
+                label("Description"),
+                field(
+                    "description",
+                    description,
+                    "What it does, and when to use it",
+                ),
+            ],
+            !name.trim().is_empty(),
+        ),
+        SkillDialog::Import { path } => (
+            "Import skill",
+            vec![
+                label("Folder"),
+                field("path", path, "/home/you/skills/release-notes"),
+                note("A folder with a SKILL.md. quill keeps a copy."),
+            ],
+            !path.trim().is_empty(),
+        ),
+    };
+    let footer = Element::row(vec![
+        Element::spacer().flex(1.0),
+        keyed_button("glob:skill-cancel", "Cancel", "", false, true, palette),
+        keyed_button("glob:skill-save", "Add", "", true, ready, palette),
+    ])
+    .gap(8.0);
+    limn::Modal::new(base, true, title, "", "glob:skill-cancel", look::palette())
+        .width(520.0)
+        .body(Element::column(body).gap(8.0))
+        .footer(footer)
+        .backdrop_dismiss(true)
+        .scrim(look::scrim())
+        .render()
 }
 
 /// The agents an item is on, as logos at its end, when it is on in several: those where `on`
@@ -10119,20 +10330,34 @@ fn skills_page(ui: &Ui, window: Size) -> Element {
     let folder = crate::customize_folder(ui);
     let project = crate::is_project(&folder);
     let query = ui.customize_query.trim().to_lowercase();
+    let add_menu = format!("cz:add:{SETTINGS_SKILLS}");
+    let add = customize::menu_button(
+        customize::button(&add_menu, "Add", Some(icons::ADD), true, true),
+        &add_menu,
+        vec![
+            limn::DropdownMenuItem::new("glob:skill-new", "New skill for all agents")
+                .icon(icons::of(icons::ADD))
+                .into(),
+            limn::DropdownMenuItem::new("glob:skill-import", "Import a folder for all agents")
+                .icon(icons::of(icons::FILE))
+                .into(),
+        ],
+        ui.settings_menu.as_deref() == Some(add_menu.as_str()),
+    );
     let header = customize::header(
         "Skills",
         vec![],
         vec![
             customize::search(CZ_SEARCH, &ui.customize_query, "Search"),
             customize::folder_chip(PICK_FOLDER, &folder_name(&folder)),
+            add,
         ],
         width,
     );
     let mut column = vec![header, Element::spacer().size(None, Some(13.0))];
-    for (at, agent) in ui.agents.iter().enumerate() {
-        if at > 0 {
-            column.push(Element::spacer().size(None, Some(16.0)));
-        }
+    column.extend(global_section(ui, true, width));
+    for agent in ui.agents.iter() {
+        column.push(Element::spacer().size(None, Some(16.0)));
         let known = ui.extensions.get(&agent.id).filter(|k| k.loaded);
         column.push(customize::agent_heading(
             icons::agent(agent.icon.as_deref()),
@@ -11127,6 +11352,7 @@ fn mcp_dialog(
         // Desktop lists the account's connectors apart; quill names them (inferred).
         McpSource::Account => "Account",
         McpSource::App => "App",
+        McpSource::Global => "All agents",
         McpSource::Other => "Other",
     };
     let tools = |n: usize| match n {
