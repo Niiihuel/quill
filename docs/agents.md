@@ -71,7 +71,7 @@ El token no sale del llavero de `gh` (Linux, Windows y macOS); no se imprime ni 
 
 ## Extensiones por CLI (Skills, Plugins y Connectors)
 
-Customize muestra lo de **cada CLI por separado** y los cambios se hacen con los comandos propios de cada uno, así que quedan también en la terminal (decisión del dueño §9.1 de `scratchpad/extensions-per-cli.md`). La capa "All agents" (sección siguiente) es de quill y se inyecta por sesión. Lo que cada adaptador declara:
+Customize muestra lo de **cada CLI por separado** y los cambios se hacen con los comandos propios de cada uno, así que quedan también en la terminal (decisión del dueño §9.1 de [`extensiones.md`](extensiones.md)). La capa "All agents" (sección siguiente) es de quill y se inyecta por sesión. Lo que cada adaptador declara:
 
 | Concepto | Contrato | Claude Code 2.1.312 | Codex 0.163.0 |
 |---|---|---|---|
