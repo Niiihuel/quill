@@ -6135,3 +6135,32 @@ fn full_access_is_offered_once_allowed_even_before_any_codex_session() {
         .allow_unsafe = true;
     assert!(view::menu_modes(&store, None, &ui).contains(&"full-access".to_owned()));
 }
+
+#[test]
+fn one_agents_plan_limits_never_show_for_another() {
+    let mut store = Store::default();
+    for (session, agent) in [(1, "claude"), (2, "codex")] {
+        store.apply(Event::SessionCreated {
+            session,
+            agent: agent.into(),
+            cwd: "/work".into(),
+        });
+    }
+    let window = |utilization| quill_model::UsageWindow {
+        utilization,
+        resets_at: 0,
+    };
+    store.apply(Event::Agent {
+        session: 1,
+        request: None,
+        event: AgentEvent::Limits(quill_model::PlanLimits {
+            session: Some(window(0.6)),
+            weekly: None,
+        }),
+    });
+    let mut ui = Ui::new("/work".into());
+    ui.selected = Some(1);
+    assert!(view::agent_limits(&store, &ui).is_some());
+    ui.selected = Some(2);
+    assert!(view::agent_limits(&store, &ui).is_none());
+}

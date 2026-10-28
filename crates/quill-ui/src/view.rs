@@ -6814,11 +6814,18 @@ fn usage_row(label: &str, detail: String, share: f32, width: f32, muted_label: b
     .gap(8.0)
 }
 
+/// The plan limits of the agent in view: the open session's, else the one a new session runs.
+pub(crate) fn agent_limits(store: &Store, ui: &Ui) -> Option<quill_model::PlanLimits> {
+    let session = ui.selected.and_then(|id| store.session(id));
+    let agent = session.map_or(ui.agent.as_str(), |s| s.agent.as_str());
+    store.limits_by_agent.get(agent).copied()
+}
+
 /// The usage ring and its popover: the context window, then the plan's session
 /// and weekly limits with when they reset, from what the agent reports.
 fn usage_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
     let open = ui.open_menu == Some(USAGE_MENU);
-    let limits = store.limits.unwrap_or_default();
+    let limits = agent_limits(store, ui).unwrap_or_default();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
@@ -8310,7 +8317,7 @@ fn right_panel(
 /// threads.com/@testingcatalog/post/DdutukbgswG): each plan window's name and share, when
 /// it resets, and its bar. `None` until the agent reported its limits.
 fn usage_rows(store: &Store, ui: &Ui, width: f32) -> Option<Vec<Element>> {
-    let limits = store.limits?;
+    let limits = agent_limits(store, ui)?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());

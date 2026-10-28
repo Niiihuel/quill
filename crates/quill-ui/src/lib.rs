@@ -223,10 +223,8 @@ impl Session {
 #[derive(Default)]
 pub struct Store {
     pub sessions: Vec<Session>,
-    /// The plan's usage windows, as the agent last reported them; they are the person's,
-    /// not one session's.
-    pub limits: Option<quill_model::PlanLimits>,
-    /// The same, by the agent whose session reported them: Settings' Accounts page.
+    /// The plan's usage windows, as each agent last reported them: the person's, not one
+    /// session's, and never one agent's shown for another (each has its own plan).
     pub limits_by_agent: std::collections::HashMap<String, quill_model::PlanLimits>,
     /// Counts the events applied, so a session knows when it last changed.
     pub clock: u64,
@@ -365,7 +363,6 @@ impl Store {
                 if let Some(agent) = self.session(session).map(|s| s.agent.clone()) {
                     self.limits_by_agent.insert(agent, limits);
                 }
-                self.limits = Some(limits);
             }
             Event::Agent { session, event, .. } => {
                 if let Some(s) = self.session_mut(session) {
