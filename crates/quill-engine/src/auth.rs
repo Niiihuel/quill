@@ -218,18 +218,13 @@ pub(crate) fn login(
     tx
 }
 
-/// The page in the person's browser, the way an MCP server's sign-in page opens: with
-/// whatever `xdg-open` is on `PATH`.
+/// The page in the person's browser, the way an MCP server's sign-in page opens, on any of
+/// the three systems.
 fn open(url: &str) {
     if !url.starts_with("https://") {
         return;
     }
-    let _ = std::process::Command::new("xdg-open")
-        .arg(url)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
+    let _ = quill_files::open_in_system(url);
 }
 
 #[cfg(test)]

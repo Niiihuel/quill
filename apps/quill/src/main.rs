@@ -1424,17 +1424,7 @@ fn first_name() -> Option<String> {
 /// an address, on Linux, Windows and macOS alike.
 fn open_external(target: impl AsRef<std::ffi::OsStr>) {
     let target = target.as_ref();
-    let command = if cfg!(target_os = "windows") {
-        // `start`'s first quoted word is a window title; the empty one leaves the target alone.
-        std::process::Command::new("cmd")
-            .args(["/C", "start", ""])
-            .arg(target)
-            .spawn()
-    } else if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg(target).spawn()
-    } else {
-        std::process::Command::new("xdg-open").arg(target).spawn()
-    };
+    let command = quill_files::open_in_system(target);
     if let Err(error) = command {
         eprintln!(
             "quill: could not open {}: {error}",
@@ -1488,6 +1478,8 @@ fn wait_for_restarter() {
 
 fn open_url(url: &str) -> bool {
     use std::io::{BufRead, Write};
+    // The bridge to quill's own browser is a Unix socket; elsewhere the system opens it.
+    #[cfg(unix)]
     let handed = (|| -> Option<bool> {
         let socket = std::env::var_os("QUILL_BROWSER_BRIDGE")?;
         let key = std::env::var("QUILL_BROWSER_KEY").ok()?;
@@ -1501,10 +1493,11 @@ fn open_url(url: &str) -> bool {
         Some(reply.trim() == "pane")
     })()
     .unwrap_or(false);
+    #[cfg(not(unix))]
+    let handed = false;
     handed
-        || std::process::Command::new("xdg-open")
-            .arg(url)
-            .status()
+        || quill_files::open_in_system(url)
+            .and_then(|mut opener| opener.wait())
             .is_ok_and(|status| status.success())
 }
 
@@ -1532,12 +1525,14 @@ fn open_in_editor(
         // default handler set; without one, the desktop's.
         let command = handler
             .map(|exec| editors::command(exec, &url))
-            .filter(|c| !c.is_empty())
-            .unwrap_or_else(|| vec!["xdg-open".into(), url]);
-        if let Err(error) = std::process::Command::new(&command[0])
-            .args(&command[1..])
-            .spawn()
-        {
+            .filter(|c| !c.is_empty());
+        let opened = match command {
+            Some(command) => std::process::Command::new(&command[0])
+                .args(&command[1..])
+                .spawn(),
+            None => quill_files::open_in_system(url),
+        };
+        if let Err(error) = opened {
             eprintln!("quill: {editor} did not open: {error}");
         }
         return;

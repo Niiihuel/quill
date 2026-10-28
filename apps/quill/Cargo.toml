@@ -18,6 +18,8 @@ quill-engine = { path = "../../crates/quill-engine" }
 quill-update = { path = "../../crates/quill-update" }
 # The platform's own folder dialog, through the desktop portal (no GTK linked in).
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+# Opens a page, file or folder the way each system does (Linux, Windows, macOS).
+quill-files = { path = "../../crates/quill-files" }
 quill-pty = { path = "../../crates/quill-pty" }
 # The browser's frames, handed to egui as its own pixels without a copy (already in the tree).
 bytemuck = { version = "1", features = ["extern_crate_alloc"] }

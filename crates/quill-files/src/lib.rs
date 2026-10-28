@@ -348,6 +348,26 @@ fn move_without_replacing(source: &Path, target: &Path) -> io::Result<()> {
     fs::rename(source, target)
 }
 
+/// A page, a file or a folder in what the computer opens it with (its default browser for an
+/// address), on Linux, Windows and macOS alike. Windows goes through `rundll32`, not
+/// `cmd /C start`: cmd would split a sign-in address at its `&`.
+pub fn open_in_system(target: impl AsRef<std::ffi::OsStr>) -> std::io::Result<std::process::Child> {
+    let (program, args): (&str, &[&str]) = if cfg!(target_os = "windows") {
+        ("rundll32", &["url.dll,FileProtocolHandler"])
+    } else if cfg!(target_os = "macos") {
+        ("open", &[])
+    } else {
+        ("xdg-open", &[])
+    };
+    std::process::Command::new(program)
+        .args(args)
+        .arg(target)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

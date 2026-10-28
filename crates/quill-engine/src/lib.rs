@@ -2688,12 +2688,7 @@ impl Actor {
                 // A server's sign-in page opens in the person's browser, as Desktop opens it
                 // (2.9939.4 `ce38f2fa6`); only a secure address.
                 AgentEvent::McpSignIn { url: Some(url), .. } if url.starts_with("https://") => {
-                    let _ = Command::new("xdg-open")
-                        .arg(url)
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .spawn();
+                    let _ = quill_files::open_in_system(url);
                 }
                 _ => {}
             }

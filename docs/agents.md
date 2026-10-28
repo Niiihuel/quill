@@ -51,6 +51,6 @@ El adaptador declara cómo se conecta la persona; el motor corre esos comandos f
 | Logout | `logout_run()` | `auth logout` (cierra también la sesión del CLI en la terminal) |
 | Turno sin sesión | `AgentEvent::AuthRequired` | `assistant` con `error: "authentication_failed"` antes del `result` |
 
-El motor abre la URL con `xdg-open` (como la de un servidor MCP) y lanza el login con `BROWSER=true` para que el CLI no abra otra pestaña. El estado se pregunta con el mismo entorno que las sesiones (las variables del agente en Settings incluidas): con `ANTHROPIC_API_KEY` el CLI dice `api_key`. Cancelar mata el proceso hijo por su PID.
+El motor abre la URL con `quill_files::open_in_system` (como la de un servidor MCP: `xdg-open` en Linux, `open` en macOS, `rundll32 url.dll,FileProtocolHandler` en Windows) y lanza el login con `BROWSER=true` para que el CLI no abra otra pestaña. El estado se pregunta con el mismo entorno que las sesiones (las variables del agente en Settings incluidas): con `ANTHROPIC_API_KEY` el CLI dice `api_key`. Cancelar mata el proceso hijo por su PID.
 
 Codex 0.163.0 (verificado, ver [codex.md](codex.md)): un solo método, `chatgpt` "ChatGPT account"; `auth_query` es `login status` (escribe en stderr, el motor entrega el texto de la salida que tenga algo), `login` imprime la URL en stderr y vuelve por un servidor local, sin código; `logout` es `logout`. `--device-auth` no se ofrece: pide escribir un código que quill no muestra.

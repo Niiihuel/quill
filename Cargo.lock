@@ -3477,6 +3477,7 @@ dependencies = [
  "limn-egui",
  "quill-components",
  "quill-engine",
+ "quill-files",
  "quill-link",
  "quill-model",
  "quill-pty",

@@ -604,7 +604,7 @@ impl eframe::App for App {
         }
         // A link of a preview to the web, in the desktop's browser.
         if let Some(url) = self.ide.open_url.take() {
-            let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+            let _ = quill_files::open_in_system(url);
         }
         if let Some(row) = self.ide.reveal_row.take() {
             self.tree.reveal(&row);
