@@ -6,8 +6,8 @@
 
 use crate::view::ago;
 use crate::{icons, Store, Ui};
-use limn::{Component, ComponentPalette, Element, FontFamily};
-use quill_components::look::{self, BODY, SMALL};
+use limn::{Component, ComponentPalette, Element};
+use quill_components::look::{self, BODY};
 use quill_components::pieces::{hgap, icon_tool, keyed_button, muted, text};
 use quill_components::settings::{setting, setting_switch, Setting};
 use quill_model::{Event, Intent, SessionStatus, UpdateState};
@@ -130,16 +130,13 @@ pub(crate) fn sidebar_strip(ui: &Ui, palette: ComponentPalette) -> Option<Elemen
     };
     let mut row = vec![
         hgap(0.0),
+        // Set as the sidebar's own rows ("New", "Search"): a 16 px icon in the text's color,
+        // the label in the body face, what follows muted at 12.
         Element::icon(icons::of(icons::RELOAD))
-            .foreground(look::muted())
-            .size(Some(14.0), Some(14.0))
+            .foreground(look::palette().text)
+            .size(Some(16.0), Some(16.0))
             .centered_y(),
-        // The wait's longer words take the small size, to leave the cancel its room.
-        if waiting {
-            text(label).font_size(SMALL).centered_y()
-        } else {
-            text(label).font_family(FontFamily::SansMedium).centered_y()
-        },
+        text(label).centered_y(),
         Element::spacer().flex(1.0),
     ];
     let strip = if waiting {
@@ -152,14 +149,14 @@ pub(crate) fn sidebar_strip(ui: &Ui, palette: ComponentPalette) -> Option<Elemen
         ));
         row.push(hgap(3.0));
         Element::row(row)
-            .gap(6.0)
+            .gap(10.0)
             .size(None, Some(32.0))
             .background(look::row_hover())
             .radius(8.0)
     } else {
-        row.push(muted(format!("v{version}")).centered_y());
+        row.push(muted(format!("v{version}")).font_size(12.0).centered_y());
         row.push(hgap(0.0));
-        let row = Element::row(row).gap(8.0).size(None, Some(32.0));
+        let row = Element::row(row).gap(10.0).size(None, Some(32.0));
         let surface = ComponentPalette {
             hover: look::tool_hover(),
             ..palette
