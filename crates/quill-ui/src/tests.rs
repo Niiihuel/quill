@@ -911,6 +911,36 @@ fn a_helper_agent_keeps_its_steps_and_counts_as_running_work() {
         running: true,
     };
     assert_eq!(view::group_summary(&[step]), "Listing files in folder");
+    let none = serde_json::json!({});
+    let planning = view::Step {
+        call: "p1",
+        name: "EnterPlanMode",
+        input: &none,
+        result: None,
+        running: true,
+    };
+    assert_eq!(view::group_summary(&[planning]), "Making a plan");
+    let stopped = ToolResult {
+        output: "Successfully stopped task: b7 (npm run dev)".into(),
+        is_error: false,
+        added: 0,
+        removed: 0,
+        files: vec![],
+        stopped: false,
+        web: None,
+    };
+    let stop = view::Step {
+        call: "k1",
+        name: "KillShell",
+        input: &none,
+        result: Some(&stopped),
+        running: false,
+    };
+    assert_eq!(view::group_summary(&[stop]), "Stopped task npm run dev");
+    let read = "<status>completed</status>\n<exit_code>0</exit_code>\n<stdout>\nready\n</stdout>";
+    assert_eq!(view::tagged(read, "stdout"), Some("ready"));
+    assert_eq!(view::tagged(read, "exit_code"), Some("0"));
+    assert_eq!(view::tagged(read, "stderr"), None);
     agent(
         &mut store,
         AgentEvent::TaskEnded {

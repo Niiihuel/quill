@@ -3997,7 +3997,7 @@ pub struct Step<'a> {
 pub fn is_task_tool(name: &str) -> bool {
     matches!(
         name,
-        "TodoWrite" | "TaskCreate" | "TaskUpdate" | "TaskGet" | "TaskList" | "TaskStop"
+        "TodoWrite" | "TaskCreate" | "TaskUpdate" | "TaskGet" | "TaskList"
     )
 }
 
@@ -4814,6 +4814,59 @@ fn step_label(step: &Step, done: bool) -> (String, String) {
         "Agent" | "Task" => ("Ran agent", "Running agent", said("description")),
         "Skill" => ("Ran skill", "Running skill", said("skill")),
         "ExitPlanMode" => ("Proposed plan", "Proposing plan", String::new()),
+        // The rest in Desktop's words (2.9939.4 `cb6930dae` `$a`, `ao`/`io`). What follows the
+        // verb is quill's where Desktop shows none (inferred): the server, the resource, the
+        // command stopped.
+        "EnterPlanMode" => ("Started planning", "Making a plan", String::new()),
+        "EnterWorktree" if input["path"].is_string() => {
+            ("Entered a worktree", "Entering a worktree", said("name"))
+        }
+        "EnterWorktree" => ("Created a worktree", "Creating a worktree", said("name")),
+        "ExitWorktree" => ("Left the worktree", "Leaving the worktree", String::new()),
+        // The CLI's older names for both, which old transcripts still hold.
+        "TaskOutput" | "BashOutput" | "AgentOutputTool" => {
+            ("Read task output", "Reading task output", String::new())
+        }
+        "TaskStop" | "KillShell" | "KillBash" => {
+            // "Successfully stopped task: <id> (<command>)" (CLI 2.1.312).
+            let output = step.result.map(|r| r.output.as_str()).unwrap_or_default();
+            let command = output
+                .split_once(" (")
+                .and_then(|(_, rest)| rest.strip_suffix(')'))
+                .unwrap_or_default();
+            ("Stopped task", "Stopping task", command.to_owned())
+        }
+        "Monitor" => (
+            "Started watching background command",
+            "Watching background command",
+            said("description"),
+        ),
+        "ListMcpResourcesTool" => ("Listed resources", "Listing resources", said("server")),
+        "ReadMcpResourceTool" => ("Read resource", "Reading resource", said("uri")),
+        "ReadMcpResourceDirTool" => (
+            "Listed resource folder",
+            "Listing resource folder",
+            said("uri"),
+        ),
+        "LSP" => ("Inspected code", "Inspecting code", String::new()),
+        "CronCreate" if input["recurring"] == false => {
+            ("Scheduled prompt", "Scheduling prompt", String::new())
+        }
+        "CronCreate" => ("Started loop", "Starting loop", String::new()),
+        "CronList" => (
+            "Listed scheduled prompts",
+            "Listing scheduled prompts",
+            String::new(),
+        ),
+        "CronDelete" => (
+            "Stopped scheduled prompt",
+            "Stopping scheduled prompt",
+            String::new(),
+        ),
+        "ScheduleWakeup" if input["stop"] == true => {
+            ("Stopped loop", "Stopping loop", String::new())
+        }
+        "ScheduleWakeup" => ("Scheduled check-in", "Scheduling check-in", said("reason")),
         // quill's own session tools, in Desktop's words (3.6556.2 `c96d752d0`, `dZe`).
         name if name.ends_with("sessions__start_session") => {
             if input["initiation"] == "own_initiative" {
@@ -4915,6 +4968,11 @@ pub fn group_summary(steps: &[Step]) -> String {
             }
             _ => others += 1,
         }
+    }
+    // A lone tool of no kind above says what it did: "Stopped task npm run dev".
+    if let ([step], 1) = (steps, others) {
+        let (verb, object) = step_label(step, true);
+        return format!("{verb} {object}").trim_end().to_owned();
     }
     let mut clauses: Vec<String> = files
         .into_iter()
@@ -5163,7 +5221,9 @@ fn step_row(
     palette: ComponentPalette,
 ) -> Element {
     let agent = matches!(step.name, "Agent" | "Task");
-    let open = !agent && is_open(view, ui, step.call);
+    // Entering plan mode says so and nothing more: its output is the CLI's word to the model.
+    let bare = step.name == "EnterPlanMode";
+    let open = !agent && !bare && is_open(view, ui, step.call);
     let done = !step.running && step.result.is_some_and(|r| !r.stopped);
     let (verb, object) = step_label(step, done);
     let mut line = vec![hgap(10.0), muted(verb).centered_y()];
@@ -5187,7 +5247,7 @@ fn step_row(
             line.push(muted("Stopped").centered_y());
         }
     }
-    if !agent {
+    if !agent && !bare {
         line.push(caret(open));
     }
     let row_palette = ComponentPalette {
@@ -5203,6 +5263,8 @@ fn step_row(
     // A helper's row opens its own pane, which Verbose leaves as it is.
     let line = if agent {
         Element::clickable(id, line)
+    } else if bare {
+        line
     } else {
         fold(view, id, line)
     };
@@ -5247,6 +5309,109 @@ fn step_body(step: &Step, ui: &Ui, inner: f32, palette: ComponentPalette) -> Ele
                 );
             }
         }
+        // A connector's resources as a list, each by its name over its address.
+        "ListMcpResourcesTool" | "ReadMcpResourceDirTool" => {
+            let output = result.map(|r| r.output.as_str()).unwrap_or_default();
+            // Not a list (none found, or an error): the CLI's own words.
+            let Ok(listed) = serde_json::from_str::<Vec<Value>>(output) else {
+                if !output.trim().is_empty() {
+                    body.push(muted(output.trim().to_owned()).size(Some(inner), None));
+                }
+                return Element::column(body);
+            };
+            let rows: Vec<Element> = listed
+                .iter()
+                .enumerate()
+                .flat_map(|(i, r)| {
+                    let uri = r["uri"].as_str().unwrap_or_default();
+                    let name = r["name"].as_str().unwrap_or(uri);
+                    let row = Element::column(vec![
+                        text(name.to_owned()).size(Some(inner - 24.0), None),
+                        mono(uri)
+                            .foreground(look::muted())
+                            .size(Some(inner - 24.0), None),
+                    ])
+                    .gap(2.0)
+                    .padding(12.0);
+                    let line = (i > 0).then(|| hline(inner, look::card_border()));
+                    line.into_iter().chain([row])
+                })
+                .collect();
+            if rows.is_empty() {
+                body.push(muted("No resources found"));
+            } else {
+                body.push(
+                    Element::panel(Element::column(rows))
+                        .background(palette.surface)
+                        .border(look::card_border(), 1.0)
+                        .radius(6.0)
+                        .size(Some(inner), None),
+                );
+            }
+        }
+        // A background command's output without the CLI's tags: "Running" or "Completed ·
+        // exit 0" over what it printed. The tags are the older CLI's, from memory: 2.1.312
+        // no longer has the tool (inferred).
+        "TaskOutput" | "BashOutput" | "AgentOutputTool"
+            if result.is_some_and(|r| tagged(&r.output, "status").is_some()) =>
+        {
+            let output = result.map(|r| r.output.as_str()).unwrap_or_default();
+            let mut status = tagged(output, "status").unwrap_or_default().to_owned();
+            if let Some(first) = status.get_mut(0..1) {
+                first.make_ascii_uppercase();
+            }
+            if let Some(code) = tagged(output, "exit_code") {
+                status = format!("{status} · exit {code}");
+            }
+            body.push(muted(status).font_size(SMALL));
+            let printed: Vec<&str> = ["output", "stdout", "stderr"]
+                .into_iter()
+                .filter_map(|tag| tagged(output, tag))
+                .filter(|s| !s.is_empty())
+                .collect();
+            if !printed.is_empty() {
+                body.push(
+                    OutputBlock::new(format!("out:{}", step.call), printed.join("\n"), palette)
+                        .render()
+                        .size(Some(inner), None),
+                );
+            }
+        }
+        // A resource read: its text, not the JSON it came in; a binary one by where it went.
+        "ReadMcpResourceTool" => {
+            let read: Value = result
+                .and_then(|r| serde_json::from_str(&r.output).ok())
+                .unwrap_or_default();
+            for (i, content) in read["contents"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
+                if let Some(saved) = content["blobSavedTo"].as_str() {
+                    body.push(muted(format!("Saved to {saved}")).font_size(SMALL));
+                } else if let Some(said) = content["text"].as_str() {
+                    body.push(
+                        OutputBlock::new(
+                            format!("out:{}:{i}", step.call),
+                            said.to_owned(),
+                            palette,
+                        )
+                        .render()
+                        .size(Some(inner), None),
+                    );
+                }
+            }
+            if read.is_null() {
+                if let Some(r) = result.filter(|r| !r.output.trim().is_empty()) {
+                    body.push(
+                        OutputBlock::new(format!("out:{}", step.call), r.output.clone(), palette)
+                            .render()
+                            .size(Some(inner), None),
+                    );
+                }
+            }
+        }
         _ => {
             let files = result.map(|r| r.files.as_slice()).unwrap_or_default();
             for file in files {
@@ -5287,6 +5452,13 @@ fn step_body(step: &Step, ui: &Ui, inner: f32, palette: ComponentPalette) -> Ele
         }
     }
     Element::column(body).gap(8.0)
+}
+
+/// What `<name>…</name>` holds in a tool's output, trimmed.
+pub fn tagged<'a>(output: &'a str, name: &str) -> Option<&'a str> {
+    let start = output.find(&format!("<{name}>"))? + name.len() + 2;
+    let end = output[start..].find(&format!("</{name}>"))? + start;
+    Some(output[start..end].trim_matches('\n').trim_end())
 }
 
 /// Two versions of a file as a bordered diff, up to 480 px high.
