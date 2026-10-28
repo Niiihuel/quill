@@ -2155,7 +2155,7 @@ impl Ui {
                 }
             }
         }
-        let ultra = view::effort_shown(store, self).as_deref() == Some("ultracode");
+        let ultra = view::effort_shown(store, self).is_some_and(|e| view::ultra_effort(&e));
         match (ultra, self.ultra_since) {
             (true, None) => self.ultra_since = Some(std::time::Instant::now()),
             (false, Some(_)) => self.ultra_since = None,
@@ -2167,24 +2167,18 @@ impl Ui {
     /// are the agent's default until Settings says otherwise.
     fn take_agent(&mut self, agent: &str) {
         self.agent = agent.to_owned();
-        self.model = None;
-        self.effort = None;
-        if let Some(info) = self.agents.iter().find(|a| a.id == agent) {
-            self.mode = info.default_mode.clone();
-        }
         self.take_defaults();
     }
 
-    /// What a new session starts with: the agent's defaults from Settings, where it has any.
+    /// What a new session starts with: the agent's defaults from Settings, else its own. All
+    /// three are set every time, so nothing chosen for another agent (or in another session)
+    /// carries over: a Claude model never reaches a Codex session.
     fn take_defaults(&mut self) {
         let defaults = self.settings.agent(&self.agent);
-        if let Some(model) = defaults.model {
-            self.model = Some(model);
-        }
-        if let Some(effort) = defaults.effort {
-            self.effort = Some(effort);
-        }
-        if let Some(mode) = defaults.mode {
+        self.model = defaults.model;
+        self.effort = defaults.effort;
+        let own = (self.agents.iter().find(|a| a.id == self.agent)).map(|a| a.default_mode.clone());
+        if let Some(mode) = defaults.mode.or(own) {
             self.mode = mode;
         }
     }

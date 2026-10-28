@@ -5720,3 +5720,42 @@ fn a_new_session_offers_the_models_its_agent_told_before_any_session() {
     });
     assert_eq!(view::offered_models(&store, None, &ui)[0].id, "gpt-6-luna");
 }
+
+#[test]
+fn a_new_codex_session_never_takes_a_claude_model() {
+    let store = Store::default();
+    let mut ui = Ui::new("/work".into());
+    let info = |id: &str, mode: &str| quill_model::AgentInfo {
+        id: id.into(),
+        name: id.into(),
+        tested: vec![],
+        options: vec![],
+        icon: None,
+        sign_in_methods: vec![],
+        sign_in_code: true,
+        modes: vec![],
+        default_mode: mode.into(),
+    };
+    ui.agents = vec![info("claude", "default"), info("codex", "auto")];
+    ui.settings.agents.insert(
+        "claude".into(),
+        quill_model::AgentSettings {
+            model: Some("haiku".into()),
+            effort: Some("ultracode".into()),
+            ..Default::default()
+        },
+    );
+    ui.agent = "claude".into();
+    click(&store, &mut ui, view::NEW_SESSION);
+    assert_eq!(ui.model.as_deref(), Some("haiku"));
+    click(&store, &mut ui, "agent:codex");
+    click(&store, &mut ui, view::NEW_SESSION);
+    assert_eq!((ui.model.as_deref(), ui.effort.as_deref()), (None, None));
+    assert_eq!(ui.mode, "auto");
+}
+
+#[test]
+fn both_programs_top_effort_is_drawn_alive() {
+    assert!(view::ultra_effort("ultracode") && view::ultra_effort("ultra"));
+    assert!(!view::ultra_effort("max"));
+}

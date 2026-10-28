@@ -7046,6 +7046,12 @@ pub(crate) fn agent_capabilities<'a>(
 }
 
 /// The models the menu lists: the session's agent's, for a new session the last session's,
+/// The stop past max that the slider draws alive: Claude Code's `ultracode` and Codex's
+/// `ultra` (model/list, account.jsonl:7) are the same top setting under each program's name.
+pub(crate) fn ultra_effort(effort: &str) -> bool {
+    matches!(effort, "ultracode" | "ultra")
+}
+
 /// and before any session of the agent what its program offered when asked.
 pub(crate) fn offered_models<'a>(
     store: &'a Store,
@@ -7358,7 +7364,7 @@ fn effort_menu(store: &Store, ui: &Ui) -> Element {
     let last = n.saturating_sub(1).max(1) as f32;
     let rest = if n > 1 { chosen as f32 / last } else { 0.5 };
     let recommended = efforts.iter().position(|e| e == "medium");
-    let ultra = efforts[shown] == "ultracode";
+    let ultra = ultra_effort(&efforts[shown]);
     let stop_x = |i: usize| {
         if n > 1 {
             i as f32 / last * EFFORT_TRAVEL
