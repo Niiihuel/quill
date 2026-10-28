@@ -66,15 +66,13 @@ mod transport {
         fs::create_dir_all(dir)
     }
 
-    /// 128 bits from the keys std seeds its hash maps with from the system.
+    /// Two v4 UUIDs: 244 bits from the system's secure random source.
     fn secret() -> String {
-        use std::hash::{BuildHasher, Hasher};
-        let word = || {
-            std::collections::hash_map::RandomState::new()
-                .build_hasher()
-                .finish()
-        };
-        format!("{:016x}{:016x}", word(), word())
+        format!(
+            "{}{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        )
     }
 
     pub fn bind(socket: &Path) -> io::Result<impl Iterator<Item = Stream>> {
