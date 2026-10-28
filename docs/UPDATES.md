@@ -284,6 +284,14 @@ compilar desde el código en `nix-shell` (y entonces esa copia no se actualiza
 sola) o usar [`nix-ld`](https://github.com/nix-community/nix-ld) con las mismas
 bibliotecas.
 
+## Portabilidad y CI
+
+`.github/workflows/check.yml` corre `cargo check --workspace --locked` en Windows y
+macOS en cada push a `main` y en cada PR, con `continue-on-error` hasta que ambos
+den verde una vez (después se saca). El job de release de Windows sigue apagado
+(`QUILL_WINDOWS_RELEASES`) y no hay job de macOS: ambas decisiones quedan para el
+dueño; el estado real de cada sistema está en [portabilidad.md](portabilidad.md).
+
 ## Windows
 
 **Artefacto**: `quill-x86_64-windows.exe`, el programa tal cual, en el manifiesto

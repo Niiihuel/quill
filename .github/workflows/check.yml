@@ -1,0 +1,54 @@
+# `cargo check` on Windows and macOS for every push and pull request, so a Unix-only
+# call that slips in shows up (docs/portabilidad.md). Not a release: nothing is built for
+# users here. continue-on-error until both come out green once; then remove it.
+name: Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  portable:
+    name: check on ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Windows, os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { name: macOS, os: macos-latest, target: aarch64-apple-darwin }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # limn is a path dependency (Cargo.toml): its branch, beside this checkout.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: Niiihuel/limn
+          ref: quill/integration
+          token: ${{ secrets.LIMN_READ_TOKEN || github.token }}
+          path: limn-quill-integration
+      - name: limn beside the workspace, where its path says
+        run: ln -s "$PWD/limn-quill-integration" ../limn-quill-integration
+      - uses: dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
+        with:
+          toolchain: 1.95.0
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # cef-dll-sys downloads the CEF build for the target when CEF_PATH is not set.
+      - run: cargo check --workspace --locked --target ${{ matrix.target }}
