@@ -745,7 +745,7 @@ fn steps_are_named_in_desktops_words() {
     let lines = line_diff("a\nb\nc\n", "a\nB\nc\n");
     let kinds: Vec<_> = lines.iter().map(|l| l.kind).collect();
     use limn::CodeDiffLineKind::*;
-    assert_eq!(kinds, [Context, Added, Removed, Context]);
+    assert_eq!(kinds, [Context, Removed, Added, Context]);
 }
 
 #[test]

@@ -5091,12 +5091,13 @@ pub fn line_diff(before: &str, after: &str) -> Vec<limn::CodeDiffLine> {
             lines.push(line(CodeDiffLineKind::Context, Some(i), Some(j), a[i]));
             i += 1;
             j += 1;
-        } else if j < b.len() && (i == a.len() || lcs[i][j + 1] >= lcs[i + 1][j]) {
-            lines.push(line(CodeDiffLineKind::Added, None, Some(j), b[j]));
-            j += 1;
-        } else {
+        // On a tie the removed line goes first, as a unified diff reads.
+        } else if i < a.len() && (j == b.len() || lcs[i + 1][j] >= lcs[i][j + 1]) {
             lines.push(line(CodeDiffLineKind::Removed, Some(i), None, a[i]));
             i += 1;
+        } else {
+            lines.push(line(CodeDiffLineKind::Added, None, Some(j), b[j]));
+            j += 1;
         }
     }
     lines
