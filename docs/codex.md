@@ -54,10 +54,15 @@ El adaptador traduce cada ítem al nombre de herramienta que la interfaz ya cono
 | `mcpToolCall` | `mcp__{server}__{tool}` | Etiqueta y logo del conector como hoy |
 | `webSearch` | `WebSearch` con `WebSearchRun` | El bloque de búsqueda web actual |
 | `turn/plan/updated` | La lista de tareas (forma de `TodoWrite`) | El panel de tareas sobre el composer. No hay ítem `plan`, solo la notificación, y el thread debe activar `update_plan` (ver Fase 1) |
-| `collabAgentToolCall` | `Agent` | Abre el panel del subagente |
-| `imageView` | `Read` de una imagen | |
-| `contextCompaction` | La marca de compactación | |
-| `enteredReviewMode` / `exitedReviewMode`, `imageGeneration`, `dynamicToolCall`, `sleep` | Paso genérico "Used …" | Diseño propio en una fase posterior |
+| `subAgentActivity` (`started`) / `collabAgentToolCall` `spawnAgent` | `Agent` + `TaskStarted` | El mismo `Agent` de Claude: la fila "Ran agent", el panel del subagente y el panel de tareas. Ver "Ítems restantes" |
+| `subAgentActivity` (`completed`) | `TaskEnded` + el `ToolResult` del `Agent` | El resumen es el último mensaje del hilo del subagente |
+| `collabAgentToolCall` (`wait`, `sendInput`, …) | `WaitAgent`, `MessageAgent`, `CloseAgent` | "Waited for agents", "Messaged an agent", "Closed an agent" |
+| `imageView` | `Read` de una imagen | La fila "Read logo.png" y, al abrirla, la imagen |
+| `imageGeneration` | `ImageGeneration` | La imagen en su propio bloque, con el prompt revisado de pie |
+| `contextCompaction` | `Compact` | Una línea "Context compacted" entre dos filetes |
+| `enteredReviewMode` / `exitedReviewMode` | `EnterReviewMode` / `ExitReviewMode` | "Started a review of current changes" / "Finished the review", con los hallazgos al abrirla |
+| `sleep` | `Sleep` | "Waited 1s" |
+| `dynamicToolCall` | La herramienta con su propio nombre | "Used {tool}" (inferido: quill no declara herramientas dinámicas) |
 
 ## Modos de permiso
 
@@ -108,6 +113,8 @@ Con dos agentes registrados, la página de sesión nueva elige uno con un chip j
 4. **Cuenta:** `login status` / `login` / `logout` con el agente falso para los tests. (Hecho.)
 5. **Interfaz:** el chip para elegir agente, las palabras de los modos desde el adaptador, el nombre "Codex" y la verificación en pantalla de cada escenario, en tema claro y oscuro. (Hecho.)
 6. **Después:** el login por el protocolo, la historia de sesiones (`thread/list`), skills en el menú `/`, y los diseños de review, imágenes y herramientas dinámicas.
+
+6. **Después:** el login por el protocolo, la historia de sesiones (`thread/list`), skills en el menú `/`, `thread/revert`. Los diseños de review, imágenes, compactación y subagentes están hechos (ver "Ítems restantes").
 
 ## Fase 1: lo observado
 
@@ -163,7 +170,7 @@ Cómo se llegó a cada uno:
 
 ### Pendiente
 
-- Razonamiento en vivo (otro modelo o esfuerzo), un turno sin cuenta, `thread/items/list`, `search` en `commandActions`, `item/permissions/requestApproval`, MCP y subagentes.
+- Razonamiento en vivo (otro modelo o esfuerzo), `thread/items/list`, `search` en `commandActions`, `item/permissions/requestApproval` y MCP. (Subagentes: ver "Ítems restantes". Un turno sin cuenta: solo sintético.)
 - El esquema usa `cancel` y `acceptWithExecpolicyAmendment`: no se probaron.
 
 ## Fases 2 y 3: lo que cambió respecto del plan
@@ -184,6 +191,8 @@ El adaptador está en `crates/quill-agent-codex` (`Codex`, con `tested() = ["0.1
 - **Cuenta.** Solo "ChatGPT account": `codex login --device-auth` imprime en stdout un código que la persona tiene que escribir en la página, y quill solo sabe mostrar una URL. `login_url` toma la línea que empieza con `https://` (la URL de autenticación viene sola en su línea y en stderr; la de `http://localhost:<puerto>` no sirve). `auth_query = ["login", "status"]`; `auth_state` lee `Logged in using …` / `Not logged in` (sin email: eso sale de `account/read`). `logout_run = ["logout"]`. **El motor ahora pasa las dos salidas:** `auth_state` recibe stdout, o stderr si stdout está vacío (no se concatenan: el JSON de Claude no tiene que ensuciarse con avisos de stderr), y el login lee también las líneas de stderr para encontrar la URL.
 - **Motor.** `waives_server_consent` ya no nombra modos: pregunta al adaptador (`AgentAdapter::mode_waives_prompts`). Claude: `bypassPermissions` y `auto`; Codex: solo `full-access` (su `auto` sí pregunta, no es el de Claude). El mapa de modos del motor ahora guarda (agente, modo).
 - **Fuera de alcance, queda `Unknown` o sin respuesta:** `collabAgentToolCall`, `subAgentActivity`, `imageView`, `contextCompaction`, `plan` (ítem), `dynamicToolCall`, `imageGeneration`, review, `sleep`, `functionCallOutput`; `Rewind`, `ContextUsage`, `McpStatus` y compañía, `Skills`, herramientas del anfitrión (`HostTool`, navegador) (`SessionSpec.resume_at` sí se soporta: ver «Rewind»). Las imágenes del prompt van como `{type:"image", url:"data:…;base64,…"}` (inferido del esquema).
+
+- **Fuera de alcance, queda `Unknown` o sin respuesta** (los ítems de subagente, imagen, compactación, review, `sleep` y `dynamicToolCall` se resolvieron después, ver "Ítems restantes"): `plan` (ítem), `hookPrompt`, `functionCallOutput`; `Rewind`, `ContextUsage`, `McpStatus` y compañía, `Skills`, herramientas del anfitrión (`HostTool`, navegador) y `SessionSpec.resume_at` (fork desde un mensaje: `thread/fork` tiene `lastTurnId`, pero el evento `Text` no lleva el id del turno). Las imágenes del prompt van como `{type:"image", url:"data:…;base64,…"}` (inferido del esquema).
 - **Replay.** `fork` pasa dentro de un solo proceso en la captura, pero quill forkea lanzando uno nuevo (`fork: true`): el test lo comprueba como dos corridas. Por el mismo motivo, el agente falso no puede reproducir `fork` entero (el segundo `thread/fork` de la captura no sale nunca). `resume` sí, porque el motor relanza el programa.
 
 ## Fases 4 y 5: cuenta e interfaz
@@ -234,3 +243,40 @@ Capturas `rewind.jsonl` (`codex-cli 0.163.0`, `gpt-6-luna`, esfuerzo `low`, `wor
 - **No usado: `thread/revert`.** Es destructivo y no se puede deshacer, y el motor ya resuelve el rewind con un fork (que además conserva el original para «Undo rewind»). Queda como opción si se quisiera no acumular threads.
 - **Sin probar:** que `lastTurnId` con un turno de varias herramientas y archivos funcione igual (el turno de la captura no tenía herramientas); la tarjeta de Changes tras un rewind con Codex real.
 - **Pantalla (agente falso, Xvfb).** El selector eligió Codex; bajo el mensaje del usuario aparecen copiar, rewind y fork; el rewind recorta la conversación desde ese mensaje, devuelve el texto al composer y muestra «Rewound to an earlier message. Undo rewind». El agente falso reproduce la captura sin entender su contenido, así que el `lastTurnId` real lo comprueba el test del adaptador.
+
+## Ítems restantes (2026-10-28)
+
+Capturas nuevas con `quill-capture --agent codex <escenario>` (`gpt-6-luna`, esfuerzo `low`, `workspace-write`, sin tocar `~/.codex/config.toml`; `multi_agent`, `image_generation`, `view_image` y `sleep_tool` ya vienen activos en `codex features list`): `subagent`, `image`, `view-sleep`, `compact` y `review`. Turnos gastados: 7, contando `thread/compact/start` y `review/start` (el primer `subagent` se descartó: el driver terminó con el `turn/completed` del hilo hijo, y ahora distingue por `threadId`). Fixtures anonimizados como los demás (`/work`, `/home/user`); en `image.jsonl` el `result` (1,3 MB de PNG en base64) se reemplazó por un PNG de 24×24, y el `savedPath` quedó con la forma `~/.codex/generated_images/<thread>/<item>.png`.
+
+### Subagentes
+- **Lo observado** (`subagent.jsonl`). Con `multi_agent`, crear un subagente **no** es un `collabAgentToolCall` `spawnAgent`: es un ítem `subAgentActivity` `kind: "started"` con `agentPath` (`/root/ping`, el nombre que le dio el modelo), `agentThreadId`, `model` y `reasoningEffort` (`:31`). No trae el prompt: Codex no lo dice. El `wait` sí es un `collabAgentToolCall` (`:39`, `:49`) con `agentsStates` y `receiverThreadIds` vacíos. Al terminar llega otro `subAgentActivity` `kind: "completed"` con un id nuevo (`subagent-completed-<turno>`, `:45`).
+- **Cómo se distingue el hilo hijo.** Sus notificaciones viajan por la misma conexión con su propio `threadId` (`:35` `turn/started`, `:47` `turn/completed`); no hay `thread/started` del hijo ni ítem `userMessage`. Se ata al `agentThreadId` del `subAgentActivity`. Antes de ese ítem llegan avisos sueltos del hijo (`thread/status/changed`, `:30`).
+- **Mapa.** `started` → `ToolUse` `Agent` con `description` (el nombre del subagente, con la primera letra en mayúscula: "Ping"), `model` y `effort`, y `TaskStarted { kind: "agent", call }`. Los mensajes y pasos del hijo salen con `parent = call` (la UI ya los junta en el panel). Su `thread/tokenUsage/updated` es el `TaskProgress` (tokens totales y usos de herramientas contados por quill). `completed` → `TaskEnded` (el resumen es su último mensaje, `pong`) y el `ToolResult` del `Agent`. `interrupted` → `TaskEnded { stopped }`. `interacted` no dibuja nada. El `turn/started` y el `turn/completed` del hijo no abren ni cierran el turno de la sesión.
+- **UI.** La fila "Ran agent Ping", el panel (con "Model GPT-6-Luna · low", y sin la burbuja del prompt cuando no hay) y el panel de tareas ("Agent · Completed · 2s · 27.4k tokens · 0 tool uses") son los de Claude. El esfuerzo en el panel es nuevo.
+- **Inferido, sin captura:** `collabAgentToolCall` `spawnAgent` con `prompt`, `model`, `receiverThreadIds` y `agentsStates` (de `ThreadItem` del esquema): `Agent` con el `prompt`, y `TaskEnded` por cada hijo cuando su estado es `completed`, `errored`, `interrupted` o `shutdown`. `sendInput`, `sendMessage`, `followupTask`, `closeAgent`, `interruptAgent`, `resumeAgent` y `listAgents` son pasos sueltos (solo se vio `wait`). La aprobación que pida un hijo (su `threadId` es otro) no se probó.
+- **Choque de ids arreglado.** El selector de agente usaba `agent:<id>` y la fila del subagente `agent:<llamada>`: un clic en el subagente "elegía" un agente con el id de la llamada y lo guardaba como predeterminado. El selector ahora es `pick-agent:<id>` (test: `a_helper_row_opens_its_pane_and_is_not_the_agent_picker`).
+
+### Compactación
+- **Observado** (`compact.jsonl`): `thread/compact/start` → `{}`, y un turno propio con `contextCompaction` (`:37` started, `:43` completed). `thread/compacted` (obsoleto, "usa el ítem") no llegó; se ignora para no dibujarlo dos veces.
+- **Qué es en la UI:** la compactación de Claude Code (`system/compact_boundary`, `docs/engine.md`) hoy **no se dibuja**: no había nada que reusar. El diseño es nuevo y vale para ambos cuando se conecte el de Claude: `ToolUse` `Compact` → una línea con filetes ("Compacting context" mientras corre, "Context compacted" al terminar). Inferido: Desktop no está capturado. La entrada de Claude queda pendiente.
+
+### Review
+- **Observado** (`review.jsonl`): `review/start {threadId, target: {type: "uncommittedChanges"}}` (`:9`) responde con el turno y `reviewThreadId` (el mismo hilo, inline); `enteredReviewMode` trae `review: "current changes"` (`:17`) y `exitedReviewMode` trae el texto de los hallazgos (`:63`), seguido de un `agentMessage` con el mismo texto. Los dos llegan completos (started y completed iguales).
+- **Mapa:** `EnterReviewMode` / `ExitReviewMode`. "Started a review of current changes" y "Finished the review", esta con los hallazgos en markdown al abrirla. Las palabras son de quill, en el estilo de "Started planning".
+- quill no tiene aún cómo *pedir* un review (`review/start`): solo dibuja el que Codex emite.
+
+### Imágenes
+- **`imageView`** (`view-sleep.jsonl:26`) es `{id, path}`: se muestra como el `Read` de la imagen ("Read logo.png"), y al abrir la fila la imagen como miniatura, que se abre en el visor. Esto vale también para el `Read` de Claude de un archivo `png`/`jpg`/`jpeg`/`gif`/`webp` (antes solo decía "Read x.png").
+- **`imageGeneration`** (`image.jsonl:40-41`): `started` con todo vacío y `completed` con `status: "completed"`, `revisedPrompt`, `savedPath` (bajo `~/.codex/generated_images/`) y `result` (el PNG en base64, que quill no usa: lee el archivo). Es un bloque propio, no una fila dentro del grupo: la miniatura de 168 px (la de los mensajes, más grande) con el prompt revisado debajo; el clic abre el visor. El paso se abre con la entrada vacía (la ruta recién llega al terminar), así que el `ToolResult` lleva el prompt como salida y el archivo en `files`. Mientras corre o si falla, es una fila ("Generating an image", "Generated an image").
+- **Inferido:** `failure` (`usageLimitExceeded`, único valor del esquema) y cualquier `status` que no sea `completed` o `in_progress` terminan el paso como error ("Image generation limit reached" / "The image could not be made"), sin imagen. Diseño visual inferido.
+
+### `sleep` y `dynamicToolCall`
+- `sleep` (`view-sleep.jsonl:33`) es `{id, durationMs}` → "Waited 1s" ("Waiting 1s" mientras corre; "300ms" y "2.5s" para los demás).
+- `dynamicToolCall`: no hay captura (son herramientas que declara el cliente y quill no declara ninguna). Del esquema: `tool`, `arguments`, `contentItems` (`inputText` / `inputImage`), `success`. Se dibuja "Used {tool}" con el texto como salida; una imagen de salida queda como `[not text]`. Inferido.
+
+### Sin cuenta ("Sign in")
+- `fixtures/0.163.0/synthetic-unauthorized.jsonl` es **sintético**: es `simple.jsonl` hasta el mensaje de la persona, más un `error` y un `turn/completed` `failed` con la forma del esquema (`ErrorNotification`, `TurnError`, `CodexErrorInfo: "unauthorized"`). Esas dos líneas llevan `"synthetic": true`. El texto del error lo inventó quill, sobre el modelo del aviso de renovación de token; Codex puede decir otra cosa. No se cerró la sesión real para obtener uno de verdad.
+- Resultado en pantalla: el turno cierra con "Not signed in" y el botón **Sign in** (`AuthRequired` una sola vez, aunque lleguen el `error` y el `turn/completed`).
+
+### Verificación en pantalla
+Agente falso con los fixtures de `0.163.0`, Codex elegido en el selector, 1408×844; para `image` y `view-sleep` una copia del fixture con la ruta apuntando a un archivo real (el fixture anonimizado apunta a `/home/user/...`). Oscuro: los cinco ítems y el aviso de sesión. Claro: `image`, `subagent` (panel) y `compact`. Para `compact` y `review` el fixture tiene un pedido de más (`thread/compact/start`, `review/start`) que quill no escribe: en pantalla el segundo mensaje de la persona hace de pedido de compactar, y en `review` el primero hace de `review/start`.
