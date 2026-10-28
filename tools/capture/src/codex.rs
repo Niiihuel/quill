@@ -5,7 +5,7 @@
 //!
 //! Always `gpt-6-luna` at effort `low`; never `danger-full-access` or approval policy `never`.
 //! Scenarios: simple, edit-bash, deny, deny-patch, always, plan, steer, interrupt, resume, fork, rewind, think,
-//! websearch, ask, account.
+//! websearch, ask, account, subagent, image, view-sleep, compact, review.
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -31,11 +31,29 @@ enum Step {
     ForkThrough(usize),
     /// `thread/revert` of the first thread before its nth turn, which then is the thread again.
     RevertBefore(usize),
+    /// `thread/compact/start`; wait for the turn it runs.
+    Compact,
+    /// `review/start` of the uncommitted changes (inline); wait for its turn.
+    Review,
     /// Any request, no thread needed.
     Rpc(&'static str, Value),
 }
 
+/// A 24x24 blue square, for `view_image` to look at.
+const PNG: [u8; 88] = [
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00, 0x18, 0x08, 0x02, 0x00, 0x00, 0x00, 0x6f, 0x15, 0xaa,
+    0xaf, 0x00, 0x00, 0x00, 0x1f, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xd0, 0x88, 0x3a, 0x41,
+    0x15, 0xc4, 0x30, 0x6a, 0xd0, 0xa8, 0x41, 0xa3, 0x06, 0x8d, 0x1a, 0x34, 0x6a, 0xd0, 0xa8, 0x41,
+    0x03, 0x6f, 0x10, 0x00, 0xf1, 0x9d, 0xe6, 0x9f, 0x79, 0x51, 0x5d, 0x90, 0x00, 0x00, 0x00, 0x00,
+    0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+];
+
+/// Written to the repo, uncommitted, before the steps: (file, contents).
+type Seed = &'static [(&'static str, &'static [u8])];
+
 struct Scenario {
+    seed: Seed,
     approval: &'static str,
     sandbox: &'static str,
     /// Answer to approvals; `decline_first` declines only the first one and accepts the rest.
@@ -130,6 +148,36 @@ fn scenario(name: &str) -> Option<Scenario> {
                 "Use the request_user_input tool to ask me to pick red or blue (multiple choice), then reply with my answer only.",
             )],
         ),
+        "subagent" => (
+            AUTO,
+            "accept",
+            vec![Turn(
+                "Use your spawn_agent tool to start one subagent whose task is: reply with exactly the word pong. \
+                 Wait for it to finish, then tell me what it said in one line.",
+            )],
+        ),
+        "image" => (
+            AUTO,
+            "accept",
+            vec![Turn(
+                "Use your image generation tool to make a small, simple icon of a quill pen on a white background. \
+                 Then reply with exactly: done",
+            )],
+        ),
+        "view-sleep" => (
+            AUTO,
+            "accept",
+            vec![Turn(
+                "Use your view_image tool to look at logo.png, then use your sleep tool to wait 1 second, \
+                 then reply with exactly: ok",
+            )],
+        ),
+        "compact" => (
+            AUTO,
+            "accept",
+            vec![Turn("Remember the word: lantern. Reply with exactly: ok"), Compact],
+        ),
+        "review" => (AUTO, "accept", vec![Review]),
         "account" => (
             AUTO,
             "accept",
@@ -143,6 +191,11 @@ fn scenario(name: &str) -> Option<Scenario> {
         _ => return None,
     };
     Some(Scenario {
+        seed: match name {
+            "view-sleep" => &[("logo.png", &PNG)],
+            "review" => &[("add.py", b"def add(a, b):\n    return a - b\n")],
+            _ => &[],
+        },
         approval,
         sandbox,
         decision,
@@ -305,6 +358,10 @@ impl Driver {
     fn observe(&mut self, msg: &Value) {
         let (m, p) = (msg["method"].as_str().unwrap_or(""), &msg["params"]);
         match m {
+            // A subagent's thread talks on the same connection (its `threadId` differs).
+            _ if p["threadId"]
+                .as_str()
+                .is_some_and(|t| t != self.st.thread_id) => {}
             "turn/started" => {
                 self.st.turn_id = p["turn"]["id"].as_str().unwrap_or("").into();
                 self.st.turn_done = false;
@@ -395,8 +452,8 @@ impl Driver {
 
     fn finish_turn(&mut self) -> Result<(), String> {
         if !self.st.turn_done {
-            self.pump(Duration::from_secs(300), |_, m| {
-                m["method"] == "turn/completed"
+            self.pump(Duration::from_secs(300), |s, m| {
+                m["method"] == "turn/completed" && m["params"]["threadId"] == s.thread_id
             })?;
         }
         Ok(())
@@ -440,6 +497,10 @@ pub fn run(name: &str) -> Result<(), String> {
             .current_dir(&repo)
             .status()
             .map_err(|e| e.to_string())?;
+    }
+    // After the commit: the review looks at what is uncommitted, and `view_image` at a new file.
+    for (file, contents) in sc.seed {
+        std::fs::write(repo.join(file), contents).map_err(|e| e.to_string())?;
     }
     let repo = repo.canonicalize().map_err(|e| e.to_string())?;
     let log = Arc::new(Log {
@@ -552,6 +613,21 @@ pub fn run(name: &str) -> Result<(), String> {
                     d.st.thread_id = d.st.root_thread.clone();
                     d.st.root_turns.truncate(*n);
                 }
+                Step::Compact => {
+                    d.st.turn_done = false;
+                    let thread = d.st.thread_id.clone();
+                    d.call("thread/compact/start", json!({ "threadId": thread }))?;
+                    d.finish_turn()?;
+                }
+                Step::Review => {
+                    d.st.turn_done = false;
+                    let thread = d.st.thread_id.clone();
+                    d.call(
+                        "review/start",
+                        json!({ "threadId": thread, "target": { "type": "uncommittedChanges" } }),
+                    )?;
+                    d.finish_turn()?;
+                }
                 Step::Rpc(method, params) => {
                     d.call(method, params.clone())?;
                 }
@@ -586,6 +662,11 @@ mod tests {
             "websearch",
             "ask",
             "account",
+            "subagent",
+            "image",
+            "view-sleep",
+            "compact",
+            "review",
         ] {
             let sc = scenario(name).expect(name);
             assert_ne!(sc.sandbox, "danger-full-access", "{name}");

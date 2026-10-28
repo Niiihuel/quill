@@ -9,11 +9,12 @@ use quill_agent::{
     AgentAdapter, AgentCapabilities, AgentCommand, AgentEvent, AgentId, AuthState, Choices,
     CommandRun, ContextCategory, ContextKind, ContextUsage, Decision, Decoded, FileChange,
     LaunchPlan, ModeWords, ModelInfo, PlanLimits, ProgramRun, PromptImage, SessionSpec, Suggestion,
-    Usage, UsageWindow, WebSearchRun, WebSource,
+    TaskUsage, Usage, UsageWindow, WebSearchRun, WebSource,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::time::Instant;
 
 /// The permission presets, as Codex's own are (docs/codex.md "Modos de permiso"). Each is an
 /// approval policy and a sandbox; quill always sends both, because a thread that is not told
@@ -38,7 +39,7 @@ fn thread_config() -> Value {
 }
 
 /// Notifications that carry nothing quill shows; not `Unknown`, not events.
-const QUIET: [&str; 13] = [
+const QUIET: [&str; 14] = [
     "remoteControl/status/changed",
     "mcpServer/startupStatus/updated",
     "thread/status/changed",
@@ -53,6 +54,8 @@ const QUIET: [&str; 13] = [
     "turn/diff/updated",
     "item/commandExecution/outputDelta",
     "item/fileChange/outputDelta",
+    // The old notice of a compaction; the `contextCompaction` item says it (docs/codex.md).
+    "thread/compacted",
 ];
 
 /// What a request waits for.
@@ -80,8 +83,49 @@ enum Approval {
     Ask(Value, Vec<(String, String)>),
 }
 
+/// A helper agent's thread: its notifications arrive on the same connection with their own
+/// `threadId` (subagent.jsonl), and go with the call that started it.
+struct Helper {
+    call: String,
+    /// Its last message, which is the account it gives of itself.
+    summary: Option<String>,
+    tool_uses: u64,
+    tokens: u64,
+    /// Its turn's own count, once that ends (after the parent has heard it finished).
+    duration_ms: u64,
+    since: Instant,
+}
+
+impl Helper {
+    fn new(call: String) -> Self {
+        Helper {
+            call,
+            summary: None,
+            tool_uses: 0,
+            tokens: 0,
+            duration_ms: 0,
+            since: Instant::now(),
+        }
+    }
+
+    fn usage(&self) -> TaskUsage {
+        let ran = self.since.elapsed().as_millis() as u64;
+        TaskUsage {
+            tokens: self.tokens,
+            tool_uses: self.tool_uses,
+            duration_ms: if self.duration_ms > 0 {
+                self.duration_ms
+            } else {
+                ran
+            },
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Codex {
+    /// Helper agents by thread id.
+    helpers: HashMap<String, Helper>,
     /// What `launch` was given: Codex takes it in `thread/start`, not on the command line.
     spec: Mutex<SessionSpec>,
     next_id: u64,
@@ -323,6 +367,11 @@ impl Codex {
     }
 
     fn notification(&mut self, method: &str, p: &Value, msg: &Value, out: &mut Decoded) {
+        if let Some(thread) = p["threadId"].as_str() {
+            if self.thread.as_deref().is_some_and(|main| main != thread) {
+                return self.helper_notification(thread, method, p, msg, out);
+            }
+        }
         let events = &mut out.events;
         match method {
             "turn/started" => {
@@ -406,6 +455,179 @@ impl Codex {
             method if QUIET.contains(&method) => {}
             _ => events.push(AgentEvent::Unknown(msg.clone())),
         }
+    }
+
+    /// A helper's thread talking: its steps and words go under the call that started it, and
+    /// its tokens and tool uses are the task's. It never ends or starts the turn.
+    fn helper_notification(
+        &mut self,
+        thread: &str,
+        method: &str,
+        p: &Value,
+        msg: &Value,
+        out: &mut Decoded,
+    ) {
+        let Some(helper) = self.helpers.get_mut(thread) else {
+            // Its first notices come before the item that announces it.
+            if !QUIET.contains(&method) && !method.starts_with("turn/") {
+                out.events.push(AgentEvent::Unknown(msg.clone()));
+            }
+            return;
+        };
+        let call = helper.call.clone();
+        match method {
+            "item/started" | "item/completed" => {
+                let item = &p["item"];
+                let done = method == "item/completed";
+                let tool = matches!(
+                    item["type"].as_str(),
+                    Some("commandExecution" | "fileChange" | "mcpToolCall" | "webSearch")
+                );
+                helper.tool_uses += u64::from(!done && tool);
+                if done && item["type"] == "agentMessage" {
+                    helper.summary = Some(text(&item["text"])).filter(|t| !t.is_empty());
+                }
+                let from = out.events.len();
+                self.item(item, done, out);
+                for event in &mut out.events[from..] {
+                    match event {
+                        AgentEvent::ToolUse { parent, .. }
+                        | AgentEvent::Text { parent, .. }
+                        | AgentEvent::Thinking { parent }
+                        | AgentEvent::ThinkingText { parent, .. } => *parent = Some(call.clone()),
+                        _ => {}
+                    }
+                }
+            }
+            "thread/tokenUsage/updated" => {
+                helper.tokens = number(&p["tokenUsage"]["total"]["totalTokens"]);
+                out.events.push(AgentEvent::TaskProgress {
+                    id: thread.to_owned(),
+                    usage: helper.usage(),
+                });
+            }
+            "turn/completed" => helper.duration_ms = number(&p["turn"]["durationMs"]),
+            _ => {}
+        }
+    }
+
+    /// `subAgentActivity` (subagent.jsonl:29, :43).
+    fn helper_item(&mut self, item: &Value, out: &mut Decoded) {
+        let thread = text(&item["agentThreadId"]);
+        match item["kind"].as_str() {
+            Some("started") => {
+                // "/root/ping": the name the model gave the helper.
+                let path = text(&item["agentPath"]);
+                let name = path
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or_default()
+                    .replace('_', " ");
+                let input = json!({
+                    "description": sentence(&name), "model": item["model"],
+                    "effort": item["reasoningEffort"],
+                });
+                self.start_helper(text(&item["id"]), thread, input, out);
+            }
+            Some(kind @ ("completed" | "interrupted")) => {
+                self.end_helper(&thread, true, kind == "interrupted", out)
+            }
+            // A message sent to a helper that goes on: nothing of its own to show.
+            _ => {}
+        }
+    }
+
+    fn start_helper(&mut self, call: String, thread: String, input: Value, out: &mut Decoded) {
+        let description = text(&input["description"]);
+        self.helpers
+            .insert(thread.clone(), Helper::new(call.clone()));
+        self.tool_use(call.clone(), "Agent", input, out);
+        out.events.push(AgentEvent::TaskStarted {
+            id: thread,
+            call: Some(call),
+            description,
+            kind: "agent".into(),
+        });
+    }
+
+    fn end_helper(&mut self, thread: &str, ok: bool, stopped: bool, out: &mut Decoded) {
+        let Some(helper) = self.helpers.get(thread) else {
+            return;
+        };
+        let (call, summary, usage) = (helper.call.clone(), helper.summary.clone(), helper.usage());
+        out.events.push(AgentEvent::TaskEnded {
+            id: thread.to_owned(),
+            call: Some(call.clone()),
+            summary: summary.clone(),
+            ok,
+            stopped,
+            usage: Some(usage),
+        });
+        let output = summary.unwrap_or_else(|| {
+            if stopped {
+                "Interrupted".into()
+            } else {
+                String::new()
+            }
+        });
+        out.events
+            .push(result(call, output, !ok, vec![], None, None));
+    }
+
+    /// `collabAgentToolCall`: only `wait` was captured (subagent.jsonl:37); a helper starts
+    /// with a `subAgentActivity`. A spawn as a call of its own is read from the schema
+    /// (inferred): its prompt is the helper's, its receivers the threads it opened.
+    fn collab(&mut self, item: &Value, done: bool, out: &mut Decoded) {
+        let id = text(&item["id"]);
+        let tool = text(&item["tool"]);
+        let states = item["agentsStates"].as_object();
+        let state = |thread: &str| states.and_then(|s| s.get(thread));
+        let failed = text(&item["status"]) == "failed";
+        let receivers: Vec<String> = (item["receiverThreadIds"].as_array().into_iter().flatten())
+            .map(text)
+            .collect();
+        if tool == "spawnAgent" {
+            let prompt = text(&item["prompt"]);
+            if !done {
+                let input = json!({
+                    "description": sentence(prompt.lines().next().unwrap_or_default()),
+                    "prompt": prompt, "model": item["model"], "effort": item["reasoningEffort"],
+                });
+                let first = receivers.first().cloned().unwrap_or_else(|| id.clone());
+                return self.start_helper(id, first, input, out);
+            }
+            for thread in &receivers {
+                let Some(helper) = self.helpers.get_mut(thread) else {
+                    continue;
+                };
+                let message = state(thread).and_then(|s| s["message"].as_str());
+                helper.summary = message.map(str::to_owned).or(helper.summary.take());
+                let status = state(thread).and_then(|s| s["status"].as_str());
+                if matches!(
+                    status,
+                    Some("completed" | "errored" | "interrupted" | "shutdown")
+                ) {
+                    self.end_helper(thread, status != Some("errored"), false, out);
+                }
+            }
+            return;
+        }
+        // The others act on helpers that exist already: a step of their own.
+        let name = match tool.as_str() {
+            "wait" => "WaitAgent",
+            "sendInput" | "sendMessage" | "followupTask" => "MessageAgent",
+            "closeAgent" | "interruptAgent" => "CloseAgent",
+            _ => "Agents",
+        };
+        let input = json!({ "tool": tool });
+        if !done {
+            return self.tool_use(id, name, input, out);
+        }
+        let output = (receivers.iter())
+            .filter_map(|t| state(t).and_then(|s| s["message"].as_str()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.tool_end((id, name, input), output, failed, vec![], None, None, out);
     }
 
     fn turn_completed(&mut self, turn: &Value, out: &mut Decoded) {
@@ -583,6 +805,99 @@ impl Codex {
                 );
             }
             Some("webSearch") => {}
+            Some("subAgentActivity") if !done => self.helper_item(item, out),
+            Some("subAgentActivity") => {}
+            Some("collabAgentToolCall") => self.collab(item, done, out),
+            // The model's own compaction of its context: a step that says so (Claude Code's
+            // `compact_boundary` is not drawn at all; docs/codex.md).
+            Some("contextCompaction") if !done => self.tool_use(id, "Compact", json!({}), out),
+            Some("contextCompaction") => {
+                let call = (id, "Compact", json!({}));
+                self.tool_end(call, String::new(), false, vec![], None, None, out)
+            }
+            // Each comes whole: the target it reviews, then the findings.
+            Some(kind @ ("enteredReviewMode" | "exitedReviewMode")) if !done => {
+                let name = if kind == "enteredReviewMode" {
+                    "EnterReviewMode"
+                } else {
+                    "ExitReviewMode"
+                };
+                let review = text(&item["review"]);
+                let input = json!({ "review": review });
+                self.tool_end((id, name, input), review, false, vec![], None, None, out);
+            }
+            Some("enteredReviewMode" | "exitedReviewMode") => {}
+            // An image the model looked at is the Read of an image.
+            Some("imageView") if !done => {
+                let input = json!({ "file_path": text(&item["path"]) });
+                self.tool_end(
+                    (id, "Read", input),
+                    String::new(),
+                    false,
+                    vec![],
+                    None,
+                    None,
+                    out,
+                );
+            }
+            Some("imageView") => {}
+            Some("imageGeneration") if !done => {
+                self.tool_use(id, "ImageGeneration", json!({}), out)
+            }
+            // Its result carries the prompt it was made from (revised) and the file it was
+            // saved to, as a file created (the step has no input to put them in: it opened
+            // before either was known).
+            Some("imageGeneration") => {
+                let prompt = text(&item["revisedPrompt"]);
+                let failed = failed || !matches!(status.as_str(), "completed" | "in_progress");
+                let (output, failed) = match &item["failure"] {
+                    Value::Null if failed => ("The image could not be made".into(), true),
+                    Value::Null => (prompt, false),
+                    // The only failure the schema has (usageLimitExceeded).
+                    _ => ("Image generation limit reached".into(), true),
+                };
+                let saved = item["savedPath"].as_str().filter(|_| !failed);
+                let files = (saved.into_iter())
+                    .map(|path| FileChange {
+                        path: path.into(),
+                        before: None,
+                        after: None,
+                    })
+                    .collect();
+                let call = (id, "ImageGeneration", json!({}));
+                self.tool_end(call, output, failed, files, None, None, out);
+            }
+            Some("sleep") => {
+                let input = json!({ "duration_ms": number(&item["durationMs"]) });
+                if !done {
+                    return self.tool_use(id, "Sleep", input, out);
+                }
+                self.tool_end(
+                    (id, "Sleep", input),
+                    String::new(),
+                    false,
+                    vec![],
+                    None,
+                    None,
+                    out,
+                );
+            }
+            // A tool the client declared to Codex (quill declares none), by its own name.
+            Some("dynamicToolCall") => {
+                let (name, input) = (text(&item["tool"]), item["arguments"].clone());
+                if !done {
+                    return self.tool_use(id, &name, input, out);
+                }
+                let output = (item["contentItems"].as_array().into_iter().flatten())
+                    .map(|part| match part["type"].as_str() {
+                        Some("inputText") => text(&part["text"]),
+                        _ => "[not text]".into(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let error = failed || item["success"] == false;
+                self.tool_end((id, &name, input), output, error, vec![], None, None, out);
+            }
             _ => out
                 .events
                 .push(AgentEvent::Unknown(json!({ "item": item }))),
@@ -931,6 +1246,15 @@ fn text(value: &Value) -> String {
 
 fn number(value: &Value) -> u64 {
     value.as_u64().unwrap_or(0)
+}
+
+/// A name or a prompt's first line as a title: first letter up, no final stop.
+fn sentence(words: &str) -> String {
+    let words = words.trim().trim_end_matches('.');
+    let mut chars = words.chars();
+    chars
+        .next()
+        .map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
 }
 
 /// A JSON-RPC id as the map key it is found by.

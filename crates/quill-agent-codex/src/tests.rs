@@ -128,6 +128,10 @@ fn replay(run: &mut Run, entries: &[(String, Value)], from: usize) -> usize {
             }
             ("out", Some("turn/interrupt")) => run.send(AgentCommand::Interrupt),
             // A fork inside one process: quill forks by launching a new one (below).
+            // Asked by the capture's driver, not by quill: its answer is for no one.
+            ("out", Some("thread/compact/start" | "review/start")) => {
+                run.codex.pending.insert(key(&msg["id"]), Pending::Ignore);
+            }
             ("out", Some("thread/fork")) => {
                 run.codex.next_id = msg["id"].as_u64().unwrap();
                 run.codex.pending.insert(key(&msg["id"]), Pending::Thread);
@@ -164,7 +168,13 @@ fn run_of(name: &str) -> Run {
     // A fork asks the thread of the process it is made in: not a line of this run.
     let expected: Vec<Value> = out_lines(&entries)
         .into_iter()
-        .filter(|l| l["method"] != "thread/fork")
+        // The adapter has no command for these (compact, review): the capture's driver asked.
+        .filter(|l| {
+            !matches!(
+                l["method"].as_str(),
+                Some("thread/fork" | "thread/compact/start" | "review/start")
+            )
+        })
         .collect();
     assert_eq!(
         methods(&run.written),
@@ -224,7 +234,7 @@ fn texts(events: &[AgentEvent]) -> Vec<&str> {
         .collect()
 }
 
-const SCENARIOS: [&str; 14] = [
+const SCENARIOS: [&str; 19] = [
     "simple",
     "edit-bash",
     "deny-patch",
@@ -239,6 +249,11 @@ const SCENARIOS: [&str; 14] = [
     "ask",
     "resume",
     "rewind",
+    "subagent",
+    "image",
+    "view-sleep",
+    "compact",
+    "review",
 ];
 
 #[test]
@@ -249,7 +264,9 @@ fn every_fixture_writes_its_out_lines_and_decodes_without_unknown_messages() {
         }
         let run = run_of(name);
         assert_eq!(unknown(&run.events), Vec::<&Value>::new(), "{name}");
-        assert_eq!(finished(&run.events).len(), 1, "{name}");
+        // A compaction runs a turn of its own (compact.jsonl).
+        let turns = if name == "compact" { 2 } else { 1 };
+        assert_eq!(finished(&run.events).len(), turns, "{name}");
     }
 }
 
@@ -968,7 +985,7 @@ fn what_codex_asks_that_quill_cannot_answer_is_refused_not_awaited() {
         );
     }
     // Items quill does not draw yet stay whole.
-    let item = json!({ "method": "item/started", "params": { "item": { "type": "contextCompaction", "id": "c" } } });
+    let item = json!({ "method": "item/started", "params": { "item": { "type": "plan", "id": "c", "text": "x" } } });
     assert!(matches!(
         &codex.decode(&item.to_string()).events[..],
         [Unknown(_)]
@@ -1097,4 +1114,205 @@ fn the_context_is_split_into_what_fills_it() {
         ("Free space", 236_872),
     ];
     assert_eq!(split, want.map(|(n, t)| (n.to_owned(), t)));
+}
+
+fn tool_calls(events: &[AgentEvent]) -> Vec<(&str, Option<&str>)> {
+    (events.iter())
+        .filter_map(|e| match e {
+            ToolUse { name, parent, .. } => Some((name.as_str(), parent.as_deref())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_subagent_is_the_agent_tool_with_its_task_its_words_and_its_account() {
+    let run = run_of("subagent");
+    let call = "call_c0445ff7950b4b418d88ab69a4138d73";
+    let thread = "01a18239-60c9-7b52-87aa-ae736b0cf3a6";
+    // subagent.jsonl:29 (started): the agent tool a Claude helper is.
+    let Some(ToolUse { input, parent, .. }) = run
+        .events
+        .iter()
+        .find(|e| matches!(e, ToolUse { name, .. } if name == "Agent"))
+    else {
+        panic!("no Agent tool");
+    };
+    assert_eq!(*parent, None);
+    assert_eq!(
+        (
+            input["description"].as_str(),
+            input["model"].as_str(),
+            input["effort"].as_str()
+        ),
+        (Some("Ping"), Some("gpt-6-luna"), Some("low"))
+    );
+    assert!(run.events.contains(&TaskStarted {
+        id: thread.into(),
+        call: Some(call.into()),
+        description: "Ping".into(),
+        kind: "agent".into(),
+    }));
+    // The helper's own message goes with the call (:40), and ends the task as its summary (:43).
+    assert!(run
+        .events
+        .iter()
+        .any(|e| matches!(e, Text { text, parent: Some(p), .. } if text == "pong" && p == call)));
+    let ended: Vec<_> = (run.events.iter())
+        .filter(|e| matches!(e, TaskEnded { .. }))
+        .collect();
+    assert!(
+        matches!(ended[..], [TaskEnded { id, summary: Some(s), ok: true, stopped: false, usage: Some(u), .. }]
+            if id == thread && s == "pong" && u.tokens > 0)
+    );
+    assert!(run.events.iter().any(
+        |e| matches!(e, ToolResult { call: c, output, is_error: false, .. } if c == call && output == "pong")
+    ));
+    assert!(run
+        .events
+        .iter()
+        .any(|e| matches!(e, TaskProgress { id, usage } if id == thread && usage.tokens > 0)));
+    // `wait` (:37) is a step of its own; the helper's turn is not the session's.
+    assert_eq!(
+        tool_calls(&run.events)
+            .iter()
+            .filter(|(n, _)| *n == "WaitAgent")
+            .count(),
+        1
+    );
+    assert_eq!(finished(&run.events).len(), 1);
+    // Inferred from the schema: a spawn as a call, with its prompt and the thread it opened.
+    let mut run = run_of("simple");
+    let item = |done: bool, status: &str, states: Value| {
+        json!({ "method": if done { "item/completed" } else { "item/started" }, "params": { "item": {
+            "type": "collabAgentToolCall", "id": "c1", "tool": "spawnAgent", "status": status,
+            "senderThreadId": "01a1817c-3a5b-79d0-ae92-0f25db9b7c42", "receiverThreadIds": ["t2"],
+            "prompt": "Count the files.\nThen stop.", "model": "gpt-6-luna", "reasoningEffort": "low",
+            "agentsStates": states } } })
+    };
+    run.feed(&item(false, "inProgress", json!({})));
+    run.feed(&item(
+        true,
+        "completed",
+        json!({ "t2": { "status": "completed", "message": "3 files" } }),
+    ));
+    let tail: Vec<_> = run.events.iter().rev().take(4).collect();
+    assert!(tail
+        .iter()
+        .any(|e| matches!(e, TaskEnded { summary: Some(s), .. } if s == "3 files")));
+    assert!(run.events.iter().any(|e| matches!(e, ToolUse { name, input, .. }
+        if name == "Agent" && input["prompt"] == "Count the files.\nThen stop." && input["description"] == "Count the files")));
+}
+
+#[test]
+fn compaction_is_a_step() {
+    let run = run_of("compact");
+    assert_eq!(unknown(&run.events), Vec::<&Value>::new());
+    assert_eq!(tool_calls(&run.events), [("Compact", None)]);
+    assert_eq!(results(&run.events).len(), 1);
+    // The deprecated notice says the same again and draws nothing.
+    let mut run = run_of("compact");
+    let before = run.events.len();
+    run.feed(
+        &json!({ "method": "thread/compacted", "params": { "threadId": "x", "turnId": "y" } }),
+    );
+    assert_eq!(run.events.len(), before);
+}
+
+#[test]
+fn a_review_is_two_steps_with_the_findings_in_the_last() {
+    let run = run_of("review");
+    assert_eq!(unknown(&run.events), Vec::<&Value>::new());
+    let tools = tool_calls(&run.events);
+    assert_eq!(tools.first(), Some(&("EnterReviewMode", None)));
+    assert_eq!(tools.last(), Some(&("ExitReviewMode", None)));
+    let entered = calls(&run.events)[0].1;
+    assert_eq!(entered["review"], "current changes");
+    let Some(ToolResult { output, .. }) = results(&run.events).last().map(|e| (*e).clone()) else {
+        panic!("no result");
+    };
+    assert!(output.contains("[P1] Return the sum from `add`"));
+}
+
+#[test]
+fn an_image_read_is_a_read_and_a_made_one_has_its_prompt_and_file() {
+    let run = run_of("view-sleep");
+    assert_eq!(unknown(&run.events), Vec::<&Value>::new());
+    assert_eq!(
+        calls(&run.events)
+            .iter()
+            .map(|(n, i)| (*n, (*i).clone()))
+            .collect::<Vec<_>>(),
+        [
+            ("Read", json!({ "file_path": "/work/logo.png" })),
+            ("Sleep", json!({ "duration_ms": 1000 })),
+        ]
+    );
+    let run = run_of("image");
+    assert_eq!(unknown(&run.events), Vec::<&Value>::new());
+    assert_eq!(tool_calls(&run.events), [("ImageGeneration", None)]);
+    let Some(ToolResult {
+        output,
+        files,
+        is_error,
+        ..
+    }) = results(&run.events)[0..].first().map(|e| (*e).clone())
+    else {
+        panic!("no result");
+    };
+    assert!(!is_error);
+    assert!(output.starts_with("A small, simple icon of a classic quill pen"));
+    assert_eq!(files.len(), 1);
+    assert!(files[0].path.to_string_lossy().ends_with(".png"));
+    // Inferred from the schema: the limit ends it as a failure, with no file.
+    let mut run = run_of("simple");
+    let item = |done: bool| {
+        json!({ "method": if done { "item/completed" } else { "item/started" },
+        "params": { "item": { "type": "imageGeneration", "id": "g1", "status": "failed", "result": "",
+        "savedPath": null, "revisedPrompt": null,
+        "failure": { "type": "usageLimitExceeded", "limitId": "images", "resetsAt": null } } } })
+    };
+    run.feed(&item(false));
+    run.feed(&item(true));
+    assert!(
+        matches!(run.events.last(), Some(ToolResult { is_error: true, files, output, .. })
+        if files.is_empty() && output == "Image generation limit reached")
+    );
+}
+
+#[test]
+fn a_tool_the_client_declared_is_a_step_by_its_name() {
+    // Inferred from the schema: quill declares no dynamic tools, so no capture has one.
+    let mut run = run_of("simple");
+    let item = |done: bool| {
+        json!({ "method": if done { "item/completed" } else { "item/started" },
+        "params": { "item": { "type": "dynamicToolCall", "id": "d1", "tool": "lookup", "namespace": null,
+        "arguments": { "q": "x" }, "status": if done { "completed" } else { "inProgress" }, "success": done,
+        "contentItems": [{ "type": "inputText", "text": "found" }], "durationMs": 3 } } })
+    };
+    run.feed(&item(false));
+    run.feed(&item(true));
+    let n = run.events.len();
+    assert!(
+        matches!(&run.events[n - 2], ToolUse { name, input, .. } if name == "lookup" && input["q"] == "x")
+    );
+    assert!(
+        matches!(&run.events[n - 1], ToolResult { output, is_error: false, .. } if output == "found")
+    );
+}
+
+#[test]
+fn an_unauthorized_turn_asks_to_sign_in() {
+    // SYNTHETIC (docs/codex.md): no capture has a turn without an account. The fixture is
+    // simple.jsonl up to the person's message, then the `error` and the failed `turn/completed`
+    // in the shape of the schema (ErrorNotification, TurnError, CodexErrorInfo "unauthorized").
+    let run = run_of("synthetic-unauthorized");
+    assert_eq!(unknown(&run.events), Vec::<&Value>::new());
+    let tail = &run.events[run.events.len() - 2..];
+    assert_eq!(tail[0], AuthRequired);
+    assert!(
+        matches!(&tail[1], TurnFinished { ok: false, interrupted: false, error: Some(e), .. } if e.contains("sign in"))
+    );
+    // Once, not once for the `error` and again for the turn.
+    assert_eq!(run.events.iter().filter(|e| **e == AuthRequired).count(), 1);
 }
