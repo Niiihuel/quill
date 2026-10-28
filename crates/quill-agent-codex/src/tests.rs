@@ -491,6 +491,10 @@ fn a_lone_read_or_listing_is_the_tool_the_ui_draws() {
     assert_eq!((name, input["pattern"].as_str()), ("Grep", Some("x")));
     assert_eq!(shell_line("/bin/bash -lc 'echo '\\''hi'\\'''"), "echo 'hi'");
     assert_eq!(shell_line("ls -la"), "ls -la");
+    assert_eq!(
+        shell_line(r#"/bin/bash -lc "printf 'hello\\n' > a.txt && echo \"\$HOME\"""#),
+        r#"printf 'hello\n' > a.txt && echo "$HOME""#
+    );
 }
 
 #[test]

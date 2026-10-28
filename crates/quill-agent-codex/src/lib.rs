@@ -988,14 +988,27 @@ fn shell_line(command: &str) -> String {
     else {
         return command.to_owned();
     };
-    match rest
-        .trim()
-        .strip_prefix('\'')
-        .and_then(|r| r.strip_suffix('\''))
-    {
-        Some(quoted) => quoted.replace("'\\''", "'"),
-        None => rest.trim().to_owned(),
+    let rest = rest.trim();
+    if let Some(quoted) = rest.strip_prefix('\'').and_then(|r| r.strip_suffix('\'')) {
+        return quoted.replace("'\\''", "'");
     }
+    // A command holding single quotes comes double-quoted, a backslash before \, $, " and a
+    // backtick (seen live, 2026-10-28: `"printf 'hello\\n' > hello.txt"`).
+    let Some(quoted) = rest.strip_prefix('"').and_then(|r| r.strip_suffix('"')) else {
+        return rest.to_owned();
+    };
+    let mut line = String::with_capacity(quoted.len());
+    let mut chars = quoted.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (c, chars.peek()) {
+            ('\\', Some(&next)) if matches!(next, '\\' | '$' | '"' | '`') => {
+                line.push(next);
+                chars.next();
+            }
+            _ => line.push(c),
+        }
+    }
+    line
 }
 
 /// A command as the tool quill already draws: a lone read, listing or search is a step of its
