@@ -5568,7 +5568,10 @@ fn choosing_an_agent_takes_its_mode_drops_the_model_and_is_kept_in_settings() {
     let (store, mut ui) = two_agents();
     ui.model = Some("opus".into());
     ui.effort = Some("high".into());
+    assert!(click(&store, &mut ui, view::AGENT_MENU).is_empty());
+    assert_eq!(ui.open_menu, Some(view::AGENT_MENU));
     let saved = click(&store, &mut ui, "agent:codex");
+    assert_eq!(ui.open_menu, None);
     assert_eq!(
         (
             ui.agent.as_str(),
@@ -5689,4 +5692,12 @@ fn the_account_is_the_chosen_agents() {
             method: "chatgpt".into()
         }]
     );
+}
+
+#[test]
+fn a_permission_card_names_the_agent_that_asks() {
+    let (_, ui) = two_agents();
+    assert_eq!(view::agent_word(&ui, "claude"), "Claude");
+    assert_eq!(view::agent_word(&ui, "codex"), "Codex");
+    assert_eq!(view::agent_word(&ui, "other"), "the agent");
 }

@@ -3415,6 +3415,7 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         view::MODEL_MENU,
         view::PLUS_MENU,
         view::FOLDER_MENU,
+        view::AGENT_MENU,
         view::USAGE_MENU,
         view::EFFORT_MENU,
     ] {

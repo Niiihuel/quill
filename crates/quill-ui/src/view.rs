@@ -2603,7 +2603,7 @@ fn transcript(
     if busy && !list.is_empty() {
         items.push(task_card(&list, column, palette));
     }
-    items.extend(waiting_cards(store, session, column, palette));
+    items.extend(waiting_cards(store, session, ui, column, palette));
     if let Some(status) = status_line(session, running.as_ref(), ui, column, palette) {
         items.push(status);
     }
@@ -2850,9 +2850,22 @@ fn entries<'a>(
     (items, running)
 }
 
+/// What to call `agent` in a sentence: the first word of its name ("Claude Code" is "Claude"),
+/// which is how Desktop says it; "the agent" before quill knows it.
+pub(crate) fn agent_word(ui: &Ui, agent: &str) -> String {
+    // shortcut: a name whose first word is not what people call it reads oddly, when an
+    // adapter needs a short name of its own.
+    ui.agents
+        .iter()
+        .find(|a| a.id == agent)
+        .and_then(|a| a.name.split_whitespace().next())
+        .unwrap_or("the agent")
+        .to_owned()
+}
+
 /// What a permission card asks, in Desktop's words: Bash by what it runs, an edit by its
 /// file.
-fn permission_heading(tool: &str, input: &Value) -> String {
+fn permission_heading(who: &str, tool: &str, input: &Value) -> String {
     // The browser's own question, Desktop's site card [notes], less the agent's
     // name.
     if tool == quill_model::SITE_PERMISSION {
@@ -2867,17 +2880,21 @@ fn permission_heading(tool: &str, input: &Value) -> String {
         .as_str()
         .or(input["notebook_path"].as_str());
     match (tool, input["description"].as_str()) {
-        ("Bash", Some(what)) => format!("Allow Claude to run {what}?"),
-        ("Edit" | "MultiEdit" | "NotebookEdit" | "Write", _) if path.is_some() => {
-            format!("Allow Claude to edit {}?", file_of(input))
+        ("Bash", Some(what)) => format!("Allow {who} to run {what}?"),
+        // An agent that gives no description (Codex's commands): the command is in the card.
+        ("Bash", None) if input["command"].is_string() => {
+            format!("Allow {who} to run this command?")
         }
-        _ => format!("Allow Claude to use {tool}?"),
+        ("Edit" | "MultiEdit" | "NotebookEdit" | "Write", _) if path.is_some() => {
+            format!("Allow {who} to edit {}?", file_of(input))
+        }
+        _ => format!("Allow {who} to use {tool}?"),
     }
 }
 
 /// What a session that waits on the person asks of them, in a line: its question, a plan to
 /// review, or the permission its card asks for.
-fn asks(session: &Session) -> Option<String> {
+fn asks(session: &Session, ui: &Ui) -> Option<String> {
     session.items.iter().rev().find_map(|item| match item {
         Item::Permission {
             tool,
@@ -2890,7 +2907,7 @@ fn asks(session: &Session) -> Option<String> {
                 .unwrap_or("A question for you")
                 .to_owned(),
             "ExitPlanMode" => "A plan for you to review".to_owned(),
-            _ => permission_heading(tool, input),
+            _ => permission_heading(&agent_word(ui, &session.agent), tool, input),
         }),
         _ => None,
     })
@@ -3043,6 +3060,7 @@ fn started_card(store: &Store, session: &Session, input: &Value, column: f32) ->
 fn waiting_cards(
     store: &Store,
     session: &Session,
+    ui: &Ui,
     column: f32,
     palette: ComponentPalette,
 ) -> Vec<Element> {
@@ -3058,7 +3076,7 @@ fn waiting_cards(
         })
         .map(|child| {
             let mut lines = vec![text(session_title(child))];
-            if let Some(asks) = asks(child) {
+            if let Some(asks) = asks(child, ui) {
                 lines.push(
                     Element::truncated_text(asks)
                         .font_family(FontFamily::Sans)
@@ -3974,7 +3992,7 @@ fn item(
             decided: None,
             ..
         } if tool == "ExitPlanMode" => plan_card(store, id, Some(session), ui, column, palette),
-        Item::Permission { .. } => permission(item, ui, column, palette),
+        Item::Permission { .. } => permission(item, &session.agent, ui, column, palette),
         Item::TurnEnd {
             ok: false,
             interrupted: true,
@@ -5574,7 +5592,13 @@ fn mono(s: impl Into<String>) -> Element {
 /// Claude wants to run, Deny, and the way the person allowed last as its main button with
 /// the other in its menu. An edit names its file and shows its diff
 ///. Once answered it goes, leaving the tool's row.
-fn permission(item: &Item, ui: &Ui, column: f32, palette: ComponentPalette) -> Element {
+fn permission(
+    item: &Item,
+    agent: &str,
+    ui: &Ui,
+    column: f32,
+    palette: ComponentPalette,
+) -> Element {
     let Item::Permission {
         id,
         tool,
@@ -5604,7 +5628,7 @@ fn permission(item: &Item, ui: &Ui, column: f32, palette: ComponentPalette) -> E
         .as_str()
         .or(input["notebook_path"].as_str());
     let file = file_of(input);
-    let heading = permission_heading(tool, input);
+    let heading = permission_heading(&agent_word(ui, agent), tool, input);
     let mut rows = vec![wrapped(text(heading).font_family(FontFamily::SansBold))];
     if let Some(what) = what {
         rows.push(wrapped(muted(what.to_owned())));
@@ -5787,9 +5811,13 @@ fn site_permission(
     // A dev server shows what it runs and where, as a command's card does.
     if input["kind"] == "server" {
         let rows = vec![
-            text(permission_heading(quill_model::SITE_PERMISSION, input))
-                .font_family(FontFamily::SansBold)
-                .size(Some(inner), None),
+            text(permission_heading(
+                "the agent",
+                quill_model::SITE_PERMISSION,
+                input,
+            ))
+            .font_family(FontFamily::SansBold)
+            .size(Some(inner), None),
             muted(input["folder"].as_str().unwrap_or_default().to_owned())
                 .font_size(SMALL)
                 .size(Some(inner), None),
@@ -5820,9 +5848,13 @@ fn site_permission(
             .size(Some(width), None);
     }
     let rows = vec![
-        text(permission_heading(quill_model::SITE_PERMISSION, input))
-            .font_family(FontFamily::SansBold)
-            .size(Some(inner), None),
+        text(permission_heading(
+            "the agent",
+            quill_model::SITE_PERMISSION,
+            input,
+        ))
+        .font_family(FontFamily::SansBold)
+        .size(Some(inner), None),
         muted(
             input["url"]
                 .as_str()
@@ -6100,7 +6132,7 @@ pub fn pr_blocked(session: &Session) -> Option<&'static str> {
         session.status,
         SessionStatus::Running | SessionStatus::Starting | SessionStatus::Awaiting
     ) {
-        Some("Claude is working \u{2014} wait for the turn to finish")
+        Some("The agent is working \u{2014} wait for the turn to finish")
     } else {
         None
     }

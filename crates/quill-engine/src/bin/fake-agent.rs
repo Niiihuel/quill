@@ -107,14 +107,18 @@ fn auth() {
 
 /// `login status|(none)` and `logout` as Codex 0.163.0 answers them (docs/codex.md "Fase 1" 6-8,
 /// from `codex-rs/cli/src/login.rs`; `login` and `logout` were not run live): all on stderr.
-/// The account state is `auth()`'s, so `QUILL_FAKE_AUTH` and the marker work the same. `login`
+/// The account state is `auth()`'s, so `QUILL_FAKE_AUTH` and the marker work the same
+/// (`QUILL_FAKE_AUTH_CODEX` sets Codex's alone). `login`
 /// prints the address like the real one, waits `QUILL_FAKE_LOGIN_MS` (the browser coming back to
 /// Codex's local server, 1500 by default) and signs in, or ends early when stdin closes (a
 /// cancel).
 fn codex_auth() {
     let args: Vec<String> = std::env::args().collect();
     let marker = std::env::var("QUILL_FAKE_AUTH_MARKER").unwrap_or_else(|_| ".fake-auth".into());
-    let base = std::env::var("QUILL_FAKE_AUTH").as_deref() != Ok("signed-out");
+    let base = std::env::var("QUILL_FAKE_AUTH_CODEX")
+        .or_else(|_| std::env::var("QUILL_FAKE_AUTH"))
+        .as_deref()
+        != Ok("signed-out");
     let set = |signed_in: bool| {
         if signed_in == base {
             let _ = std::fs::remove_file(&marker);
