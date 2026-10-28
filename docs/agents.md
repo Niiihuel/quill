@@ -1,6 +1,6 @@
 # Adaptadores de agente (`quill-agent`)
 
-quill maneja cualquier agente de código por CLI mediante un adaptador (spec.md D11). Este documento fija el contrato común y cómo se proyecta cada CLI sobre él. Solo el adaptador de Claude Code está verificado con capturas (engine.md §11.4). Las filas de otros CLIs son **hipótesis de diseño a verificar** con su propia fase de captura antes de implementarlos.
+quill maneja cualquier agente de código por CLI mediante un adaptador (spec.md D11). Este documento fija el contrato común y cómo se proyecta cada CLI sobre él. Solo el adaptador de Claude Code está verificado con capturas (engine.md §11.4). Las filas de otros CLIs son **hipótesis de diseño a verificar** con su propia fase de captura antes de implementarlos. La columna de Codex es del protocolo viejo (`newConversation`, `sendUserTurn`): el mapa vigente, del `app-server` v2 de `codex-cli 0.163.0`, está en [codex.md](codex.md).
 
 ## Contrato
 
