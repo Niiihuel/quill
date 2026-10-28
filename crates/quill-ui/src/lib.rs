@@ -627,6 +627,12 @@ fn agent_event(s: &mut Session, event: AgentEvent) {
             mode,
         } => {
             s.agent_version = Some(version);
+            // An agent that lists its skills apart (`Skills`) says no commands here: the ones
+            // already merged stay.
+            let mut capabilities = capabilities;
+            if capabilities.commands.is_empty() {
+                capabilities.commands = (s.capabilities.take()).map_or(vec![], |c| c.commands);
+            }
             s.capabilities = Some(capabilities);
             if let Some(mode) = mode {
                 s.mode = mode;
@@ -638,6 +644,23 @@ fn agent_event(s: &mut Session, event: AgentEvent) {
         AgentEvent::Tokens { tokens } => s.tokens = tokens,
         AgentEvent::ContextUsage(usage) => s.context_usage = Some(usage),
         AgentEvent::McpServers(servers) => s.mcp = Some(servers),
+        // The agent's skills join its commands in the `/` menu, but a skill that is off.
+        AgentEvent::Skills(skills) => {
+            if let Some(capabilities) = s.capabilities.as_mut() {
+                for skill in skills.into_iter().filter(|k| k.state != "off") {
+                    if capabilities.commands.iter().any(|c| c.name == skill.name) {
+                        continue;
+                    }
+                    capabilities.commands.push(quill_model::AgentSlashCommand {
+                        name: skill.name,
+                        description: skill.description,
+                        argument_hint: String::new(),
+                        aliases: vec![],
+                    });
+                }
+                capabilities.commands.sort_by(|a, b| a.name.cmp(&b.name));
+            }
+        }
         AgentEvent::TaskStarted {
             id,
             call,
@@ -1247,8 +1270,9 @@ pub struct Ui {
     pub connectors: Connectors,
     /// What Customize asks before removing, while it asks.
     pub removing: Option<Removing>,
-    /// The marketplace being typed in Customize › Plugins.
+    /// The marketplace being typed in Customize › Plugins, and the agents it is added to.
     pub marketplace_field: String,
+    pub market_targets: Vec<String>,
     /// What Customize's page searches for, and Discover's directory.
     pub customize_query: String,
     pub directory_query: String,
@@ -1934,6 +1958,7 @@ impl Ui {
             connectors: Connectors::default(),
             removing: None,
             marketplace_field: String::new(),
+            market_targets: vec![],
             customize_query: String::new(),
             directory_query: String::new(),
             directory: None,
@@ -2400,6 +2425,7 @@ impl Ui {
             let notice = (done.filter(|_| error.is_none()))
                 .map(|name| format!("{name} is installed and ready to use."));
             let known = Extensions {
+                loaded: true,
                 folder: folder.clone(),
                 list: extensions.clone(),
                 error: error.clone(),
@@ -2826,8 +2852,7 @@ fn update_action(store: &Store, ui: &mut Ui, action: &limn::UiAction) -> Vec<Int
         // Enter in the marketplace's field adds it, as its button does.
         UiAction::Submitted { id, value } if id.starts_with(view::EXT_MKT_FIELD) => {
             ui.marketplace_field = value.clone();
-            let agent = id.strip_prefix(view::EXT_MKT_FIELD).unwrap_or_default();
-            clicked(store, ui, &format!("ext:mkt-add:{agent}"))
+            clicked(store, ui, "ext:mkt-add")
         }
         UiAction::InputChanged { id, value }
             if id.starts_with("set:agent:") && id.ends_with(":env") =>
@@ -3965,6 +3990,8 @@ fn answer(store: &Store, ui: &mut Ui, rest: &str) -> Vec<Intent> {
 /// An agent's plugins, marketplaces and skills, for Settings' Customize pages.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Extensions {
+    /// They were read at least once; until then the page says it looks.
+    pub loaded: bool,
     /// The folder they were read for.
     pub folder: PathBuf,
     pub list: quill_model::Extensions,
@@ -3999,20 +4026,22 @@ pub struct ServersListed {
     pub working: bool,
 }
 
-/// "Add custom connector" as typed: for which agent, its name, its address or command line,
-/// its `KEY=value` and `Name: value` lines, and where it goes.
+/// "Add custom connector" as typed: for which agents, its name, its address or command line,
+/// its `KEY=value` and `Name: value` lines, and where it goes in each agent.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AddServer {
-    pub agent: String,
+    /// The agents' own programs it is added with, one or several.
+    pub agents: Vec<String>,
     pub name: String,
     pub target: String,
     pub env: String,
     pub headers: String,
-    pub scope: Option<String>,
+    /// Where it goes, by agent; an agent's first scope without one.
+    pub scopes: std::collections::BTreeMap<String, String>,
 }
 
 impl AddServer {
-    /// What the agent is asked to add: an address is reached over HTTP, anything else is a
+    /// What an agent is asked to add: an address is reached over HTTP, anything else is a
     /// command and its arguments, split at spaces.
     pub fn server(&self) -> Option<quill_model::NewServer> {
         let name = self.name.trim();
@@ -4025,7 +4054,7 @@ impl AddServer {
                 .map(str::to_owned)
                 .collect()
         };
-        (!name.is_empty()).then(|| quill_model::NewServer {
+        (!name.is_empty() && !self.agents.is_empty()).then(|| quill_model::NewServer {
             name: name.to_owned(),
             target: first.to_owned(),
             args: if remote {
@@ -4034,7 +4063,7 @@ impl AddServer {
                 words.map(str::to_owned).collect()
             },
             remote,
-            scope: self.scope.clone(),
+            scope: None,
             env: lines(&self.env, '='),
             headers: if remote {
                 lines(&self.headers, ':')
@@ -4042,6 +4071,13 @@ impl AddServer {
                 vec![]
             },
         })
+    }
+
+    /// [`server`](Self::server) for `agent`, with the scope chosen for it.
+    pub fn server_for(&self, agent: &str) -> Option<quill_model::NewServer> {
+        let mut server = self.server()?;
+        server.scope = self.scopes.get(agent).cloned();
+        Some(server)
     }
 }
 
@@ -4071,8 +4107,8 @@ pub fn is_project(folder: &std::path::Path) -> bool {
 /// The marketplaces' dialogs: adding one, and the list of them to update or remove.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MarketDialog {
-    Add(String),
-    Manage(String),
+    Add,
+    Manage,
 }
 
 /// Customize's own clicks, around the changes: its menus (Add, an item's "⋯", Discover's
@@ -4097,19 +4133,41 @@ fn customize_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
             ui.settings_menu = None;
             ui.directory = Some(arg.to_owned());
             ui.directory_query.clear();
+            ui.directory_market = None;
+        }
+        // Another agent's directory, in the same dialog.
+        "dir" => {
+            ui.directory = Some(arg.to_owned());
+            ui.directory_market = None;
+        }
+        // An agent the marketplace is added to, ticked or not.
+        "to" => {
+            let at = ui.market_targets.iter().position(|a| a == arg);
+            match at {
+                Some(at) if ui.market_targets.len() > 1 => drop(ui.market_targets.remove(at)),
+                Some(_) => {}
+                None => ui.market_targets.push(arg.to_owned()),
+            }
         }
         "filter" => {
             ui.settings_menu = None;
             ui.directory_market = (!arg.is_empty()).then(|| arg.to_owned());
         }
+        // From the directory, for the agent whose it is; from the page, for the agent a new
+        // session would run.
         "add-marketplace" => {
             ui.settings_menu = None;
             ui.marketplace_field.clear();
-            ui.marketplaces = Some(MarketDialog::Add(arg.to_owned()));
+            let first = (!arg.is_empty()).then(|| arg.to_owned());
+            ui.market_targets = first.into_iter().collect();
+            if ui.market_targets.is_empty() {
+                ui.market_targets = vec![ui.agent.clone()];
+            }
+            ui.marketplaces = Some(MarketDialog::Add);
         }
         "manage" => {
             ui.settings_menu = None;
-            ui.marketplaces = Some(MarketDialog::Manage(arg.to_owned()));
+            ui.marketplaces = Some(MarketDialog::Manage);
         }
         "close" => {
             ui.settings_menu = None;
@@ -4173,6 +4231,21 @@ fn extensions_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
         }
         return Some(vec![]);
     }
+    // A marketplace goes to every agent ticked, each by its own program.
+    if id == "ext:mkt-add" {
+        let source = ui.marketplace_field.trim().to_owned();
+        if source.is_empty() || ui.market_targets.is_empty() {
+            return Some(vec![]);
+        }
+        ui.marketplace_field.clear();
+        ui.marketplaces = None;
+        let mut intents = vec![];
+        for agent in std::mem::take(&mut ui.market_targets) {
+            let op = ExtensionOp::AddMarketplace(source.clone());
+            intents.extend(send(ui, &agent, source.clone(), None, op)?);
+        }
+        return Some(intents);
+    }
     let (verb, rest) = id.strip_prefix("ext:")?.split_once(':')?;
     let (agent, name) = rest.split_once(':').unwrap_or((rest, ""));
     let known = ui.extensions.get(agent)?;
@@ -4210,21 +4283,6 @@ fn extensions_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
         "mkt-remove" => {
             ui.removing = Some(Removing::Marketplace(agent.to_owned(), name.to_owned()));
             Some(vec![])
-        }
-        "mkt-add" => {
-            let source = ui.marketplace_field.trim().to_owned();
-            if source.is_empty() {
-                return Some(vec![]);
-            }
-            ui.marketplace_field.clear();
-            ui.marketplaces = None;
-            send(
-                ui,
-                agent,
-                source.clone(),
-                None,
-                ExtensionOp::AddMarketplace(source),
-            )
         }
         "install" => {
             // `{id}` for the person's own, `{id}={scope}` from the menu of scopes.
@@ -4333,7 +4391,7 @@ fn plus_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
         view::PLUGINS_MANAGE => Some(page(ui, view::SETTINGS_PLUGINS)),
         view::PLUGINS_BROWSE => {
             let intents = page(ui, view::SETTINGS_PLUGINS);
-            ui.directory = ui.agents.first().map(|a| a.id.clone());
+            ui.directory = Some(ui.agent.clone());
             ui.directory_query.clear();
             Some(intents)
         }
@@ -4350,40 +4408,66 @@ fn connectors_clicked(ui: &mut Ui, id: &str) -> Option<Vec<Intent>> {
     let c = &mut ui.connectors;
     match rest.split_once(':').unwrap_or((rest, "")) {
         ("tab", tab) => c.discover = tab == "discover",
+        // From the header, for the agent a new session would run; ticking more is the dialog's.
         ("add", agent) => {
+            let agent = if agent.is_empty() {
+                ui.agent.clone()
+            } else {
+                agent.to_owned()
+            };
             c.adding = Some(AddServer {
-                agent: agent.to_owned(),
+                agents: vec![agent],
                 ..AddServer::default()
             })
         }
         ("offer", at) => {
             let (_, offers, _) = c.found.as_ref()?;
             let offer = offers.get(at.parse::<usize>().ok()?)?.clone();
-            let agent = ui.agents.first()?.id.clone();
             // The registry's name's last part, as a server's own name.
             let name = offer.name.rsplit(['/', '.']).next().unwrap_or(&offer.name);
             let mut target = vec![offer.target.clone()];
             target.extend(offer.args.iter().cloned());
             ui.connectors.adding = Some(AddServer {
-                agent,
+                agents: vec![ui.agent.clone()],
                 name: name.to_owned(),
                 target: target.join(" "),
                 env: offer.env.join("\n"),
                 headers: offer.headers.join("\n"),
-                scope: None,
+                scopes: Default::default(),
             });
         }
-        ("scope", scope) => c.adding.as_mut()?.scope = Some(scope.to_owned()),
+        // An agent the server goes to, ticked or not; one stays.
+        ("to", agent) => {
+            let adding = c.adding.as_mut()?;
+            match adding.agents.iter().position(|a| a == agent) {
+                Some(at) if adding.agents.len() > 1 => drop(adding.agents.remove(at)),
+                Some(_) => {}
+                None => adding.agents.push(agent.to_owned()),
+            }
+        }
+        ("scope", rest) => {
+            let (agent, scope) = rest.split_once(':')?;
+            c.adding
+                .as_mut()?
+                .scopes
+                .insert(agent.to_owned(), scope.to_owned());
+        }
         ("cancel", _) => c.adding = None,
+        // Each agent adds it with its own program, and keeps or fails on its own.
         ("save", _) => {
             let adding = c.adding.take()?;
-            let server = adding.server()?;
-            c.listed.entry(adding.agent.clone()).or_default().working = true;
-            return Some(vec![Intent::ExtensionOp {
-                agent: adding.agent,
-                folder,
-                op: quill_model::ExtensionOp::AddServer(server),
-            }]);
+            adding.server()?;
+            let mut intents = vec![];
+            for agent in &adding.agents {
+                let op = quill_model::ExtensionOp::AddServer(adding.server_for(agent)?);
+                c.listed.entry(agent.clone()).or_default().working = true;
+                intents.push(Intent::ExtensionOp {
+                    agent: agent.clone(),
+                    folder: folder.clone(),
+                    op,
+                });
+            }
+            return Some(intents);
         }
         ("remove", rest) => {
             let (agent, name) = rest.split_once(':')?;

@@ -5,10 +5,10 @@ use std::path::PathBuf;
 
 pub use quill_agent::{
     AgentCapabilities, AgentEvent, AgentOption, AgentSlashCommand, AuthState, ConfiguredServer,
-    ContextCategory, ContextKind, ContextUsage, Decision, ExtensionOp, Extensions, FileChange,
-    Marketplace, McpServer, McpSource, McpStatus, McpTool, ModeTone, ModeWords, ModelInfo,
-    NewServer, PlanLimits, Plugin, PluginOffer, Skill, Suggestion, TaskUsage, ToolContent, Usage,
-    UsageWindow, WebSearchRun, WebSource,
+    ContextCategory, ContextKind, ContextUsage, Decision, ExtensionKinds, ExtensionOp, Extensions,
+    FileChange, Marketplace, McpServer, McpSource, McpStatus, McpTool, ModeTone, ModeWords,
+    ModelInfo, NewServer, PlanLimits, Plugin, PluginOffer, Skill, Suggestion, TaskUsage,
+    ToolContent, Usage, UsageWindow, WebSearchRun, WebSource,
 };
 
 /// quill's own id of a session.

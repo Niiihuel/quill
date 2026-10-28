@@ -1,0 +1,30 @@
+{
+  "installed": [
+    {
+      "pluginId": "pdf@primary-runtime",
+      "name": "pdf",
+      "marketplaceName": "primary-runtime",
+      "version": "26.1020.11127",
+      "installed": true,
+      "enabled": true,
+      "source": { "source": "local", "path": "/opt/codex/plugins/pdf" },
+      "marketplaceSource": { "sourceType": "local", "source": "/opt/codex/plugins/primary-runtime" },
+      "installPolicy": "AVAILABLE",
+      "authPolicy": "ON_USE"
+    }
+  ],
+  "available": [
+    {
+      "pluginId": "latex@bundled",
+      "name": "latex",
+      "marketplaceName": "bundled",
+      "version": "0.2.6",
+      "installed": false,
+      "enabled": false,
+      "source": { "source": "local", "path": "/opt/codex/plugins/bundled/latex" },
+      "marketplaceSource": { "sourceType": "local", "source": "/opt/codex/plugins/bundled" },
+      "installPolicy": "AVAILABLE",
+      "authPolicy": "ON_INSTALL"
+    }
+  ]
+}

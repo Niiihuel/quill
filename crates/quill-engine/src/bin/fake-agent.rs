@@ -6,6 +6,12 @@
 //! waits for one on stdin, so the engine's writes pace the replay as they did live.
 //! `QUILL_FAKE_PACE=<factor>` also keeps the capture's time between lines, scaled, so a
 //! person can watch a turn run.
+//!
+//! It also answers what quill asks of a program outside a session (`mod ext`): `mcp` and
+//! `plugin` subcommands, in the words of Claude Code or of Codex by the name it is run as
+//! (`fake-codex` is Codex; anything else is Claude Code), and, without a capture in the working
+//! directory, the app-server and control requests that list skills. A line quill sends with an
+//! id that starts `quill-` is answered on its own and does not count as one of the capture's.
 
 use std::io::{BufRead, Write};
 
@@ -13,14 +19,24 @@ fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("auth") => return auth(),
         Some("login" | "logout") => return codex_auth(),
+        Some("mcp") => return ext::mcp(),
+        Some("plugin") => return ext::plugin(),
         _ => {}
     }
-    let path =
-        std::fs::read_to_string(".fake-agent").expect(".fake-agent in the working directory");
-    let path = path.trim();
-    let text = std::fs::read_to_string(path).expect("fixture");
     let stdin = std::io::stdin();
     let mut input = stdin.lock().lines();
+    let Ok(path) = std::fs::read_to_string(".fake-agent") else {
+        // No capture here: a program asked outside a session.
+        while let Some(Ok(line)) = input.next() {
+            if let Some(answer) = ext::answer(&line, true) {
+                println!("{answer}");
+                let _ = std::io::stdout().flush();
+            }
+        }
+        return;
+    };
+    let path = path.trim();
+    let text = std::fs::read_to_string(path).expect("fixture");
     let mut out = std::io::stdout().lock();
     let pace: Option<f64> = std::env::var("QUILL_FAKE_PACE")
         .ok()
@@ -35,7 +51,7 @@ fn main() {
         }
         last = at;
         match entry["dir"].as_str() {
-            Some("out") if input.next().is_none() => return,
+            Some("out") if next_line(&mut input).is_none() => return,
             Some("in") => {
                 run_tools(&entry["msg"]);
                 writeln!(out, "{}", entry["msg"]).unwrap();
@@ -44,8 +60,28 @@ fn main() {
             _ => {}
         }
     }
-    // The real CLI stays until its stdin closes.
-    for _ in input {}
+    // The real CLI stays until its stdin closes, answering what quill asks of it on its own.
+    for line in input.map_while(Result::ok) {
+        if let Some(answer) = ext::answer(&line, false) {
+            writeln!(out, "{answer}").unwrap();
+            out.flush().unwrap();
+        }
+    }
+}
+
+/// The next line quill wrote that belongs to the capture: the ones with ids of quill's own
+/// (`ext::answer`) are answered on the way.
+fn next_line(input: &mut impl Iterator<Item = std::io::Result<String>>) -> Option<String> {
+    loop {
+        let line = input.next()?.ok()?;
+        match ext::answer(&line, false) {
+            Some(answer) => {
+                println!("{answer}");
+                let _ = std::io::stdout().flush();
+            }
+            None => return Some(line),
+        }
+    }
 }
 
 /// `auth status|login|logout` as Claude Code 2.1.312 answers them (cli-auth.md §1-3). The
@@ -193,5 +229,318 @@ fn run_tools(msg: &serde_json::Value) {
             }
             _ => {}
         }
+    }
+}
+
+/// What the two CLIs answer outside a session, with made-up content: the shapes are those the
+/// adapters read (`codex mcp list --json`, `claude mcp list`, `plugin list --json --available`,
+/// `skills/list`, `mcpServerStatus/list`). `QUILL_FAKE_EXT=<dir>` keeps what is added and
+/// removed there, so the next list shows it.
+mod ext {
+    use serde_json::{json, Value};
+
+    fn codex() -> bool {
+        let program = std::env::args().next().unwrap_or_default();
+        program
+            .rsplit('/')
+            .next()
+            .is_some_and(|n| n.contains("codex"))
+    }
+
+    /// Where this agent keeps what was added: `QUILL_FAKE_EXT`, else beside the program as run
+    /// (each test links its own).
+    fn kept() -> Option<std::path::PathBuf> {
+        let dir = match std::env::var("QUILL_FAKE_EXT") {
+            Ok(dir) => std::path::PathBuf::from(dir),
+            Err(_) => {
+                let program = std::path::PathBuf::from(std::env::args().next()?);
+                program.parent()?.join(".fake-ext")
+            }
+        };
+        let name = if codex() { "codex" } else { "claude" };
+        Some(dir.join(name))
+    }
+
+    /// The servers added here: `name<TAB>target` a line.
+    fn added() -> Vec<(String, String)> {
+        let text = kept().and_then(|p| std::fs::read_to_string(p.with_extension("servers")).ok());
+        (text.unwrap_or_default().lines())
+            .filter_map(|l| l.split_once('\t'))
+            .map(|(a, b)| (a.to_owned(), b.to_owned()))
+            .collect()
+    }
+
+    fn keep(servers: &[(String, String)]) {
+        if let Some(path) = kept() {
+            let _ = std::fs::create_dir_all(path.parent().unwrap());
+            let text: String = servers.iter().map(|(a, b)| format!("{a}\t{b}\n")).collect();
+            let _ = std::fs::write(path.with_extension("servers"), text);
+        }
+    }
+
+    pub fn mcp() {
+        let args: Vec<String> = std::env::args().collect();
+        let mut servers = added();
+        match args.get(2).map(String::as_str) {
+            Some("list") if codex() => {
+                let mut rows = vec![
+                    json!({"name": "node_repl", "enabled": true, "disabled_reason": null,
+                        "transport": {"type": "stdio", "command": "node_repl", "args": [], "env": null, "env_vars": [], "cwd": null},
+                        "auth_status": "unsupported"}),
+                    json!({"name": "docs", "enabled": true, "disabled_reason": null,
+                        "transport": {"type": "streamable_http", "url": "https://docs.example.com/mcp", "bearer_token_env_var": null, "http_headers": null, "env_http_headers": null},
+                        "auth_status": "not_logged_in"}),
+                    json!({"name": "scratch", "enabled": false, "disabled_reason": "user",
+                        "transport": {"type": "stdio", "command": "npx", "args": ["-y", "scratch-mcp"], "env": null, "env_vars": [], "cwd": null},
+                        "auth_status": "unsupported"}),
+                ];
+                for (name, target) in &servers {
+                    let (command, rest) = target.split_once(' ').unwrap_or((target, ""));
+                    let args: Vec<&str> = rest.split_whitespace().collect();
+                    rows.push(json!({"name": name, "enabled": true, "disabled_reason": null,
+                        "transport": {"type": "stdio", "command": command, "args": args, "env": null, "env_vars": [], "cwd": null},
+                        "auth_status": "unsupported"}));
+                }
+                println!("{}", Value::Array(rows));
+            }
+            Some("list") => {
+                println!("Checking MCP server health\u{2026}\n");
+                println!("github: npx -y @modelcontextprotocol/server-github - \u{2713} Connected");
+                println!(
+                    "plugin:vercel:vercel: https://mcp.vercel.com (HTTP) - ! Needs authentication"
+                );
+                println!("claude.ai Figma: https://mcp.figma.com/mcp - \u{2713} Connected");
+                for (name, target) in &servers {
+                    println!("{name}: {target} - \u{2713} Connected");
+                }
+            }
+            Some("add") => {
+                // `add [options] name [-- command args]`: Codex puts the name first, Claude Code
+                // after its options; the name is the first word that is not an option.
+                let mut words: Vec<String> = vec![];
+                let (mut tail, mut url) = (vec![], None);
+                let mut rest = args[3..].iter();
+                while let Some(arg) = rest.next() {
+                    match arg.as_str() {
+                        "--" => {
+                            tail = rest.by_ref().cloned().collect();
+                        }
+                        "--url" => url = rest.next().cloned(),
+                        "-s"
+                        | "--scope"
+                        | "-t"
+                        | "--transport"
+                        | "-e"
+                        | "--env"
+                        | "-H"
+                        | "--header"
+                        | "--bearer-token-env-var" => drop(rest.next()),
+                        other if other.starts_with('-') => {}
+                        other => words.push(other.to_owned()),
+                    }
+                }
+                let name = words.first().cloned().unwrap_or_default();
+                let target = match url {
+                    Some(url) => url,
+                    None => words
+                        .get(1)
+                        .into_iter()
+                        .chain(&tail)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                };
+                servers.push((name.clone(), target));
+                keep(&servers);
+                println!("Added MCP server {name}.");
+            }
+            Some("remove") => {
+                let name = args.get(3).cloned().unwrap_or_default();
+                if servers.iter().any(|(n, _)| *n == name) {
+                    servers.retain(|(n, _)| *n != name);
+                    keep(&servers);
+                    println!("Removed MCP server {name}.");
+                } else if codex() {
+                    println!("No MCP server named '{name}' found.");
+                } else {
+                    eprintln!("No MCP server found with name: {name}");
+                    std::process::exit(1);
+                }
+            }
+            _ => std::process::exit(2),
+        }
+    }
+
+    pub fn plugin() {
+        let args: Vec<String> = std::env::args().collect();
+        let (c, installed, offers) = (codex(), "installed", "available");
+        let row = |name: &str, market: &str, description: &str, on: bool| {
+            if c {
+                json!({"pluginId": format!("{name}@{market}"), "name": name, "marketplaceName": market,
+                    "version": "1.2.0", "installed": on, "enabled": on})
+            } else {
+                json!({"id": format!("{name}@{market}"), "pluginId": format!("{name}@{market}"), "name": name,
+                    "marketplaceName": market, "description": description, "version": "1.2.0",
+                    "installCount": 4200, "scope": "user", "enabled": on})
+            }
+        };
+        match (
+            args.get(2).map(String::as_str),
+            args.get(3).map(String::as_str),
+        ) {
+            (Some("list"), _) => {
+                let (have, offer): (Vec<Value>, Vec<Value>) = if c {
+                    (
+                        vec![
+                            row(
+                                "documents",
+                                "primary-runtime",
+                                "Create and edit documents",
+                                true,
+                            ),
+                            row("pdf", "primary-runtime", "Read and fill PDFs", true),
+                        ],
+                        vec![
+                            row("latex", "bundled", "Typeset papers", false),
+                            row("charts", "bundled", "Draw charts from data", false),
+                        ],
+                    )
+                } else {
+                    (
+                        vec![
+                            row(
+                                "vercel",
+                                "claude-plugins-official",
+                                "Deploy to Vercel",
+                                true,
+                            ),
+                            row(
+                                "frontend-design",
+                                "claude-plugins-official",
+                                "Build distinctive interfaces",
+                                true,
+                            ),
+                        ],
+                        vec![row(
+                            "figma",
+                            "claude-plugins-official",
+                            "Read Figma files",
+                            false,
+                        )],
+                    )
+                };
+                let list = json!({ installed: have, offers: offer });
+                println!("{list}");
+            }
+            (Some("marketplace"), Some("list")) if c => {
+                println!(
+                    r#"{{"marketplaces":[{{"name":"primary-runtime","root":"/opt/codex/plugins/primary-runtime","marketplaceSource":{{"sourceType":"local","source":"/opt/codex/plugins/primary-runtime"}}}},{{"name":"bundled","root":"/opt/codex/plugins/bundled"}}]}}"#
+                );
+            }
+            (Some("marketplace"), Some("list")) => {
+                println!(
+                    r#"[{{"name":"claude-plugins-official","repo":"anthropics/claude-plugins-official"}}]"#
+                );
+            }
+            _ => println!(r#"{{"outcome":"ok","message":"done"}}"#),
+        }
+    }
+
+    /// The answer to a line quill wrote, if it is one this answers. `bare` is on when no
+    /// capture is being replayed: only then are all of Claude Code's control requests these
+    /// (the skills' list is answered always: no capture asks it).
+    pub fn answer(line: &str, bare: bool) -> Option<String> {
+        let msg: Value = serde_json::from_str(line).ok()?;
+        let id = msg["id"].as_str();
+        let result = match (msg["method"].as_str(), id) {
+            (Some("initialize"), Some("quill-ext")) => json!({
+                "userAgent": "quill/0.163.0 (Fake; x86_64)", "codexHome": "/home/fake/.codex",
+                "platformFamily": "unix", "platformOs": "linux"}),
+            (Some("skills/list"), Some(_)) => {
+                let off = kept()
+                    .and_then(|p| std::fs::read_to_string(p.with_extension("off")).ok())
+                    .unwrap_or_default();
+                let skill = |name: &str, scope: &str, description: &str| {
+                    json!({"name": name, "description": description,
+                        "path": format!("/home/fake/.agents/skills/{name}/SKILL.md"), "scope": scope,
+                        "enabled": !off.lines().any(|l| l == name), "pluginId": null})
+                };
+                json!({"data": [{"cwd": "/work", "errors": [], "skills": [
+                    skill("review", "user", "Review the diff for bugs before it is merged"),
+                    skill("release-notes", "user", "Write release notes from the git log"),
+                    skill("graphify", "user", "Turn any input into a knowledge graph"),
+                    skill("repo-conventions", "repo", "How this repository names and tests things"),
+                    skill("skill-creator", "system", "Create or update a skill"),
+                ]}]})
+            }
+            (Some("skills/config/write"), Some(_)) => {
+                let name = msg["params"]["path"].as_str().unwrap_or_default();
+                let name = name.rsplit('/').nth(1).unwrap_or_default();
+                if let Some(path) = kept() {
+                    let _ = std::fs::create_dir_all(path.parent().unwrap());
+                    let off = path.with_extension("off");
+                    let mut lines: Vec<String> = std::fs::read_to_string(&off)
+                        .unwrap_or_default()
+                        .lines()
+                        .map(str::to_owned)
+                        .collect();
+                    lines.retain(|l| l != name);
+                    if msg["params"]["enabled"] == false {
+                        lines.push(name.to_owned());
+                    }
+                    let _ = std::fs::write(&off, lines.join("\n"));
+                }
+                json!({"effectiveEnabled": msg["params"]["enabled"]})
+            }
+            (Some("mcpServerStatus/list"), Some(_)) => {
+                let tool = |name: &str, description: &str, read_only: bool| {
+                    (
+                        name.to_owned(),
+                        json!({"name": name, "description": description,
+                        "annotations": {"readOnlyHint": read_only, "destructiveHint": !read_only}}),
+                    )
+                };
+                let tools = |list: Vec<(String, Value)>| Value::Object(list.into_iter().collect());
+                json!({"nextCursor": null, "data": [
+                    {"name": "node_repl", "runtimeStatus": "connected", "pluginId": null, "authStatus": "unsupported",
+                     "toolsError": null, "tools": tools(vec![
+                        tool("js", "Run JavaScript in a persistent session", false),
+                        tool("js_reset", "Forget the session's state", true)])},
+                    {"name": "docs", "runtimeStatus": "authenticationRequired", "pluginId": null, "authStatus": "notLoggedIn",
+                     "toolsError": null, "tools": {}},
+                    {"name": "scratch", "runtimeStatus": "disabled", "pluginId": null, "authStatus": "unsupported",
+                     "toolsError": null, "tools": {}},
+                    {"name": "cua_repl", "runtimeStatus": "failed", "pluginId": "computer-use@bundled", "authStatus": "unsupported",
+                     "toolsError": "MCP startup failed: connection closed", "tools": {}},
+                    {"name": "codex_apps", "runtimeStatus": "connected", "pluginId": null, "authStatus": "bearerToken",
+                     "toolsError": null, "tools": tools(vec![tool("search", "Search the connected apps", true)])},
+                ]})
+            }
+            (Some("config/mcpServer/reload"), Some(_)) => json!({}),
+            (Some("mcpServer/oauth/login"), Some(_)) => {
+                json!({"authorizationUrl": "https://example.invalid/oauth/authorize?state=fake"})
+            }
+            // Claude Code's control requests, only when there is no capture to replay.
+            _ if msg["type"] == "control_request"
+                && (bare || msg["request"]["subtype"] == "get_skills_dialog") =>
+            {
+                let body = match msg["request"]["subtype"].as_str() {
+                    Some("get_skills_dialog") => json!({"skills": [
+                        {"name": "review", "display_name": "review", "description": "Review the diff for bugs", "source": "user", "state": "on", "handles": []},
+                        {"name": "frontend-design", "display_name": "frontend-design", "description": "Build distinctive interfaces", "source": "plugin", "state": "on", "locked_by": "plugin", "handles": []},
+                        {"name": "graphify", "display_name": "graphify", "description": "Turn any input into a knowledge graph", "source": "user", "state": "name-only", "handles": []},
+                    ]}),
+                    _ => json!({}),
+                };
+                return Some(
+                    json!({"type": "control_response", "response": {"subtype": "success",
+                    "request_id": msg["request_id"], "response": body}})
+                    .to_string(),
+                );
+            }
+            _ => return None,
+        };
+        // Only ids of quill's own are answered in a replay; a control request has none.
+        id.map(|id| json!({"id": id, "result": result}).to_string())
     }
 }

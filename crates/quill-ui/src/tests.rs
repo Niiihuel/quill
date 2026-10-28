@@ -1349,12 +1349,12 @@ fn a_link_opens_in_the_sessions_browser_and_its_menu_closes() {
 #[test]
 fn a_custom_connector_is_an_address_or_a_command_with_its_settings() {
     let mut adding = crate::AddServer {
-        agent: "claude".into(),
+        agents: vec!["claude".into()],
         name: " ctx ".into(),
         target: "https://mcp.context7.com/mcp".into(),
         env: "A=1\nnot a pair".into(),
         headers: "X-Key: 1".into(),
-        scope: None,
+        scopes: Default::default(),
     };
     let server = adding.server().unwrap();
     assert!(server.remote && server.name == "ctx" && server.args.is_empty());
@@ -2143,6 +2143,7 @@ fn customize_lists_and_changes_an_agents_plugins_marketplaces_and_skills() {
             pair("project", "Install for project (shared)"),
         ],
         skill_states: vec![pair("on", "On"), pair("off", "Off")],
+        kinds: Default::default(),
     };
     let heard = |ui: &mut Ui, error: Option<&str>| {
         ui.applied(&Event::Extensions {
@@ -2209,7 +2210,7 @@ fn customize_lists_and_changes_an_agents_plugins_marketplaces_and_skills() {
         },
     );
     assert_eq!(
-        click(&store, &mut ui, "ext:mkt-add:claude"),
+        click(&store, &mut ui, "ext:mkt-add"),
         vec![op(ExtensionOp::AddMarketplace("o/r".into()))]
     );
     assert!(ui.marketplaces.is_none());
@@ -4957,6 +4958,7 @@ fn the_logos_of_connectors_and_plugins_are_asked_once_and_only_while_shown() {
             label: String::new(),
             target: "https://mcp.figma.com/mcp".into(),
             status: McpStatus::Connected,
+            checked: true,
             source: McpSource::User,
         }],
         scopes: vec![],
@@ -6320,4 +6322,384 @@ fn a_helper_row_opens_its_pane_and_is_not_the_agent_picker() {
     assert_eq!(ui.agent, before);
     assert_eq!(ui.helper.as_deref(), Some("call_9"));
     assert_eq!(ui.settings.default_agent, None);
+}
+
+/// Claude Code and Codex, as the engine tells the agents, the folder `/work` a project and the
+/// Customize page `page` open.
+fn two_agents_on(page: &str) -> (Store, Ui) {
+    let (store, mut ui) = store_with_session();
+    let agent = |id: &str, name: &str| quill_model::AgentInfo {
+        id: id.into(),
+        name: name.into(),
+        tested: vec![],
+        options: vec![],
+        icon: None,
+        sign_in_methods: vec![],
+        sign_in_code: true,
+        modes: claude_modes(),
+        default_mode: "default".into(),
+    };
+    ui.applied(&Event::Settings {
+        settings: Default::default(),
+        agents: vec![agent("claude", "Claude Code"), agent("codex", "Codex")],
+    });
+    ui.cwd = "/work".into();
+    click(&store, &mut ui, view::SETTINGS_OPEN);
+    click(&store, &mut ui, &format!("settings:page:{page}"));
+    (store, ui)
+}
+
+fn drawn(store: &Store, ui: &Ui, words: &str) -> bool {
+    drawn_words(store, ui, words)
+}
+
+fn skill(name: &str, source: &str, state: &str) -> quill_model::Skill {
+    quill_model::Skill {
+        name: name.into(),
+        description: format!("The {name} skill."),
+        source: source.into(),
+        state: state.into(),
+        locked: None,
+        key: serde_json::json!({ "name": name }),
+    }
+}
+
+fn heard_extensions(ui: &mut Ui, agent: &str, list: quill_model::Extensions) {
+    ui.applied(&Event::Extensions {
+        agent: agent.into(),
+        folder: "/work".into(),
+        extensions: list,
+        error: None,
+    });
+}
+
+#[test]
+fn skills_show_one_section_per_agent_and_one_with_no_scopes_does_not_wait_forever() {
+    let (store, mut ui) = two_agents_on(view::SETTINGS_SKILLS);
+    // Until each agent's program answers, its own section says it looks.
+    assert!(drawn(&store, &ui, "Claude Code") && drawn(&store, &ui, "Codex"));
+    assert!(drawn(&store, &ui, "Looking for skills"));
+    let pair = |a: &str, b: &str| (a.to_owned(), b.to_owned());
+    heard_extensions(
+        &mut ui,
+        "claude",
+        quill_model::Extensions {
+            skills: vec![skill("review", "user", "on")],
+            scopes: vec![pair("user", "Install for me")],
+            skill_states: vec![pair("on", "On"), pair("off", "Off")],
+            ..Default::default()
+        },
+    );
+    // Codex lists its skills and no scope to install plugins in: its section is not stuck.
+    heard_extensions(
+        &mut ui,
+        "codex",
+        quill_model::Extensions {
+            skills: vec![
+                skill("review", "user", "on"),
+                skill("imagegen", "system", "on"),
+            ],
+            skill_states: vec![pair("on", "On"), pair("off", "Off")],
+            kinds: quill_model::ExtensionKinds {
+                skills_per_folder: false,
+                switch_plugins: false,
+                update_plugins: false,
+            },
+            ..Default::default()
+        },
+    );
+    assert!(!drawn(&store, &ui, "Looking for skills"));
+    assert!(drawn(&store, &ui, "imagegen") && drawn(&store, &ui, "System"));
+    // A skill both have is marked with both agents, one only Codex has with Codex alone.
+    let on = |name: &str| -> Vec<String> {
+        view::marked_agents(&ui, |a| view::skill_on_in(&ui, a, name))
+            .map(|a| a.id.clone())
+            .collect()
+    };
+    assert_eq!(on("review"), ["claude", "codex"]);
+    assert_eq!(on("imagegen"), ["codex"]);
+    // Codex keeps a skill's state for the person: no project folder is asked for.
+    ui.cwd = std::path::PathBuf::new();
+    click(&store, &mut ui, "cz:more:codex:review");
+    assert!(!drawn(&store, &ui, "Choose a project folder"));
+    click(&store, &mut ui, "cz:more:claude:review");
+    assert!(drawn(&store, &ui, "Choose a project folder"));
+    // Its state change acts on Codex only.
+    ui.cwd = "/work".into();
+    let sent = click(&store, &mut ui, "ext:skill:codex:review=off");
+    assert!(matches!(
+        sent.as_slice(),
+        [Intent::ExtensionOp { agent, op: quill_model::ExtensionOp::SkillState { state, .. }, .. }]
+            if agent == "codex" && state == "off"
+    ));
+}
+
+#[test]
+fn connectors_list_each_agents_servers_apart_and_an_empty_one_names_its_agent() {
+    let (store, mut ui) = two_agents_on(view::SETTINGS_CONNECTORS);
+    let server = |name: &str, checked| quill_model::ConfiguredServer {
+        name: name.into(),
+        label: name.into(),
+        target: "npx -y x".into(),
+        status: quill_model::McpStatus::Connected,
+        checked,
+        source: quill_model::McpSource::Other,
+    };
+    ui.applied(&Event::Servers {
+        agent: "claude".into(),
+        folder: "/work".into(),
+        servers: vec![server("github", true)],
+        scopes: vec![("user".into(), "All my projects".into())],
+        error: None,
+    });
+    ui.applied(&Event::Servers {
+        agent: "codex".into(),
+        folder: "/work".into(),
+        servers: vec![],
+        scopes: vec![("user".into(), "All my projects".into())],
+        error: None,
+    });
+    assert!(drawn(&store, &ui, "github") && drawn(&store, &ui, "Connected \u{b7} npx"));
+    assert!(drawn(&store, &ui, "No connectors in Codex yet."));
+    assert!(!drawn(&store, &ui, "No connectors in Claude Code yet."));
+    // What its list did not check is not said to be connected.
+    ui.applied(&Event::Servers {
+        agent: "codex".into(),
+        folder: "/work".into(),
+        servers: vec![server("node_repl", false)],
+        scopes: vec![],
+        error: Some("Codex can\u{2019}t do that.".into()),
+    });
+    assert!(
+        drawn(&store, &ui, "On \u{b7} npx") && drawn(&store, &ui, "Codex can\u{2019}t do that.")
+    );
+    // The same server on both marks both agents on its row.
+    ui.applied(&Event::Servers {
+        agent: "claude".into(),
+        folder: "/work".into(),
+        servers: vec![server("node_repl", true)],
+        scopes: vec![],
+        error: None,
+    });
+    let both: Vec<String> = view::marked_agents(&ui, |a| view::server_on_in(&ui, a, "node_repl"))
+        .map(|a| a.id.clone())
+        .collect();
+    assert_eq!(both, ["claude", "codex"]);
+}
+
+#[test]
+fn the_add_dialog_asks_for_which_agents_and_adds_with_each_ones_own_program() {
+    let (store, mut ui) = two_agents_on(view::SETTINGS_CONNECTORS);
+    ui.agent = "codex".into();
+    for (agent, scopes) in [
+        (
+            "claude",
+            vec![
+                ("local", "This project, for me"),
+                ("user", "All my projects"),
+            ],
+        ),
+        ("codex", vec![("user", "All my projects")]),
+    ] {
+        ui.applied(&Event::Servers {
+            agent: agent.into(),
+            folder: "/work".into(),
+            servers: vec![],
+            scopes: scopes
+                .iter()
+                .map(|(a, b)| ((*a).into(), (*b).into()))
+                .collect(),
+            error: None,
+        });
+    }
+    // The header's Add starts with the agent a new session would run, not the first one.
+    click(&store, &mut ui, "srv:add:");
+    assert_eq!(ui.connectors.adding.as_ref().unwrap().agents, ["codex"]);
+    assert!(drawn(&store, &ui, "Add to") && drawn(&store, &ui, "Add custom connector"));
+    let typed = |ui: &mut Ui, key: &str, value: &str| {
+        update(
+            &store,
+            ui,
+            &UiAction::InputChanged {
+                id: format!("{}{key}", view::SRV_FIELD),
+                value: value.into(),
+            },
+        )
+    };
+    typed(&mut ui, "name", "pg");
+    typed(&mut ui, "target", "npx -y @x/pg");
+    // Ticking Claude Code adds its scopes to choose from; unticking the last one is not done.
+    click(&store, &mut ui, "srv:to:claude");
+    assert!(drawn(&store, &ui, "Where in Claude Code") && !drawn(&store, &ui, "Where in Codex"));
+    click(&store, &mut ui, "srv:scope:claude:user");
+    click(&store, &mut ui, "srv:to:codex");
+    click(&store, &mut ui, "srv:to:claude");
+    assert_eq!(ui.connectors.adding.as_ref().unwrap().agents, ["claude"]);
+    click(&store, &mut ui, "srv:to:codex");
+    let sent = click(&store, &mut ui, "srv:save");
+    let folder = std::path::PathBuf::from("/work");
+    let add = |agent: &str, scope: Option<&str>| Intent::ExtensionOp {
+        agent: agent.into(),
+        folder: folder.clone(),
+        op: quill_model::ExtensionOp::AddServer(quill_model::NewServer {
+            name: "pg".into(),
+            target: "npx".into(),
+            args: vec!["-y".into(), "@x/pg".into()],
+            scope: scope.map(str::to_owned),
+            ..Default::default()
+        }),
+    };
+    // One intent a program, each with the scope chosen for it, and both sections wait.
+    assert_eq!(sent, vec![add("claude", Some("user")), add("codex", None)]);
+    assert!(ui.connectors.listed["claude"].working && ui.connectors.listed["codex"].working);
+    assert!(ui.connectors.adding.is_none());
+}
+
+#[test]
+fn a_marketplace_is_added_to_every_agent_ticked_and_managed_by_agent() {
+    let (store, mut ui) = two_agents_on(view::SETTINGS_PLUGINS);
+    let market = |name: &str| quill_model::Marketplace {
+        name: name.into(),
+        source: format!("o/{name}"),
+    };
+    for (agent, name) in [("claude", "better"), ("codex", "curated")] {
+        heard_extensions(
+            &mut ui,
+            agent,
+            quill_model::Extensions {
+                marketplaces: vec![market(name)],
+                ..Default::default()
+            },
+        );
+    }
+    // From the page it starts with the agent a new session runs.
+    ui.agent = "claude".into();
+    click(&store, &mut ui, "cz:add-marketplace:");
+    assert_eq!(ui.market_targets, ["claude"]);
+    update(
+        &store,
+        &mut ui,
+        &UiAction::InputChanged {
+            id: format!("{}all", view::EXT_MKT_FIELD),
+            value: "o/r".into(),
+        },
+    );
+    click(&store, &mut ui, "cz:to:codex");
+    let sent = click(&store, &mut ui, "ext:mkt-add");
+    let folder = std::path::PathBuf::from("/work");
+    let add = |agent: &str| Intent::ExtensionOp {
+        agent: agent.into(),
+        folder: folder.clone(),
+        op: quill_model::ExtensionOp::AddMarketplace("o/r".into()),
+    };
+    assert_eq!(sent, vec![add("claude"), add("codex")]);
+    assert!(ui.extensions["codex"].working.as_deref() == Some("o/r"));
+    // Managing lists each agent's, under its name.
+    click(&store, &mut ui, "cz:manage:");
+    assert!(drawn(&store, &ui, "better") && drawn(&store, &ui, "curated"));
+    assert!(drawn(&store, &ui, "Codex") && drawn(&store, &ui, "Claude Code"));
+}
+
+#[test]
+fn a_plugin_menu_offers_only_what_the_agents_program_can_do() {
+    let (store, mut ui) = two_agents_on(view::SETTINGS_PLUGINS);
+    let plugin = |name: &str| quill_model::Plugin {
+        id: format!("{name}@m"),
+        name: name.into(),
+        version: None,
+        scope: "user".into(),
+        enabled: true,
+    };
+    heard_extensions(
+        &mut ui,
+        "claude",
+        quill_model::Extensions {
+            plugins: vec![plugin("pdf")],
+            ..Default::default()
+        },
+    );
+    heard_extensions(
+        &mut ui,
+        "codex",
+        quill_model::Extensions {
+            plugins: vec![plugin("pdf")],
+            kinds: quill_model::ExtensionKinds {
+                skills_per_folder: false,
+                switch_plugins: false,
+                update_plugins: false,
+            },
+            ..Default::default()
+        },
+    );
+    click(&store, &mut ui, "cz:more:claude:pdf@m");
+    assert!(drawn(&store, &ui, "Turn off") && drawn(&store, &ui, "Update"));
+    click(&store, &mut ui, "cz:more:claude:pdf@m");
+    click(&store, &mut ui, "cz:more:codex:pdf@m");
+    assert!(
+        drawn(&store, &ui, "Remove")
+            && !drawn(&store, &ui, "Turn off")
+            && !drawn(&store, &ui, "Update")
+    );
+    // The directory shows whose it is, and another agent's is one click away.
+    click(&store, &mut ui, "cz:discover:claude");
+    assert_eq!(ui.directory.as_deref(), Some("claude"));
+    click(&store, &mut ui, "cz:dir:codex");
+    assert_eq!(ui.directory.as_deref(), Some("codex"));
+}
+
+#[test]
+fn an_agents_skills_join_its_slash_menu_and_its_mcp_switch_waits_for_a_capability() {
+    use quill_model::{McpServer, McpSource, McpStatus};
+    let (mut store, mut ui) = store_with_session();
+    agent(
+        &mut store,
+        AgentEvent::Ready {
+            version: "0.163.0".into(),
+            capabilities: quill_model::AgentCapabilities {
+                mcp: true,
+                ..Default::default()
+            },
+            mode: None,
+        },
+    );
+    agent(
+        &mut store,
+        AgentEvent::Skills(vec![
+            skill("review", "user", "on"),
+            skill("old", "user", "off"),
+        ]),
+    );
+    // A later `Ready` (Codex says it twice) does not take them away.
+    agent(
+        &mut store,
+        AgentEvent::Ready {
+            version: "0.163.0".into(),
+            capabilities: quill_model::AgentCapabilities {
+                mcp: true,
+                ..Default::default()
+            },
+            mode: None,
+        },
+    );
+    ui.selected = Some(1);
+    ui.prompt = "/rev".into();
+    let (_, rows) = crate::slash::open(&store, &ui).expect("the palette");
+    assert!(rows.iter().any(|(id, _)| id == "slash:agent:review"));
+    assert!(!rows.iter().any(|(id, _)| id == "slash:agent:old"));
+    // A server that cannot be turned off here shows no switch, and no "Turn on".
+    agent(
+        &mut store,
+        AgentEvent::McpServers(vec![McpServer {
+            name: "scratch".into(),
+            label: "scratch".into(),
+            status: McpStatus::Disabled,
+            source: McpSource::Other,
+            plugin: None,
+            error: None,
+            tools: vec![],
+            sign_in: false,
+        }]),
+    );
+    ui.mcp = Some(crate::McpDialog::new(1));
+    assert!(drawn(&store, &ui, "Off in its config") && !drawn(&store, &ui, "Turn on"));
 }

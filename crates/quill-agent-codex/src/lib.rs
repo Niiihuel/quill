@@ -16,6 +16,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Instant;
 
+mod extensions;
+
 /// The permission presets, as Codex's own are (docs/codex.md "Modos de permiso"). Each is an
 /// approval policy and a sandbox; quill always sends both, because a thread that is not told
 /// takes the person's own Codex config, which may be `danger-full-access`
@@ -71,6 +73,12 @@ enum Pending {
     /// Events to tell once the answer comes: the only way a command without its own answer
     /// can be told back (`encode` returns lines, not events).
     Ack(Vec<AgentEvent>),
+    /// `mcpServerStatus/list`, told as the session's servers.
+    McpStatus,
+    /// `config/mcpServer/reload`: the servers' state is asked again once it answers.
+    McpReload,
+    /// `mcpServer/oauth/login` of the server named, told as its sign-in page.
+    McpSignIn(String),
     /// Nothing to do with the answer.
     Ignore,
 }
@@ -202,6 +210,22 @@ impl Codex {
         self.request(method, params, Pending::Thread)
     }
 
+    /// A request of quill's own, by a name that keeps the numbers of the others.
+    fn named(&mut self, id: &str, method: &str, params: Value, pending: Pending) -> String {
+        self.pending.insert(id.to_owned(), pending);
+        json!({ "id": id, "method": method, "params": params }).to_string()
+    }
+
+    fn mcp_status(&mut self) -> String {
+        let params = json!({ "threadId": self.thread, "detail": "toolsAndAuthOnly" });
+        self.named(
+            extensions::MCP_STATUS_ID,
+            "mcpServerStatus/list",
+            params,
+            Pending::McpStatus,
+        )
+    }
+
     fn turn_start(&mut self, request: String, input: Vec<Value>) -> String {
         let (approval, _, policy) = preset(&self.mode);
         // Mode, model and effort are sent with every turn, so a change applies to the next one.
@@ -281,6 +305,9 @@ impl Codex {
                 resume: true,
                 fork: true,
                 plan: self.plan.clone(),
+                // It tells the servers' state and loads its config again, and signs in to one;
+                // turning one off for the session is not in its protocol.
+                mcp: true,
                 thinking_text: true,
                 steer: true,
                 ..Default::default()
@@ -345,6 +372,17 @@ impl Codex {
                 });
             }
             Pending::Ack(events) => out.events.extend(events),
+            Pending::McpStatus => out
+                .events
+                .push(AgentEvent::McpServers(extensions::mcp_servers(
+                    &result["data"],
+                ))),
+            Pending::McpReload => out.replies.push(self.mcp_status()),
+            Pending::McpSignIn(server) => out.events.push(AgentEvent::McpSignIn {
+                server,
+                url: result["authorizationUrl"].as_str().map(str::to_owned),
+                error: None,
+            }),
             Pending::Ignore => {}
         }
     }
@@ -354,6 +392,13 @@ impl Codex {
         // Inferred from the schema (codexErrorInfo "unauthorized"): the error's words.
         if error.to_lowercase().contains("unauthorized") {
             out.events.push(AgentEvent::AuthRequired);
+        }
+        if let Pending::McpSignIn(server) = pending {
+            return out.events.push(AgentEvent::McpSignIn {
+                server,
+                url: None,
+                error: Some(error),
+            });
         }
         let turn = matches!(pending, Pending::Turn)
             || (matches!(pending, Pending::Thread) && !self.queued.is_empty());
@@ -382,6 +427,7 @@ impl Codex {
                 });
             }
             "turn/completed" => self.turn_completed(&p["turn"], out),
+            "mcpServer/oauthLogin/completed" => out.replies.push(self.mcp_status()),
             "item/started" => self.item(&p["item"], false, out),
             "item/completed" => self.item(&p["item"], true, out),
             "item/agentMessage/delta" => events.push(AgentEvent::TextDelta {
@@ -1097,6 +1143,7 @@ impl AgentAdapter for Codex {
             args: vec!["login".into()],
             stdin: None,
             timeout: 600,
+            until: None,
         })
     }
 
@@ -1132,7 +1179,83 @@ impl AgentAdapter for Codex {
             args: vec!["logout".into()],
             stdin: None,
             timeout: 60,
+            until: None,
         })
+    }
+
+    fn servers_query(&self) -> Option<Vec<String>> {
+        Some(["mcp", "list", "--json"].map(String::from).into())
+    }
+
+    fn servers(&self, stdout: &str) -> Vec<quill_agent::ConfiguredServer> {
+        extensions::servers(stdout)
+    }
+
+    // `codex mcp add` writes the person's config.toml; a project's `.codex/config.toml` is
+    // edited by hand (docs/codex.md "Extensiones").
+    fn server_scopes(&self) -> Choices {
+        vec![("user".into(), "All my projects".into())]
+    }
+
+    fn plugins_query(&self) -> Option<Vec<String>> {
+        Some(
+            ["plugin", "list", "--json", "--available"]
+                .map(String::from)
+                .into(),
+        )
+    }
+
+    fn plugins(&self, stdout: &str) -> (Vec<quill_agent::Plugin>, Vec<quill_agent::PluginOffer>) {
+        extensions::plugins(stdout)
+    }
+
+    fn marketplaces_query(&self) -> Option<Vec<String>> {
+        Some(
+            ["plugin", "marketplace", "list", "--json"]
+                .map(String::from)
+                .into(),
+        )
+    }
+
+    fn marketplaces(&self, stdout: &str) -> Vec<quill_agent::Marketplace> {
+        extensions::marketplaces(stdout)
+    }
+
+    fn extension_words(&self) -> (Choices, Choices) {
+        let pairs = |list: &[(&str, &str)]| -> Choices {
+            list.iter()
+                .map(|(a, b)| ((*a).into(), (*b).into()))
+                .collect()
+        };
+        (
+            pairs(&[("user", "Install for me")]),
+            pairs(&[("on", "On"), ("off", "Off")]),
+        )
+    }
+
+    fn extension_kinds(&self) -> quill_agent::ExtensionKinds {
+        quill_agent::ExtensionKinds {
+            skills_per_folder: false,
+            switch_plugins: false,
+            update_plugins: false,
+        }
+    }
+
+    fn extension_op(&self, op: &quill_agent::ExtensionOp) -> Option<ProgramRun> {
+        extensions::op(op)
+    }
+
+    fn extension_failed(&self, stdout: &str) -> Option<String> {
+        extensions::failed(stdout)
+    }
+
+    fn skills_query(&self, cwd: &std::path::Path) -> Option<Vec<String>> {
+        Some(extensions::skills_query(cwd))
+    }
+
+    fn skills_answer(&self, line: &str) -> Option<Vec<quill_agent::Skill>> {
+        let answer: Value = serde_json::from_str(line).ok()?;
+        (answer["id"] == extensions::SKILLS_ID).then(|| extensions::skills(&answer["result"]))
     }
 
     fn encode(&mut self, command: AgentCommand) -> Vec<String> {
@@ -1166,7 +1289,7 @@ impl AgentAdapter for Codex {
                 images,
             } => {
                 let mut input: Vec<Value> = images.iter().map(image_input).collect();
-                input.push(json!({ "type": "text", "text": text }));
+                input.push(json!({ "type": "text", "text": extensions::skill_mention(&text) }));
                 match (self.thread.clone(), self.turn.clone()) {
                     (None, _) => {
                         self.queued.push((request, input));
@@ -1212,10 +1335,25 @@ impl AgentAdapter for Codex {
                 self.effort = Some(effort);
                 vec![]
             }
+            AgentCommand::McpStatus => vec![self.mcp_status()],
+            // Codex loads its config again for the thread's next turn; there is no reconnect of
+            // one server, so the state is asked again when it is done.
+            AgentCommand::McpReconnect(_) => vec![self.named(
+                extensions::MCP_RELOAD_ID,
+                "config/mcpServer/reload",
+                Value::Null,
+                Pending::McpReload,
+            )],
+            AgentCommand::McpAuthenticate(name) => vec![self.named(
+                extensions::MCP_LOGIN_ID,
+                "mcpServer/oauth/login",
+                json!({ "name": name, "threadId": self.thread }),
+                Pending::McpSignIn(name),
+            )],
             // `Rewind` restores files, which Codex does not do (`thread/revert` leaves them): they
             // stay quill's snapshots, so `capabilities.rewind` is false. The conversation goes
             // back through `thread/fork` with `lastTurnId` (docs/codex.md). No context
-            // breakdown, MCP control, skills list or host tools that quill drives yet.
+            // breakdown, MCP switch, credentials to forget or host tools that quill drives yet.
             _ => vec![],
         }
     }
@@ -1541,5 +1679,7 @@ fn web_run(item: &Value) -> WebSearchRun {
     WebSearchRun { query, sources }
 }
 
+#[cfg(test)]
+mod extension_tests;
 #[cfg(test)]
 mod tests;

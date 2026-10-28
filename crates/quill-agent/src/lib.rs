@@ -139,6 +139,12 @@ pub struct AgentCapabilities {
     /// and off ([`AgentCommand::McpStatus`]).
     #[serde(default)]
     pub mcp: bool,
+    /// ... and turns one on or off for the session; off, the UI shows no switch.
+    #[serde(default)]
+    pub mcp_toggle: bool,
+    /// ... and forgets a server's credentials ([`AgentCommand::McpClearAuth`]).
+    #[serde(default)]
+    pub mcp_clear_auth: bool,
     /// The agent can show what its model thought.
     #[serde(default)]
     pub thinking_text: bool,
@@ -248,6 +254,28 @@ pub struct Extensions {
     pub scopes: Choices,
     /// What a skill can be, in the agent's words, each with how to say it.
     pub skill_states: Choices,
+    pub kinds: ExtensionKinds,
+}
+
+/// What an agent's program can do with its extensions, for the pages to offer only that.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ExtensionKinds {
+    /// A skill's state is the folder's; off, it is the person's for every folder.
+    pub skills_per_folder: bool,
+    /// A plugin can be turned off and on without uninstalling it.
+    pub switch_plugins: bool,
+    /// An installed plugin can be updated by itself.
+    pub update_plugins: bool,
+}
+
+impl Default for ExtensionKinds {
+    fn default() -> Self {
+        Self {
+            skills_per_folder: true,
+            switch_plugins: true,
+            update_plugins: true,
+        }
+    }
 }
 
 /// Choices in the agent's words, each with how to say it.
@@ -291,6 +319,9 @@ pub struct ConfiguredServer {
     pub label: String,
     pub target: String,
     pub status: McpStatus,
+    /// Its list checked that it connects; off, `status` only says it is set up (on or off).
+    #[serde(default)]
+    pub checked: bool,
     pub source: McpSource,
 }
 
@@ -332,6 +363,9 @@ pub struct ProgramRun {
     pub stdin: Option<String>,
     /// How long it may take, in seconds.
     pub timeout: u64,
+    /// For a program that takes its requests on stdin and stops when it closes before
+    /// answering the last: keep stdin open until a line of stdout holds this text.
+    pub until: Option<String>,
 }
 
 /// Where a server's definition came from: the person's own settings, the project's, the
@@ -790,6 +824,16 @@ pub trait AgentAdapter: Send {
     fn server_scopes(&self) -> Choices {
         vec![]
     }
+    /// Lines that ask the program, started as for a session but with none, for the skills it
+    /// offers in `cwd`; its stdin stays open until [`skills_answer`](Self::skills_answer) reads
+    /// them. `None` when only a session tells ([`AgentCommand::Skills`]).
+    fn skills_query(&self, _cwd: &std::path::Path) -> Option<Vec<String>> {
+        None
+    }
+    /// The skills in a line the program wrote after [`skills_query`](Self::skills_query).
+    fn skills_answer(&self, _line: &str) -> Option<Vec<Skill>> {
+        None
+    }
     /// The agent's own settings, shown on its page in Settings.
     fn options(&self) -> Vec<AgentOption> {
         vec![]
@@ -802,6 +846,9 @@ pub trait AgentAdapter: Send {
     /// [`Extensions::scopes`] and [`Extensions::skill_states`].
     fn extension_words(&self) -> (Choices, Choices) {
         (vec![], vec![])
+    }
+    fn extension_kinds(&self) -> ExtensionKinds {
+        ExtensionKinds::default()
     }
     /// What to run for `op`; `None` when the agent cannot.
     fn extension_op(&self, _op: &ExtensionOp) -> Option<ProgramRun> {

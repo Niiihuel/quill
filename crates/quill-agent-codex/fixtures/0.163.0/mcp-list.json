@@ -1,0 +1,66 @@
+[
+  {
+    "name": "docs",
+    "enabled": true,
+    "disabled_reason": null,
+    "transport": {
+      "type": "streamable_http",
+      "url": "https://docs.example.com/mcp",
+      "bearer_token_env_var": null,
+      "http_headers": null,
+      "env_http_headers": null,
+      "http_headers_helper": null
+    },
+    "startup_timeout_sec": null,
+    "tool_timeout_sec": null,
+    "auth_status": "not_logged_in"
+  },
+  {
+    "name": "node_repl",
+    "enabled": true,
+    "disabled_reason": null,
+    "transport": {
+      "type": "stdio",
+      "command": "/usr/bin/node_repl",
+      "args": [],
+      "env": null,
+      "env_vars": ["API_KEY"],
+      "cwd": null
+    },
+    "startup_timeout_sec": 120.0,
+    "tool_timeout_sec": null,
+    "auth_status": "unsupported"
+  },
+  {
+    "name": "scratch",
+    "enabled": false,
+    "disabled_reason": "user",
+    "transport": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "scratch-mcp"],
+      "env": { "MODE": "<redacted>" },
+      "env_vars": [],
+      "cwd": null
+    },
+    "startup_timeout_sec": null,
+    "tool_timeout_sec": null,
+    "auth_status": "unsupported"
+  },
+  {
+    "name": "computer",
+    "enabled": true,
+    "disabled_reason": null,
+    "transport": {
+      "type": "stdio",
+      "command": "/usr/bin/node",
+      "args": ["/home/user/.codex/plugins/cache/bundled/computer/1.0.0/launch.mjs"],
+      "env": null,
+      "env_vars": [],
+      "cwd": null
+    },
+    "startup_timeout_sec": 120.0,
+    "tool_timeout_sec": null,
+    "auth_status": "unsupported"
+  }
+]

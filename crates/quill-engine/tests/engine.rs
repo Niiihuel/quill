@@ -1131,3 +1131,253 @@ fn codex_captures_replay_through_the_engine() {
     });
     until(&rx, finished);
 }
+
+/// An engine whose Claude Code and Codex are the fake agent, run as `fake-claude` and
+/// `fake-codex` so that it answers in each one's words; what is added and removed is kept in a
+/// folder of its own (beside the links).
+fn two_agents() -> (Engine, Receiver<Event>, std::path::PathBuf) {
+    let dir = workdir("simple");
+    let link = |program: &str| {
+        let path = dir.join(program);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_fake-agent"), &path).unwrap();
+        path.display().to_string()
+    };
+    let programs = HashMap::from([
+        ("claude".to_string(), link("fake-claude")),
+        ("codex".to_string(), link("fake-codex")),
+    ]);
+    let (tx, rx) = channel();
+    let config = quill_engine::Config {
+        programs,
+        database: None,
+        snapshots: None,
+        settings: None,
+        ..Default::default()
+    };
+    let engine = Engine::start_with(move |event| drop(tx.send(event)), config);
+    (engine, rx, dir)
+}
+
+fn servers_of(rx: &Receiver<Event>, agent: &str) -> (Vec<String>, Option<String>) {
+    let seen = until(
+        rx,
+        |e| matches!(e, Event::Servers { agent: a, .. } if a == agent),
+    );
+    match seen.last() {
+        Some(Event::Servers { servers, error, .. }) => (
+            servers.iter().map(|s| s.name.clone()).collect(),
+            error.clone(),
+        ),
+        _ => unreachable!(),
+    }
+}
+
+/// Codex's connectors through `codex mcp list --json`, `add` and `remove`, each CLI acting on
+/// its own: the same server added to both lands in both lists, and what Codex cannot (a header)
+/// is said in its own section, not in Claude Code's.
+#[test]
+fn connectors_are_listed_added_and_removed_in_each_cli_on_its_own() {
+    use quill_model::{ExtensionOp, NewServer};
+    let (engine, rx, dir) = two_agents();
+    let list = |agent: &str| {
+        engine.send(Intent::Servers {
+            agent: agent.into(),
+            folder: dir.clone(),
+        })
+    };
+    list("codex");
+    let (names, error) = servers_of(&rx, "codex");
+    assert!(error.is_none(), "{error:?}");
+    assert_eq!(names, ["node_repl", "docs", "scratch"]);
+    list("claude");
+    let (names, _) = servers_of(&rx, "claude");
+    assert_eq!(names, ["github", "plugin:vercel:vercel", "claude.ai Figma"]);
+
+    let add = |agent: &str, headers: Vec<String>| {
+        engine.send(Intent::ExtensionOp {
+            agent: agent.into(),
+            folder: dir.clone(),
+            op: ExtensionOp::AddServer(NewServer {
+                name: "pg".into(),
+                target: "https://pg.example.com/mcp".into(),
+                remote: true,
+                headers,
+                ..Default::default()
+            }),
+        });
+    };
+    // One after the other: their answers come in any order.
+    add("claude", vec![]);
+    let (claude, error) = servers_of(&rx, "claude");
+    assert!(claude.contains(&"pg".to_owned()) && error.is_none());
+    add("codex", vec![]);
+    let (codex, error) = servers_of(&rx, "codex");
+    assert!(codex.contains(&"pg".to_owned()) && error.is_none());
+
+    // Codex has no header option: it says so, and the list stays.
+    engine.send(Intent::ExtensionOp {
+        agent: "codex".into(),
+        folder: dir.clone(),
+        op: ExtensionOp::AddServer(NewServer {
+            name: "keyed".into(),
+            target: "https://k.example.com/mcp".into(),
+            remote: true,
+            headers: vec!["X-Key: 1".into()],
+            ..Default::default()
+        }),
+    });
+    let (names, error) = servers_of(&rx, "codex");
+    assert!(!names.contains(&"keyed".to_owned()));
+    assert_eq!(
+        error.as_deref(),
+        Some("Codex can\u{2019}t add a server with headers.")
+    );
+
+    // Removing takes it from its own CLI; one that is not there is said, though Codex exits well.
+    let remove = |agent: &str, name: &str| {
+        engine.send(Intent::ExtensionOp {
+            agent: agent.into(),
+            folder: dir.clone(),
+            op: ExtensionOp::RemoveServer(name.into()),
+        })
+    };
+    remove("codex", "pg");
+    let (names, error) = servers_of(&rx, "codex");
+    assert!(!names.contains(&"pg".to_owned()) && error.is_none());
+    remove("codex", "pg");
+    let (_, error) = servers_of(&rx, "codex");
+    assert_eq!(error.as_deref(), Some("No MCP server named 'pg' found."));
+    let (claude, _) = {
+        list("claude");
+        servers_of(&rx, "claude")
+    };
+    assert!(claude.contains(&"pg".to_owned()));
+}
+
+/// Codex's skills through its app-server (no thread, no turn), and a state written with
+/// `skills/config/write` over an app-server kept open until it answers: the next read shows it.
+#[test]
+fn codex_skills_are_read_from_its_app_server_and_a_state_is_written() {
+    use quill_model::ExtensionOp;
+    let (engine, rx, dir) = two_agents();
+    // No capture in this folder: the fake agent answers the app-server's requests alone.
+    let folder = dir.join("bare");
+    std::fs::create_dir_all(&folder).unwrap();
+    let extensions = |engine: &Engine| {
+        engine.send(Intent::Extensions {
+            agent: "codex".into(),
+            folder: folder.clone(),
+        });
+        let seen = until(&rx, |e| matches!(e, Event::Extensions { .. }));
+        match seen.last() {
+            Some(Event::Extensions {
+                extensions, error, ..
+            }) => (extensions.clone(), error.clone()),
+            _ => unreachable!(),
+        }
+    };
+    let (known, error) = extensions(&engine);
+    assert!(error.is_none(), "{error:?}");
+    assert_eq!(known.skills.len(), 5);
+    let review = known
+        .skills
+        .iter()
+        .find(|s| s.name == "review")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (review.state.as_str(), review.source.as_str()),
+        ("on", "user")
+    );
+    assert!(!known.kinds.skills_per_folder && !known.kinds.switch_plugins);
+    assert_eq!(known.skill_states[0].0, "on");
+    // Its plugins and marketplaces, in Codex's shape.
+    assert_eq!(known.plugins.len(), 2);
+    assert_eq!(known.marketplaces.len(), 2);
+
+    engine.send(Intent::ExtensionOp {
+        agent: "codex".into(),
+        folder: folder.clone(),
+        op: ExtensionOp::SkillState {
+            skill: review,
+            state: "off".into(),
+        },
+    });
+    let seen = until(&rx, |e| matches!(e, Event::Extensions { .. }));
+    let Some(Event::Extensions {
+        extensions, error, ..
+    }) = seen.last()
+    else {
+        unreachable!()
+    };
+    assert!(error.is_none(), "{error:?}");
+    let review = extensions
+        .skills
+        .iter()
+        .find(|s| s.name == "review")
+        .unwrap();
+    assert_eq!(review.state, "off");
+
+    // A plugin's switch is not Codex's to make, and it says so.
+    let plugin = extensions.plugins[0].clone();
+    engine.send(Intent::ExtensionOp {
+        agent: "codex".into(),
+        folder,
+        op: ExtensionOp::SwitchPlugin {
+            plugin,
+            enabled: false,
+        },
+    });
+    let seen = until(&rx, |e| matches!(e, Event::Extensions { .. }));
+    let Some(Event::Extensions { error, .. }) = seen.last() else {
+        unreachable!()
+    };
+    assert_eq!(
+        error.as_deref(),
+        Some("Codex can\u{2019}t turn a plugin off or on.")
+    );
+}
+
+/// A Codex session offers its skills in the `/` menu: once it is ready, the engine asks them of
+/// the program apart and tells `AgentEvent::Skills`, without a line more in the session's own.
+#[test]
+fn a_codex_session_is_told_its_skills_once_it_is_ready() {
+    let (engine, rx, dir) = two_agents();
+    let capture = format!(
+        "{}/../quill-agent-codex/fixtures/0.163.0/simple.jsonl",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    std::fs::write(dir.join(".fake-agent"), capture).unwrap();
+    engine.send(Intent::NewSession(NewSession {
+        agent: "codex".into(),
+        cwd: dir,
+        model: Some("gpt-6-luna".into()),
+        effort: Some("low".into()),
+        mode: None,
+    }));
+    engine.send(Intent::Send {
+        session: 1,
+        text: "Reply with exactly the word: ok".into(),
+        mentions: vec![],
+        images: vec![],
+        lane: Lane::Steer,
+    });
+    let seen = until(&rx, |e| {
+        matches!(
+            e,
+            Event::Agent {
+                event: AgentEvent::Skills(_),
+                ..
+            }
+        )
+    });
+    let Some(Event::Agent {
+        event: AgentEvent::Skills(skills),
+        ..
+    }) = seen.last()
+    else {
+        unreachable!()
+    };
+    assert!(skills.iter().any(|s| s.name == "review"));
+}

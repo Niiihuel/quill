@@ -667,9 +667,13 @@ impl Router {
         let ui = self.ui.clone();
         tokio::spawn(async move {
             let mut error = None;
-            if let Some(run) = op.as_ref().and_then(|op| adapter.extension_op(op)) {
-                if let Err(e) = run_program(&program, &run, &folder).await {
-                    error = Some(e);
+            if let Some(op) = &op {
+                match adapter.extension_op(op) {
+                    Some(run) => match run_program(&program, &run, &folder).await {
+                        Ok(out) => error = adapter.extension_failed(&out),
+                        Err(e) => error = Some(e),
+                    },
+                    None => error = Some(cannot(adapter.name(), op)),
                 }
             }
             let mut servers = vec![];
@@ -678,6 +682,7 @@ impl Router {
                     args,
                     stdin: None,
                     timeout: 90,
+                    until: None,
                 };
                 match run_program(&program, &run, &folder).await {
                     Ok(out) => servers = adapter.servers(&out),
@@ -730,6 +735,8 @@ impl Router {
                         }
                         Ok(Some(e)) | Err(e) => error = Some(e),
                     }
+                } else {
+                    error = Some(cannot(adapter.name(), &op));
                 }
             }
             let mut extensions = quill_model::Extensions::default();
@@ -737,6 +744,7 @@ impl Router {
                 args,
                 stdin: None,
                 timeout,
+                until: None,
             };
             if let Some(args) = adapter.plugins_query() {
                 match run_program(&program, &list(args, 60), &folder).await {
@@ -750,6 +758,7 @@ impl Router {
                 }
             }
             (extensions.scopes, extensions.skill_states) = adapter.extension_words();
+            extensions.kinds = adapter.extension_kinds();
             extensions.skills = skills_of(adapter, &program, &folder).await;
             ui(Event::Extensions {
                 agent,
@@ -1463,6 +1472,7 @@ impl Router {
                         ],
                         stdin: None,
                         timeout: 25,
+                        until: None,
                     };
                     let home = std::env::temp_dir();
                     let found = run_program("curl", &run, &home)
@@ -1810,6 +1820,7 @@ impl Router {
                                 .to_vec(),
                             stdin: None,
                             timeout: 30,
+                            until: None,
                         };
                         if let Ok(state) = run_program("gh", &run, &folder).await {
                             if state.trim() == "MERGED" {
@@ -2173,6 +2184,8 @@ struct Actor {
     held: bool,
     /// Whether the agent takes a message into a turn already running (its `Ready` says so).
     steers: bool,
+    /// Its skills were asked for the `/` menu, once the agent was ready.
+    skills_asked: bool,
 }
 
 impl Actor {
@@ -2218,6 +2231,7 @@ impl Actor {
             queue: vec![],
             held: false,
             steers: false,
+            skills_asked: false,
         }
     }
 
@@ -2690,6 +2704,30 @@ impl Actor {
         let _ = stdin.flush().await;
     }
 
+    /// The skills the agent offers in this folder, told as `AgentEvent::Skills`, from a
+    /// program of their own so the session's lines stay as the agent writes them.
+    fn ask_skills(&self) {
+        let Some(adapter) = adapter(self.adapter.id()) else {
+            return;
+        };
+        if adapter.skills_query(&self.spec.cwd).is_none() {
+            return;
+        }
+        let program = (self.program.clone())
+            .unwrap_or_else(|| adapter.launch(&SessionSpec::default()).program);
+        let (cwd, session, sink) = (self.spec.cwd.clone(), self.id, self.sink.clone());
+        tokio::spawn(async move {
+            let skills = skills_of(adapter, &program, &cwd).await;
+            if !skills.is_empty() {
+                sink(Event::Agent {
+                    session,
+                    request: None,
+                    event: AgentEvent::Skills(skills),
+                });
+            }
+        });
+    }
+
     async fn line(&mut self, line: &str) {
         let decoded = self.adapter.decode(line);
         self.write_lines(decoded.replies).await;
@@ -2737,6 +2775,13 @@ impl Actor {
             }
             if let AgentEvent::Ready { capabilities, .. } = &event {
                 self.steers = capabilities.steer;
+                // An agent whose commands do not name its skills is asked for them apart, so
+                // the `/` menu offers them.
+                if !std::mem::replace(&mut self.skills_asked, true)
+                    && capabilities.commands.is_empty()
+                {
+                    self.ask_skills();
+                }
             }
             let finished = matches!(event, AgentEvent::TurnFinished { .. });
             (self.sink)(Event::Agent {
@@ -3026,6 +3071,19 @@ fn notifier(
     }
 }
 
+/// What the person is told when an agent's program has no way to make `op`.
+fn cannot(agent: &str, op: &quill_model::ExtensionOp) -> String {
+    use quill_model::ExtensionOp::*;
+    let what = match op {
+        AddServer(server) if !server.headers.is_empty() => "add a server with headers",
+        AddServer(_) | RemoveServer(_) => "add or remove servers",
+        SwitchPlugin { .. } => "turn a plugin off or on",
+        Update(_) => "update a plugin by itself",
+        _ => "make that change",
+    };
+    format!("{agent} can\u{2019}t {what}.")
+}
+
 /// Run an agent's program for one of its own commands, in `cwd`, giving it `run`'s stdin
 /// and at most its time: what it printed, or why it failed in its last words.
 async fn run_program(
@@ -3042,12 +3100,31 @@ async fn run_program(
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| format!("could not start {program}: {e}"))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        if let Some(input) = &run.stdin {
-            let _ = stdin.write_all(input.as_bytes()).await;
-        }
+    let mut stdin = child.stdin.take();
+    if let (Some(input), Some(stdin)) = (&run.stdin, stdin.as_mut()) {
+        let _ = stdin.write_all(input.as_bytes()).await;
     }
     let waited = std::time::Duration::from_secs(run.timeout);
+    // A program that stops when stdin closes, before answering: read until its answer.
+    if let (Some(until), true) = (&run.until, child.stdout.is_some()) {
+        let stdout = child.stdout.take().expect("piped stdout");
+        let read = async {
+            let mut said = String::new();
+            let mut lines = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                said.push_str(&line);
+                said.push('\n');
+                if line.contains(until.as_str()) {
+                    break;
+                }
+            }
+            said
+        };
+        let said = tokio::time::timeout(waited, read).await;
+        let _ = child.kill().await;
+        return said.map_err(|_| format!("{program} took longer than {}s", run.timeout));
+    }
+    drop(stdin);
     let out = match tokio::time::timeout(waited, child.wait_with_output()).await {
         Ok(out) => out.map_err(|e| e.to_string())?,
         Err(_) => return Err(format!("{program} took longer than {}s", run.timeout)),
@@ -3093,8 +3170,14 @@ async fn skills_of(
     let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
         return vec![];
     };
-    let asked = (adapter.encode(AgentCommand::Start).into_iter())
-        .chain(adapter.encode(AgentCommand::Skills));
+    // An adapter that can ask without a session says how; the others get a throwaway one.
+    let own = adapter.skills_query(cwd);
+    let asked: Vec<String> = match &own {
+        Some(lines) => lines.clone(),
+        None => (adapter.encode(AgentCommand::Start).into_iter())
+            .chain(adapter.encode(AgentCommand::Skills))
+            .collect(),
+    };
     for line in asked {
         if stdin
             .write_all(format!("{line}\n").as_bytes())
@@ -3107,6 +3190,12 @@ async fn skills_of(
     let read = async {
         let mut lines = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = lines.next_line().await {
+            if own.is_some() {
+                if let Some(skills) = adapter.skills_answer(&line) {
+                    return skills;
+                }
+                continue;
+            }
             for event in adapter.decode(&line).events {
                 if let AgentEvent::Skills(skills) = event {
                     return skills;

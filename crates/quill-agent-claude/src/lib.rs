@@ -455,6 +455,7 @@ impl AgentAdapter for Claude {
             args: ["auth", "login", flag].map(String::from).into(),
             stdin: None,
             timeout: 600,
+            until: None,
         })
     }
 
@@ -472,6 +473,7 @@ impl AgentAdapter for Claude {
             args: ["auth", "logout"].map(String::from).into(),
             stdin: None,
             timeout: 60,
+            until: None,
         })
     }
 
@@ -630,6 +632,7 @@ impl AgentAdapter for Claude {
             args: args.iter().map(|a| (*a).to_owned()).collect(),
             stdin: None,
             timeout,
+            until: None,
         };
         Some(match op {
             ExtensionOp::SwitchPlugin { plugin, enabled } => {
@@ -704,6 +707,7 @@ impl AgentAdapter for Claude {
                     args,
                     stdin: None,
                     timeout: 30,
+                    until: None,
                 }
             }
             ExtensionOp::RemoveServer(name) => run(&["mcp", "remove", name], 30),
@@ -1354,6 +1358,8 @@ fn ready(body: &Value, ultracode: bool) -> AgentEvent {
             rewind: true,
             tool_hooks: true,
             mcp: true,
+            mcp_toggle: true,
+            mcp_clear_auth: true,
             thinking_text: true,
             steer: true,
             commands: slash_commands(&body["commands"]),
@@ -1433,6 +1439,7 @@ fn configured_server(line: &str) -> Option<quill_agent::ConfiguredServer> {
         name: name.to_owned(),
         target: target.trim().to_owned(),
         status,
+        checked: true,
         source,
     })
 }

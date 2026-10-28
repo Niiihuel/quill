@@ -1,0 +1,10 @@
+{
+  "marketplaces": [
+    {
+      "name": "primary-runtime",
+      "root": "/opt/codex/plugins/primary-runtime",
+      "marketplaceSource": { "sourceType": "local", "source": "/opt/codex/plugins/primary-runtime" }
+    },
+    { "name": "curated", "root": "/home/user/.codex/.tmp/plugins" }
+  ]
+}

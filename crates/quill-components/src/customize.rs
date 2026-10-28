@@ -145,6 +145,53 @@ pub fn section(
     Element::row(row).gap(8.0).size(Some(width), Some(34.0))
 }
 
+/// An agent's heading over what its program lists, quill's own (Desktop has one agent): its
+/// logo before its name, 18 px, and the count in a pill, over a hairline.
+pub fn agent_heading(logo: &'static str, name: &str, count: Option<usize>, width: f32) -> Element {
+    let mut row = vec![
+        Element::icon(icons::of(logo))
+            .foreground(look::palette().text)
+            .size(Some(18.0), Some(18.0))
+            .centered_y(),
+        text(name)
+            .font_family(FontFamily::SansBold)
+            .font_size(18.0)
+            .centered_y(),
+    ];
+    if let Some(count) = count {
+        row.push(
+            Element::row(vec![
+                hgap(6.0),
+                muted(count.to_string()).font_size(11.0).centered_y(),
+                hgap(6.0),
+            ])
+            .size(None, Some(16.0))
+            .background(look::customize_count())
+            .radius(8.0)
+            .centered_y(),
+        );
+    }
+    Element::column(vec![
+        Element::row(row).gap(8.0).size(Some(width), Some(34.0)),
+        Element::spacer()
+            .background(look::customize_line())
+            .size(Some(width), Some(1.0)),
+    ])
+}
+
+/// The agents an item is active in, at its end: each one's logo, 14 px, with its name for a
+/// tooltip. `id` tells the item's marks from another's.
+pub fn agent_marks(id: &str, agents: &[(&'static str, String)]) -> Element {
+    let marks = agents.iter().enumerate().map(|(at, (logo, name))| {
+        let mark = Element::icon(icons::of(logo))
+            .foreground(look::muted())
+            .size(Some(14.0), Some(14.0))
+            .centered_y();
+        limn::Tooltip::new(mark, format!("{id}:{at}"), name.as_str(), look::palette()).render()
+    });
+    Element::row(marks.collect()).gap(6.0)
+}
+
 /// The folder a section is about, outlined, its icon before its name (Desktop's "work"), 28
 /// high as the header's buttons.
 pub fn folder_chip(id: &str, name: &str) -> Element {
