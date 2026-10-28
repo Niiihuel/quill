@@ -148,6 +148,12 @@ impl Codex {
         let fork = self.spec.lock().unwrap().fork;
         params["threadId"] = json!(id);
         params["excludeTurns"] = json!(true);
+        // A rewind or a fork from a message: the copy keeps the conversation through that turn,
+        // the original whole (rewind.jsonl:48,58-72).
+        let at = self.spec.lock().unwrap().resume_at.clone();
+        if let Some(turn) = at.filter(|_| fork) {
+            params["lastTurnId"] = json!(turn);
+        }
         let method = if fork { "thread/fork" } else { "thread/resume" };
         self.request(method, params, Pending::Thread)
     }
@@ -471,7 +477,9 @@ impl Codex {
                 out.events.push(AgentEvent::Text {
                     text: text(&item["text"]),
                     parent: None,
-                    id: None,
+                    // The turn, not the item: `thread/fork`'s `lastTurnId` takes a turn
+                    // (rewind.jsonl:48).
+                    id: self.turn.clone(),
                     at: None,
                 })
             }
@@ -889,8 +897,10 @@ impl AgentAdapter for Codex {
                 self.effort = Some(effort);
                 vec![]
             }
-            // Codex has no rewind, context breakdown, MCP control, skills list or host tools
-            // that quill drives yet (docs/codex.md).
+            // `Rewind` restores files, which Codex does not do (`thread/revert` leaves them): they
+            // stay quill's snapshots, so `capabilities.rewind` is false. The conversation goes
+            // back through `thread/fork` with `lastTurnId` (docs/codex.md). No context
+            // breakdown, MCP control, skills list or host tools that quill drives yet.
             _ => vec![],
         }
     }

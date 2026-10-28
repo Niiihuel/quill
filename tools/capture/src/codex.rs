@@ -4,7 +4,7 @@
 //! line (`out` = quill → CLI, `in` = CLI → quill, `stderr`, `exit`). Each run gets a fresh git repo.
 //!
 //! Always `gpt-6-luna` at effort `low`; never `danger-full-access` or approval policy `never`.
-//! Scenarios: simple, edit-bash, deny, deny-patch, always, plan, steer, interrupt, resume, fork, think,
+//! Scenarios: simple, edit-bash, deny, deny-patch, always, plan, steer, interrupt, resume, fork, rewind, think,
 //! websearch, ask, account.
 
 use serde_json::{json, Value};
@@ -27,6 +27,10 @@ enum Step {
     Restart,
     /// `thread/fork` of the thread; later turns run on the fork.
     Fork,
+    /// `thread/fork` of the thread through its nth turn (from 0), inclusive (`lastTurnId`).
+    ForkThrough(usize),
+    /// `thread/revert` of the first thread before its nth turn, which then is the thread again.
+    RevertBefore(usize),
     /// Any request, no thread needed.
     Rpc(&'static str, Value),
 }
@@ -97,6 +101,20 @@ fn scenario(name: &str) -> Option<Scenario> {
                 Turn("Remember the word: lantern. Reply with exactly: ok"),
                 Fork,
                 Turn("What word did I ask you to remember? One word."),
+            ],
+        ),
+        // Two turns; a fork through the first forgets the second; the original, reverted before
+        // the second, forgets it as well.
+        "rewind" => (
+            AUTO,
+            "accept",
+            vec![
+                Turn("Remember the word: lantern. Reply with exactly: ok"),
+                Turn("Also remember the word: harbor. Reply with exactly: ok"),
+                ForkThrough(0),
+                Turn("Which words did I ask you to remember? List them, nothing else."),
+                RevertBefore(1),
+                Turn("Which words did I ask you to remember? List them, nothing else."),
             ],
         ),
         "think" => (AUTO, "accept", vec![Turn("Which is larger, 17^23 or 23^17? Reason carefully, then answer in one line.")]),
@@ -237,6 +255,9 @@ impl Proc {
 struct State {
     thread_id: String,
     turn_id: String,
+    /// The first thread, and the ids of its turns in order: where a fork or a revert points.
+    root_thread: String,
+    root_turns: Vec<String>,
     turn_done: bool,
     /// Items started in the current turn other than the user's own message.
     work_started: bool,
@@ -365,6 +386,9 @@ impl Driver {
         let r = self.call("turn/start", params)?;
         if let Some(id) = r["turn"]["id"].as_str() {
             self.st.turn_id = id.into();
+            if self.st.thread_id == self.st.root_thread {
+                self.st.root_turns.push(id.into());
+            }
         }
         Ok(())
     }
@@ -463,6 +487,7 @@ pub fn run(name: &str) -> Result<(), String> {
                 .as_str()
                 .ok_or("thread/start: no thread id")?
                 .into();
+            d.st.root_thread = d.st.thread_id.clone();
         }
         for step in &sc.steps {
             match step {
@@ -510,6 +535,23 @@ pub fn run(name: &str) -> Result<(), String> {
                         .ok_or("thread/fork: no thread id")?
                         .into();
                 }
+                Step::ForkThrough(n) => {
+                    let params = json!({
+                        "threadId": d.st.root_thread, "lastTurnId": d.st.root_turns[*n],
+                        "approvalPolicy": d.approval, "sandbox": d.sandbox,
+                    });
+                    let r = d.call("thread/fork", params)?;
+                    d.st.thread_id = r["thread"]["id"]
+                        .as_str()
+                        .ok_or("thread/fork: no thread id")?
+                        .into();
+                }
+                Step::RevertBefore(n) => {
+                    let params = json!({ "threadId": d.st.root_thread, "beforeTurnId": d.st.root_turns[*n] });
+                    d.call("thread/revert", params)?;
+                    d.st.thread_id = d.st.root_thread.clone();
+                    d.st.root_turns.truncate(*n);
+                }
                 Step::Rpc(method, params) => {
                     d.call(method, params.clone())?;
                 }
@@ -539,6 +581,7 @@ mod tests {
             "interrupt",
             "resume",
             "fork",
+            "rewind",
             "think",
             "websearch",
             "ask",

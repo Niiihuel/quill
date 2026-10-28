@@ -224,7 +224,7 @@ fn texts(events: &[AgentEvent]) -> Vec<&str> {
         .collect()
 }
 
-const SCENARIOS: [&str; 13] = [
+const SCENARIOS: [&str; 14] = [
     "simple",
     "edit-bash",
     "deny-patch",
@@ -238,12 +238,13 @@ const SCENARIOS: [&str; 13] = [
     "websearch",
     "ask",
     "resume",
+    "rewind",
 ];
 
 #[test]
 fn every_fixture_writes_its_out_lines_and_decodes_without_unknown_messages() {
     for name in SCENARIOS {
-        if matches!(name, "resume" | "fork") {
+        if matches!(name, "resume" | "fork" | "rewind") {
             continue; // two processes: their own tests
         }
         let run = run_of(name);
@@ -816,6 +817,77 @@ fn a_fork_continues_a_copy_of_the_thread() {
         }
     }
     assert_eq!(texts(&second.events).len(), 1);
+}
+
+const TURN_1: &str = "01a18237-e9ea-7123-b871-11ef7ee57cfa";
+const TURN_2: &str = "01a18237-f867-75c3-aca5-457e1896a1f4";
+
+#[test]
+fn a_rewind_forks_the_thread_through_the_turn_before_the_message() {
+    let all = entries("rewind");
+    // The capture's process: two turns, then the fork. Each reply carries its turn's id.
+    let mut first = Run::started(SessionSpec::default());
+    replay(&mut first, &all[..47], 0);
+    let Session { id } = first.events[0].clone() else {
+        panic!()
+    };
+    let ids: Vec<_> = (first.events.iter())
+        .filter_map(|e| match e {
+            Text { id, .. } => id.as_deref(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids, [TURN_1, TURN_2]);
+    // What the engine's `rewind_to` sets for "Rewind to here" on the second message.
+    let spec = SessionSpec {
+        resume: Some(id.clone()),
+        fork: true,
+        resume_at: Some(TURN_1.into()),
+        ..Default::default()
+    };
+    let mut second = Run::started(spec);
+    second.feed(&all[1].1);
+    let fork = second.written.last().unwrap();
+    assert_eq!(fork["method"], "thread/fork");
+    assert_eq!(
+        (&fork["params"]["threadId"], &fork["params"]["lastTurnId"]),
+        (&json!(id), &json!(TURN_1))
+    );
+    second.feed(&json!({ "id": 2, "result": all[55].1["result"] }));
+    second.prompt(
+        "Which words did I ask you to remember? List them, nothing else.",
+        false,
+    );
+    assert_eq!(
+        second.written.last().unwrap()["params"]["threadId"],
+        "01a18237-fdac-76c3-8316-d223162277c8"
+    );
+    for (dir, msg) in &all[58..76] {
+        if dir == "in" && msg["method"].is_string() {
+            second.feed(msg);
+        }
+    }
+    assert_eq!(texts(&second.events), ["lantern"]);
+    assert!(unknown(&second.events).is_empty());
+    // A resume at a turn that is not a fork keeps the whole thread.
+    let mut plain = Run::started(SessionSpec {
+        resume: Some(id),
+        resume_at: Some(TURN_1.into()),
+        ..Default::default()
+    });
+    plain.feed(&all[1].1);
+    let resume = plain.written.last().unwrap();
+    assert_eq!(resume["method"], "thread/resume");
+    assert!(resume["params"].get("lastTurnId").is_none());
+}
+
+#[test]
+fn codex_does_not_restore_files_so_quill_does() {
+    let run = run_of("simple");
+    let Ready { capabilities, .. } = &run.events[1] else {
+        panic!()
+    };
+    assert!(!capabilities.rewind);
 }
 
 #[test]
