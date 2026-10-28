@@ -3,9 +3,11 @@
 //! `captures/<scenario>-<epoch>/session.jsonl`: one `{t_ms, dir, msg}` per line, `dir` being
 //! `out` (quill → CLI), `in` (CLI → quill) or `stderr`.
 //!
-//! Usage: quill-capture <scenario> [--model <m>] [--settings <sources>] [--resume <session-id>] [--fork]
+//! Usage: quill-capture [--agent codex] <scenario> [--model <m>] [--settings <sources>] [--resume <session-id>] [--fork]
 //! Scenarios: simple, edit-bash, deny, always, ask, plan, steer, interrupt, resume, rewind,
-//! todos, agent, think.
+//! todos, agent, think. With `--agent codex`, see codex.rs.
+
+mod codex;
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -469,6 +471,15 @@ fn wait_for(
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let [flag, agent, name, ..] = &args[..] {
+        if flag == "--agent" && agent == "codex" {
+            if let Err(error) = codex::run(name) {
+                eprintln!("quill-capture: {error}");
+                std::process::exit(1);
+            }
+            return;
+        }
+    }
     let Some(name) = args.first() else {
         eprintln!("usage: quill-capture <scenario> [--model <m>] [--settings <sources>] [--resume <session-id>] [--fork]");
         std::process::exit(2);
