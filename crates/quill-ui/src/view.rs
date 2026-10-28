@@ -22,11 +22,13 @@ use quill_model::{
     ChangeKind, FileEffect, NotifyLevel, QueuedMessage, SessionStatus, TranscriptView, WebSource,
 };
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 /// A square image tile, 85 px: in the composer and in a message (docs/ui.md §2.6).
 const IMAGE_TILE: f32 = 85.0;
+/// A generated image's tile, wider than a message's: it is what the turn made.
+const GENERATED_TILE: f32 = 168.0;
 /// A web search source card, tall (websearch-spec (a)).
 const CARD_HEIGHT: f32 = 84.0;
 
@@ -2762,6 +2764,16 @@ fn entries<'a>(
                     steps.push(step);
                     flush(&mut steps, &mut items);
                     items.push(browser_card(session, &opened, column, palette));
+                } else if name == "Compact" {
+                    // The context was cut down: a marker where the conversation continues.
+                    flush(&mut steps, &mut items);
+                    items.push(compaction_divider(result.is_none(), column));
+                } else if name == "ImageGeneration"
+                    && step_image(name, input, result.as_ref()).is_some()
+                {
+                    // The picture it made, with the prompt it came from, on its own.
+                    flush(&mut steps, &mut items);
+                    items.push(image_block(&step, ui, column, palette));
                 } else if stands_alone(name) {
                     flush(&mut steps, &mut items);
                     if let Some(element) = lone_step(&step, column, palette) {
@@ -3155,6 +3167,30 @@ fn sent_line(sent: usize) -> Element {
         muted(words).font_size(SMALL).centered_y(),
     ])
     .gap(5.0)
+}
+
+/// Where the agent compacted its context, between two hairlines (inferred design: Claude
+/// Code's `compact_boundary` is not drawn, and Desktop's is not captured).
+fn compaction_divider(running: bool, column: f32) -> Element {
+    let words = if running {
+        "Compacting context"
+    } else {
+        "Context compacted"
+    };
+    let line = || {
+        Element::spacer()
+            .size(None, Some(1.0))
+            .background(look::divider())
+            .flex(1.0)
+            .centered_y()
+    };
+    Element::row(vec![
+        line(),
+        muted(words).font_size(SMALL).centered_y(),
+        line(),
+    ])
+    .gap(10.0)
+    .size(Some(column), None)
 }
 
 /// Where what the person had not seen begins, as Desktop marks it "New" between two orange
@@ -4068,6 +4104,43 @@ fn stands_alone(name: &str) -> bool {
     matches!(name, "AskUserQuestion" | "ExitPlanMode")
 }
 
+/// The picture a step made or looked at: a generated image's saved file (its result's file)
+/// or the file a Read opened, when that is an image.
+pub fn step_image(name: &str, input: &Value, result: Option<&ToolResult>) -> Option<PathBuf> {
+    match name {
+        "ImageGeneration" => result
+            .filter(|r| !r.is_error)?
+            .files
+            .first()
+            .map(|f| f.path.clone()),
+        "Read" => {
+            let path = Path::new(input["file_path"].as_str()?);
+            let ext = path.extension()?.to_str()?.to_lowercase();
+            ["png", "jpg", "jpeg", "gif", "webp"]
+                .contains(&ext.as_str())
+                .then(|| path.to_path_buf())
+        }
+        _ => None,
+    }
+}
+
+/// A generated image: its picture, which a click opens in the viewer, and the prompt it came
+/// from under it (inferred design: Desktop's own is not captured).
+fn image_block(step: &Step, ui: &Ui, column: f32, palette: ComponentPalette) -> Element {
+    let path = step_image(step.name, step.input, step.result).unwrap_or_default();
+    let id = format!("image:tool:{}", step.call);
+    let mut block = vec![picture_tile(&id, &path, GENERATED_TILE, ui, palette)];
+    let caption = step.result.map(|r| r.output.trim()).unwrap_or_default();
+    if !caption.is_empty() {
+        block.push(
+            muted(caption.to_owned())
+                .font_size(SMALL)
+                .size(Some(column.min(480.0)), None),
+        );
+    }
+    Element::column(block).gap(8.0)
+}
+
 /// quill's web search block: a pill that says what was searched, with the sources as cards
 /// under it. The design follows rareui's WebSearch (rareui, `web-search.tsx`; its license is
 /// not checked yet), with quill's own colors. Desktop draws a WebSearch as a plain step
@@ -4873,6 +4946,24 @@ fn step_label(step: &Step, done: bool) -> (String, String) {
         "WebFetch" => ("Fetched", "Fetching", said("url")),
         "WebSearch" => ("Searched web", "Searching web", said("query")),
         "Agent" | "Task" => ("Ran agent", "Running agent", said("description")),
+        // Codex's own steps, in the same voice (inferred: Desktop shows none of them).
+        "Compact" => ("Compacted context", "Compacting context", String::new()),
+        "EnterReviewMode" if input["review"].as_str().is_some_and(|r| !r.is_empty()) => (
+            "Started a review of",
+            "Starting a review of",
+            said("review"),
+        ),
+        "EnterReviewMode" => ("Started a review", "Starting a review", String::new()),
+        "ExitReviewMode" => ("Finished the review", "Finishing the review", String::new()),
+        "ImageGeneration" => ("Generated an image", "Generating an image", String::new()),
+        "Sleep" => (
+            "Waited",
+            "Waiting",
+            waited(input["duration_ms"].as_u64().unwrap_or(0)),
+        ),
+        "WaitAgent" => ("Waited for agents", "Waiting for agents", String::new()),
+        "MessageAgent" => ("Messaged an agent", "Messaging an agent", String::new()),
+        "CloseAgent" => ("Closed an agent", "Closing an agent", String::new()),
         "Skill" => ("Ran skill", "Running skill", said("skill")),
         "ExitPlanMode" => ("Proposed plan", "Proposing plan", String::new()),
         // The rest in Desktop's words (2.9939.4 `cb6930dae` `$a`, `ao`/`io`). What follows the
@@ -4961,6 +5052,15 @@ fn step_label(step: &Step, done: bool) -> (String, String) {
     };
     let verb = if done { past } else { present };
     (verb.to_owned(), object)
+}
+
+/// A wait as it reads in a row: "1s", "2.5s", "300ms".
+fn waited(ms: u64) -> String {
+    match ms {
+        0..=999 => format!("{ms}ms"),
+        _ if ms.is_multiple_of(1000) => format!("{}s", ms / 1000),
+        _ => format!("{:.1}s", ms as f64 / 1000.0),
+    }
 }
 
 /// The line a group of steps folds into, as Desktop words it: one command says
@@ -5284,7 +5384,16 @@ fn step_row(
 ) -> Element {
     let agent = matches!(step.name, "Agent" | "Task");
     // Entering plan mode says so and nothing more: its output is the CLI's word to the model.
-    let bare = step.name == "EnterPlanMode";
+    let bare = matches!(
+        step.name,
+        "EnterPlanMode"
+            | "Compact"
+            | "EnterReviewMode"
+            | "Sleep"
+            | "WaitAgent"
+            | "MessageAgent"
+            | "CloseAgent"
+    );
     let open = !agent && !bare && is_open(view, ui, step.call);
     let done = !step.running && step.result.is_some_and(|r| !r.stopped);
     let (verb, object) = step_label(step, done);
@@ -5368,6 +5477,24 @@ fn step_body(step: &Step, ui: &Ui, inner: f32, palette: ComponentPalette) -> Ele
                     mono(r.output.trim_end())
                         .foreground(look::muted())
                         .size(Some(inner), None),
+                );
+            }
+        }
+        // An image it looked at, as the pictures of a message are.
+        "Read" if step_image(step.name, step.input, result).is_some() => {
+            let path = step_image(step.name, step.input, result).unwrap_or_default();
+            let id = format!("image:tool:{}", step.call);
+            body.push(picture_tile(&id, &path, IMAGE_TILE, ui, palette));
+        }
+        // The findings of a review, as the markdown they are written in.
+        "ExitReviewMode" => {
+            if let Some(r) = result.filter(|r| !r.output.trim().is_empty()) {
+                body.push(
+                    Markdown::new(&r.output, palette)
+                        .width(inner)
+                        .font_size(BODY)
+                        .render()
+                        .element,
                 );
             }
         }
@@ -6083,17 +6210,28 @@ fn composer_images(ui: &Ui, palette: ComponentPalette) -> Vec<Element> {
 
 /// An image as a square tile: its thumbnail once decoded, else its file icon.
 fn image_tile(id: &str, path: &Path, ui: &Ui, palette: ComponentPalette) -> Attachment {
+    tile_of(id, path, IMAGE_TILE, ui, palette)
+}
+
+fn tile_of(id: &str, path: &Path, side: f32, ui: &Ui, palette: ComponentPalette) -> Attachment {
     let name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
     let tile = Attachment::new(id, name, palette)
         .preview_only()
-        .width(IMAGE_TILE);
+        .width(side);
     match ui.thumbs.get(path) {
         Some(thumb) => tile.preview(thumb.clone().cover()),
         None => tile,
     }
+}
+
+/// A picture of a step, opened in the viewer by a click on it.
+fn picture_tile(id: &str, path: &Path, side: f32, ui: &Ui, palette: ComponentPalette) -> Element {
+    tile_of(id, path, side, ui, palette)
+        .open_action(id.to_owned())
+        .render()
 }
 
 /// The logo of the connector or plugin `key`, once the host has decoded it, for the light or
@@ -6950,7 +7088,7 @@ fn agent_menu(ui: &Ui) -> Option<Element> {
     );
     let mut entries = vec![limn::DropdownMenuEntry::Heading("Agent".into())];
     entries.extend(ui.agents.iter().map(|a| {
-        limn::DropdownMenuItem::new(format!("agent:{}", a.id), a.name.clone())
+        limn::DropdownMenuItem::new(format!("pick-agent:{}", a.id), a.name.clone())
             .icon(logo(a))
             .selected(a.id == ui.agent)
             .into()
@@ -8714,14 +8852,21 @@ fn agent_pane(
         return Element::column(vec![header]).size(Some(width), Some(height));
     };
     let inner = width - 48.0;
-    let mut body = vec![Element::panel(
-        text(input["prompt"].as_str().unwrap_or_default().to_owned())
-            .font_size(BODY)
-            .max_width(inner - 32.0),
-    )
-    .background(look::user_bubble())
-    .radius(14.0)
-    .padding(16.0)];
+    // Codex's helper has no prompt to show: the CLI does not say it.
+    let prompt = input["prompt"].as_str().unwrap_or_default();
+    let mut body = vec![];
+    if !prompt.is_empty() {
+        body.push(
+            Element::panel(
+                text(prompt.to_owned())
+                    .font_size(BODY)
+                    .max_width(inner - 32.0),
+            )
+            .background(look::user_bubble())
+            .radius(14.0)
+            .padding(16.0),
+        );
+    }
     // "Model Haiku 5.5": the model it was given, else the session's.
     let models = offered_models(store, Some(session), ui);
     let model = input["model"]
@@ -8734,7 +8879,15 @@ fn agent_pane(
         .or_else(|| current_model(store, Some(session), ui));
     body.push(Element::spacer().size(None, Some(16.0)));
     if let Some(model) = model {
-        body.push(muted(format!("Model {}", model.name)).font_size(SMALL));
+        let effort = input["effort"].as_str().map(|e| format!(" \u{b7} {e}"));
+        body.push(
+            muted(format!(
+                "Model {}{}",
+                model.name,
+                effort.unwrap_or_default()
+            ))
+            .font_size(SMALL),
+        );
     }
     let running = session.task_running(call);
     let helper = session.helpers.get(call).map_or(&[][..], Vec::as_slice);

@@ -5911,7 +5911,7 @@ fn choosing_an_agent_takes_its_mode_drops_the_model_and_is_kept_in_settings() {
     ui.effort = Some("high".into());
     assert!(click(&store, &mut ui, view::AGENT_MENU).is_empty());
     assert_eq!(ui.open_menu, Some(view::AGENT_MENU));
-    let saved = click(&store, &mut ui, "agent:codex");
+    let saved = click(&store, &mut ui, "pick-agent:codex");
     assert_eq!(ui.open_menu, None);
     assert_eq!(
         (
@@ -5962,7 +5962,7 @@ fn the_mode_words_are_the_chosen_agents_and_unsafe_ones_wait_for_settings() {
         words(&ui, "claude", "default"),
         Some(("Manual".into(), "Always ask before making changes".into()))
     );
-    click(&store, &mut ui, "agent:codex");
+    click(&store, &mut ui, "pick-agent:codex");
     assert_eq!(view::menu_modes(&store, None, &ui), ["read-only", "auto"]);
     assert_eq!(
         words(&ui, "codex", "read-only"),
@@ -6022,7 +6022,7 @@ fn the_account_is_the_chosen_agents() {
         state: quill_model::AuthState::SignedOut,
     });
     assert!(!crate::account::visible(&ui));
-    click(&store, &mut ui, "agent:codex");
+    click(&store, &mut ui, "pick-agent:codex");
     assert!(crate::account::visible(&ui));
     // Signing in is the chosen agent's; the other can be used instead from the screen.
     ui.agents[1].sign_in_methods = vec![("chatgpt".into(), "ChatGPT account".into())];
@@ -6089,7 +6089,7 @@ fn a_new_codex_session_never_takes_a_claude_model() {
     ui.agent = "claude".into();
     click(&store, &mut ui, view::NEW_SESSION);
     assert_eq!(ui.model.as_deref(), Some("haiku"));
-    click(&store, &mut ui, "agent:codex");
+    click(&store, &mut ui, "pick-agent:codex");
     click(&store, &mut ui, view::NEW_SESSION);
     assert_eq!((ui.model.as_deref(), ui.effort.as_deref()), (None, None));
     assert_eq!(ui.mode, "auto");
@@ -6163,4 +6163,161 @@ fn one_agents_plan_limits_never_show_for_another() {
     assert!(view::agent_limits(&store, &ui).is_some());
     ui.selected = Some(2);
     assert!(view::agent_limits(&store, &ui).is_none());
+}
+
+#[test]
+fn the_steps_of_a_review_a_compaction_a_wait_and_an_image_say_what_they_did() {
+    let none = serde_json::json!({});
+    let label = |name: &'static str, input: &serde_json::Value, done: bool| {
+        let result = ToolResult {
+            output: String::new(),
+            is_error: false,
+            added: 0,
+            removed: 0,
+            files: vec![],
+            stopped: false,
+            web: None,
+        };
+        let step = view::Step {
+            call: "s1",
+            name,
+            input,
+            result: done.then_some(&result),
+            running: !done,
+        };
+        view::group_summary(&[step])
+    };
+    assert_eq!(label("Compact", &none, true), "Compacted context");
+    assert_eq!(label("Compact", &none, false), "Compacting context");
+    let review = serde_json::json!({ "review": "current changes" });
+    assert_eq!(
+        label("EnterReviewMode", &review, true),
+        "Started a review of current changes"
+    );
+    assert_eq!(label("EnterReviewMode", &none, true), "Started a review");
+    assert_eq!(label("ExitReviewMode", &none, true), "Finished the review");
+    assert_eq!(
+        label("Sleep", &serde_json::json!({ "duration_ms": 1000 }), true),
+        "Waited 1s"
+    );
+    assert_eq!(
+        label("Sleep", &serde_json::json!({ "duration_ms": 2500 }), false),
+        "Waiting 2.5s"
+    );
+    assert_eq!(
+        label("Sleep", &serde_json::json!({ "duration_ms": 300 }), true),
+        "Waited 300ms"
+    );
+    assert_eq!(label("ImageGeneration", &none, true), "Generated an image");
+    assert_eq!(
+        label("ImageGeneration", &none, false),
+        "Generating an image"
+    );
+    assert_eq!(label("WaitAgent", &none, true), "Waited for agents");
+    assert_eq!(label("lookup", &none, true), "Used lookup");
+}
+
+#[test]
+fn a_generated_image_opens_in_the_viewer_and_a_read_one_too() {
+    let (mut store, mut ui) = store_with_session();
+    tool(
+        &mut store,
+        "g1",
+        "ImageGeneration",
+        serde_json::json!({}),
+        None,
+    );
+    agent(
+        &mut store,
+        AgentEvent::ToolResult {
+            call: "g1".into(),
+            output: "A quill pen".into(),
+            is_error: false,
+            files: vec![quill_model::FileChange {
+                path: "/work/gen.png".into(),
+                before: None,
+                after: None,
+            }],
+            command: None,
+            web: None,
+        },
+    );
+    tool(
+        &mut store,
+        "v1",
+        "Read",
+        serde_json::json!({ "file_path": "/work/logo.png" }),
+        None,
+    );
+    result(&mut store, "v1", "");
+    tool(
+        &mut store,
+        "v2",
+        "Read",
+        serde_json::json!({ "file_path": "/work/main.rs" }),
+        None,
+    );
+    result(&mut store, "v2", "fn main() {}");
+    // The pictures are loaded as a message's are; a source file is not a picture.
+    assert_eq!(
+        image_paths(&store, &ui),
+        [
+            PathBuf::from("/work/gen.png"),
+            PathBuf::from("/work/logo.png")
+        ]
+    );
+    // Its picture and its prompt are on screen without opening anything.
+    let window = limn::Size::new(1408.0, 844.0);
+    let frame = UiTree::new(view(&store, &ui, window)).layout(window);
+    assert!(frame.regions.iter().any(|r| r.id == "image:tool:g1"));
+    click(&store, &mut ui, "image:tool:g1");
+    let viewer = ui.viewer.as_ref().expect("the viewer opened");
+    assert_eq!(viewer.path, PathBuf::from("/work/gen.png"));
+    assert!(!viewer.annotatable);
+    click(&store, &mut ui, view::IMAGE_CLOSE);
+    click(&store, &mut ui, "image:tool:v1");
+    assert_eq!(
+        ui.viewer.as_ref().unwrap().path,
+        PathBuf::from("/work/logo.png")
+    );
+    // A failed one is a step, with no picture.
+    tool(
+        &mut store,
+        "g2",
+        "ImageGeneration",
+        serde_json::json!({}),
+        None,
+    );
+    agent(
+        &mut store,
+        AgentEvent::ToolResult {
+            call: "g2".into(),
+            output: "Image generation limit reached".into(),
+            is_error: true,
+            files: vec![],
+            command: None,
+            web: None,
+        },
+    );
+    assert_eq!(image_paths(&store, &ui).len(), 2);
+}
+
+#[test]
+fn a_helper_row_opens_its_pane_and_is_not_the_agent_picker() {
+    // The picker's ids were `agent:<id>` as the helper's `agent:<call>` are: a click on a
+    // helper chose an agent named after the call and saved it as the default.
+    let (mut store, mut ui) = store_with_session();
+    tool(
+        &mut store,
+        "call_9",
+        "Agent",
+        serde_json::json!({ "description": "Ping" }),
+        None,
+    );
+    let before = ui.agent.clone();
+    let saved = click(&store, &mut ui, "agent:call_9");
+    assert!(saved.is_empty());
+    assert_eq!(ui.agent, before);
+    assert_eq!(ui.helper.as_deref(), Some("call_9"));
+    assert_eq!(ui.settings.default_agent, None);
 }

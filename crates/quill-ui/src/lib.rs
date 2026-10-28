@@ -2562,6 +2562,15 @@ pub fn image_paths(store: &Store, ui: &Ui) -> Vec<PathBuf> {
         .map_or(&[][..], |s| &s.items[..]);
     let shown = items.iter().flat_map(|item| match item {
         Item::User { images, .. } => images.clone(),
+        // The pictures of a step: a generated image, an image the agent read.
+        Item::Tool {
+            name,
+            input,
+            result,
+            ..
+        } => view::step_image(name, input, result.as_ref())
+            .into_iter()
+            .collect(),
         _ => vec![],
     });
     // The logos of this theme, while they are on.
@@ -3207,6 +3216,25 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         }
         return vec![];
     }
+    if let Some(call) = id.strip_prefix("image:tool:") {
+        let shown = ui.selected.and_then(|id| store.session(id)).and_then(|s| {
+            s.items.iter().find_map(|item| match item {
+                Item::Tool {
+                    call: c,
+                    name,
+                    input,
+                    result,
+                } if c == call => view::step_image(name, input, result.as_ref()),
+                _ => None,
+            })
+        });
+        ui.viewer = shown.map(|path| Viewer {
+            path,
+            origin: None,
+            annotatable: false,
+        });
+        return vec![];
+    }
     if let Some(rest) = id.strip_prefix("image:msg:") {
         let shown = rest.rsplit_once(':').and_then(|(request, index)| {
             let index: usize = index.parse().ok()?;
@@ -3402,7 +3430,7 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         ui.cwd = PathBuf::from(folder);
         return vec![];
     }
-    if let Some(agent) = id.strip_prefix("agent:") {
+    if let Some(agent) = id.strip_prefix("pick-agent:") {
         ui.open_menu = None;
         ui.take_agent(agent);
         // Persist before the next frame shows it (AGENTS.md): the choice survives a restart.
