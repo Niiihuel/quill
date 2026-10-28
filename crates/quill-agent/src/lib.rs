@@ -712,6 +712,11 @@ pub trait AgentAdapter: Send {
     /// The versions of the agent's program quill was tested with.
     fn tested(&self) -> &'static [&'static str];
     fn launch(&self, spec: &SessionSpec) -> LaunchPlan;
+    /// Whether, in this permission `mode`, the agent starts a dev server without a card: the
+    /// modes that skip every approval, or in which it decides alone.
+    fn mode_waives_prompts(&self, _mode: &str) -> bool {
+        false
+    }
     /// Where, in a session's folder, the agent keeps the dev servers `preview_start` runs
     /// ([`LaunchConfig`]); `None` when it keeps none.
     fn launch_file(&self) -> Option<&'static str> {

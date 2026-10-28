@@ -3510,6 +3510,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "quill-agent-codex"
+version = "0.0.1"
+dependencies = [
+ "base64 0.22.1",
+ "quill-agent",
+ "serde_json",
+]
+
+[[package]]
 name = "quill-browser"
 version = "0.0.1"
 dependencies = [
@@ -3552,6 +3561,7 @@ dependencies = [
  "libc",
  "quill-agent",
  "quill-agent-claude",
+ "quill-agent-codex",
  "quill-browser",
  "quill-files",
  "quill-git",

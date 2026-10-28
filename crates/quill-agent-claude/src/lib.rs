@@ -264,6 +264,12 @@ impl AgentAdapter for Claude {
         "Claude Code"
     }
 
+    /// Desktop waives it in bypass and auto mode (2.9939.4 `askForLaunchSpawn`,
+    /// "consent_waiver_mode_preview_start", modes `YPa`).
+    fn mode_waives_prompts(&self, mode: &str) -> bool {
+        matches!(mode, "bypassPermissions" | "auto")
+    }
+
     /// Claude Desktop's own.
     fn launch_file(&self) -> Option<&'static str> {
         Some(LAUNCH_FILE)

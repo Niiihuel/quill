@@ -2,8 +2,6 @@
 resolver = "2"
 # A crate under crates/ is created when its plan task needs it (docs/plan.md).
 members = ["apps/*", "crates/*", "tools/*"]
-# Only fixtures so far (docs/codex.md phase 1); phase 2 adds the crate and drops this.
-exclude = ["crates/quill-agent-codex"]
 
 [workspace.package]
 version = "0.0.1"
