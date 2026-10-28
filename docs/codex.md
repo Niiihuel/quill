@@ -280,3 +280,16 @@ Capturas nuevas con `quill-capture --agent codex <escenario>` (`gpt-6-luna`, esf
 
 ### Verificación en pantalla
 Agente falso con los fixtures de `0.163.0`, Codex elegido en el selector, 1408×844; para `image` y `view-sleep` una copia del fixture con la ruta apuntando a un archivo real (el fixture anonimizado apunta a `/home/user/...`). Oscuro: los cinco ítems y el aviso de sesión. Claro: `image`, `subagent` (panel) y `compact`. Para `compact` y `review` el fixture tiene un pedido de más (`thread/compact/start`, `review/start`) que quill no escribe: en pantalla el segundo mensaje de la persona hace de pedido de compactar, y en `review` el primero hace de `review/start`.
+
+## Extensiones (2026-10-28)
+
+Servidores MCP, plugins, marketplaces y skills de Codex, con el mismo detalle que Claude Code en Customize. El código está en `crates/quill-agent-codex/src/extensions.rs`; el contrato y la comparación, en [agents.md](agents.md) "Extensiones por CLI". Capturas anonimizadas en `fixtures/0.163.0/{mcp-list,plugin-list,marketplace-list,skills-list,mcp-status}.json`.
+
+- **`codex mcp list --json`:** una lista de `{name, enabled, disabled_reason, transport, auth_status}`; `transport` es `stdio {command, args, env, env_vars, cwd}` o `streamable_http {url, bearer_token_env_var, http_headers, …}`. No dice de qué capa viene cada uno, ni los arranca. `auth_status` vale `unsupported`, `unknown` o `not_logged_in`, entre otros.
+- **`codex plugin list --json --available`:** `{installed: […], available: […]}` (con 8811 ofertas en una cuenta real). Cada fila trae `pluginId` (`nombre@marketplace`), `name`, `marketplaceName`, `version`, `installed` y `enabled`, sin descripción ni instalaciones. `plugin marketplace list --json` es `{marketplaces: [{name, root, marketplaceSource?}]}`.
+- **`skills/list {cwds, forceReload}`** sin thread: `{data: [{cwd, skills: [{name, description, path, scope, enabled, pluginId, interface?}], errors}]}`. Una cuenta real dio 87 skills (82 `user`, 5 `system`). `~/.agents/skills` los lee Codex también para `user`.
+- **`skills/config/write {path, enabled}`** escribe `[[skills.config]]` en el `config.toml` (verificado en una carpeta de prueba); `skills/list` muestra después `enabled: false`.
+- **`mcpServerStatus/list {threadId?, detail}`** da `runtimeStatus` (`connected`, `starting`, `authenticationRequired`, `failed`, `disabled`; `null` fuera de un thread), `authStatus`, `pluginId`, `toolsError` y `tools` (un mapa con `annotations.readOnlyHint` y `destructiveHint`). Aparece `codex_apps`, el servidor de las apps de la cuenta de ChatGPT, que `codex mcp list` no trae.
+- **Reconectar:** `config/mcpServer/reload` (contesta `{}`); no hay reconexión de un servidor.
+- **Skills en el menú `/`:** al estar listo el agente, el motor corre `skills/list` aparte (otro proceso, sin tocar las líneas de la sesión) y avisa `AgentEvent::Skills`. La UI los suma a los comandos. Al mandar uno, el adaptador cambia `/nombre` por `$nombre` (mención explícita, inferido de la TUI).
+- **Sin verificar:** `plugin add|remove`, `plugin marketplace add|upgrade|remove` (no se corrieron, solo sus `--help`), `mcpServer/oauth/login` y `config/mcpServer/reload` dentro de una sesión real, y que `$nombre` active el skill.

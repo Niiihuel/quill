@@ -68,3 +68,24 @@ GitHub es la identidad de la persona en quill (el pie de la sidebar y Settings �
 | Contribuciones | `gh api graphql -f query=…` | la misma consulta de openADE (`viewer { login contributionsCollection { contributionCalendar … } }`), validada en `parse_calendar` |
 
 El token no sale del llavero de `gh` (Linux, Windows y macOS); no se imprime ni se guarda. `GH_TOKEN` y `GITHUB_TOKEN` se quitan del entorno de estos comandos para que la cuenta sea la del llavero.
+
+## Extensiones por CLI (Skills, Plugins y Connectors)
+
+Customize muestra lo de **cada CLI por separado** y los cambios se hacen con los comandos propios de cada uno, así que quedan también en la terminal (decisión del dueño §9.1 de `scratchpad/extensions-per-cli.md`). La capa "All agents" que quill inyectaría por sesión viene en fases posteriores. Lo que cada adaptador declara:
+
+| Concepto | Contrato | Claude Code 2.1.312 | Codex 0.163.0 |
+|---|---|---|---|
+| Servidores MCP | `servers_query`, `servers`, `server_scopes` | `claude mcp list` (texto, revisa la salud); alcances local, project, user | `codex mcp list --json` (verificado); solo user: `mcp add` escribe `config.toml`, y el de un proyecto se edita a mano |
+| Agregar y quitar | `ExtensionOp::AddServer`, `RemoveServer` | `claude mcp add\|remove` | `codex mcp add\|remove`: stdio con `--env`, o `--url`. **Sin encabezados**: no hay opción, así que el motor dice "Codex can't add a server with headers." |
+| Plugins y marketplaces | `plugins_query`, `marketplaces_query`, `ExtensionOp` | `claude plugin …` | `codex plugin list --json --available`, `plugin add\|remove`, `plugin marketplace add\|list\|upgrade\|remove` |
+| Apagar un plugin, actualizar uno | `ExtensionKinds.switch_plugins`, `update_plugins` | sí | **no**: no hay comando (el interruptor es del `config.toml`); el menú no los ofrece |
+| Skills | `skills_query` + `skills_answer` (sin sesión), o `AgentCommand::Skills` | `get_skills_dialog` en una sesión de un solo uso | `skills/list` del `app-server` sin thread (verificado). Alcances `user`, `repo` (project), `system` y `admin`, con `enabled` |
+| Estado de un skill | `ExtensionOp::SkillState`, `ExtensionKinds.skills_per_folder` | `edit-skill-overrides`, por carpeta | `skills/config/write {path, enabled}`: solo on u off, **de la persona** (no pide carpeta). Verificado contra un `CODEX_HOME` de prueba |
+| Skills en el menú `/` | `AgentEvent::Skills` | vienen en `initialize` | el motor los pide aparte al estar listo (`skills/list`) y los suma a `capabilities.commands`; elegir uno manda `$nombre` (inferido, la mención explícita de la TUI) |
+| MCP de la sesión | `AgentCommand::McpStatus`, `McpReconnect`, `McpAuthenticate`; `capabilities.mcp`, `mcp_toggle`, `mcp_clear_auth` | los tres pedidos de control, el interruptor y borrar credenciales | `mcpServerStatus/list {threadId}` (estado, herramientas, `authStatus`); `config/mcpServer/reload` para reconectar; `mcpServer/oauth/login`. **Sin apagado por sesión ni logout**: `mcp_toggle` y `mcp_clear_auth` en false y la UI no los muestra |
+
+- **`ProgramRun.until`.** El `app-server` de Codex termina al cerrarse stdin **sin contestar** lo que quedó en vuelo (verificado: salió en 0,1 s sin responder). Un cambio que solo existe como pedido del `app-server` (el estado de un skill) pide `until`, y el motor mantiene stdin abierto hasta ver esa línea en stdout y entonces mata el proceso.
+- **Pedidos propios con id de texto.** Los pedidos de quill que no están en las capturas (`quill-skills`, `quill-mcp-status`, …) llevan un id de texto, para que los números de los demás sigan siendo los de las capturas, y el agente falso los contesta aparte.
+- **Un servidor de un plugin** se lista en `codex mcp list` como uno propio. El adaptador lo marca `Plugin` por la carpeta de su programa (`/.codex/plugins/`, inferido) para no ofrecer quitarlo.
+- **La lista de Codex no arranca los servidores**: dice que están configurados, no que conectan. `ConfiguredServer.checked` en false, y la página escribe "On" en vez de "Connected".
+- **Probado contra el CLI real, sin tocar la configuración de la persona:** `CODEX_HOME` y `CLAUDE_CONFIG_DIR` apuntados a carpetas de prueba (los dos la respetan; la `~/.claude.json` real no cambió). `codex mcp add|remove` (incluido quitar uno inexistente: sale 0 y lo dice en stdout) y `skills/config/write` contra una carpeta de prueba. De solo lectura contra la real: `mcp list --json`, `plugin list --json --available`, `plugin marketplace list --json`, `skills/list` y `mcpServerStatus/list`. `plugin add|remove` y `marketplace add|upgrade|remove` no se corrieron: se cubren con tests de los argumentos.
