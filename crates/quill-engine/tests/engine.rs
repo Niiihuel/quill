@@ -992,6 +992,58 @@ fn a_rejected_code_says_what_the_program_said_and_cancel_ends_the_login() {
     assert!(!marker.exists());
 }
 
+/// Codex's account through the fake agent's `login status` / `login` / `logout`: the address
+/// is the line on stderr, the browser coming back signs in by itself (no code), and the state
+/// is asked again after each.
+#[test]
+fn codex_signs_in_and_out_through_its_own_commands() {
+    let (tx, rx) = channel();
+    let fake = env!("CARGO_BIN_EXE_fake-agent").to_string();
+    let programs = HashMap::from([("codex".to_string(), fake)]);
+    let config = quill_engine::Config {
+        programs,
+        database: None,
+        snapshots: None,
+        settings: None,
+        ..Default::default()
+    };
+    let engine = Engine::start_with(move |event| drop(tx.send(event)), config);
+    let marker = workdir("codex-auth").join("marker");
+    let mut settings = quill_model::Settings::default();
+    settings.agents.insert(
+        "codex".into(),
+        quill_model::AgentSettings {
+            env: vec![
+                "QUILL_FAKE_AUTH=signed-out".into(),
+                "QUILL_FAKE_LOGIN_MS=100".into(),
+                format!("QUILL_FAKE_AUTH_MARKER={}", marker.display()),
+            ],
+            ..Default::default()
+        },
+    );
+    engine.send(Intent::SaveSettings(settings));
+    let agent = "codex".to_string();
+    engine.send(Intent::CheckSignIn {
+        agent: agent.clone(),
+    });
+    assert_eq!(state(&rx), quill_model::AuthState::SignedOut);
+    engine.send(Intent::SignIn {
+        agent: agent.clone(),
+        method: "chatgpt".into(),
+    });
+    let seen = until(&rx, |e| matches!(e, Event::SignInUrl { .. }));
+    assert!(matches!(
+        seen.last(),
+        Some(Event::SignInUrl { url, .. }) if url.starts_with("https://auth.openai.com/oauth/authorize?")
+    ));
+    assert!(matches!(
+        state(&rx),
+        quill_model::AuthState::SignedIn { .. }
+    ));
+    engine.send(Intent::SignOut { agent });
+    assert_eq!(state(&rx), quill_model::AuthState::SignedOut);
+}
+
 /// Codex's captures through the same fake agent: the adapter's lines pace the replay, one per
 /// `out` of the capture (its `model/list` is answered by the fake agent itself).
 #[test]

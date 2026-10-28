@@ -52,6 +52,36 @@ pub struct AgentOption {
     pub default: String,
 }
 
+/// What a permission mode is for, which picks its mark and ink in the mode menu without the
+/// UI knowing any agent's words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ModeTone {
+    /// Asks before changing anything.
+    Ask,
+    /// Takes file edits by itself.
+    Edits,
+    Plan,
+    /// Decides what to allow by itself.
+    Auto,
+    /// Only reads (asks before anything else).
+    Read,
+    /// Skips every approval; shown as a warning.
+    Unsafe,
+}
+
+/// One permission mode in the agent's own words, as the mode menu lists it.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ModeWords {
+    /// The mode as the agent names it (`AgentCapabilities::modes`).
+    pub id: String,
+    pub label: String,
+    pub about: String,
+    pub tone: ModeTone,
+    /// Listed before the agent has said what it offers (some modes depend on the model, and
+    /// the ones that skip approvals wait for the person's say).
+    pub listed: bool,
+}
+
 /// What a task has used: its tokens, its tool calls and how long it has run.
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TaskUsage {
@@ -717,6 +747,14 @@ pub trait AgentAdapter: Send {
     fn mode_waives_prompts(&self, _mode: &str) -> bool {
         false
     }
+    /// The words and tone of every permission mode the agent has, unsafe ones too.
+    fn modes(&self) -> Vec<ModeWords> {
+        vec![]
+    }
+    /// The mode a new session starts in, one of [`modes`](Self::modes).
+    fn default_mode(&self) -> &'static str {
+        ""
+    }
     /// Where, in a session's folder, the agent keeps the dev servers `preview_start` runs
     /// ([`LaunchConfig`]); `None` when it keeps none.
     fn launch_file(&self) -> Option<&'static str> {
@@ -794,6 +832,11 @@ pub trait AgentAdapter: Send {
     /// The page address in a line [`login_run`](Self::login_run) printed.
     fn login_url(&self, _line: &str) -> Option<String> {
         None
+    }
+    /// Whether the sign-in page shows a code the person pastes back; off, the browser returns
+    /// to the program by itself and quill only waits.
+    fn login_takes_code(&self) -> bool {
+        true
     }
     /// What goes to the program's stdin for the code the person pasted.
     fn login_code(&self, code: &str) -> String {

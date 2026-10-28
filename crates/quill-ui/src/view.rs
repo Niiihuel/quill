@@ -78,6 +78,7 @@ pub const PANEL_TOGGLE: &str = "panel:toggle";
 pub const PICK_FOLDER: &str = "pick-folder";
 pub const PLUS_MENU: &str = "plus-menu";
 pub const FOLDER_MENU: &str = "folder-menu";
+pub const AGENT_MENU: &str = "agent-menu";
 pub const SEND: &str = "send";
 pub const USAGE_MENU: &str = "usage-menu";
 pub const EFFORT_MENU: &str = "effort-menu";
@@ -6001,7 +6002,14 @@ fn composer(
     .radius(6.0)
     .size(None, Some(24.0));
     Element::column(vec![
-        Element::row(vec![local, folder_menu(store, ui)]).gap(8.0),
+        Element::row(
+            [local]
+                .into_iter()
+                .chain(agent_menu(ui))
+                .chain([folder_menu(store, ui)])
+                .collect(),
+        )
+        .gap(8.0),
         box_,
     ])
     .gap(13.0)
@@ -6643,7 +6651,7 @@ fn chip(
     // Above the composer the chips are filled at rest.
     let chip = if open {
         chip.background(look::chip_open())
-    } else if id == FOLDER_MENU {
+    } else if id == FOLDER_MENU || id == AGENT_MENU {
         chip.background(look::cancel())
     } else {
         chip
@@ -6871,6 +6879,42 @@ fn usage_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
     )
 }
 
+/// The agent a new session runs [inferred: a chip beside "Local" and the folder]: its logo and
+/// name, opening the agents available. Only offered when there is more than one.
+fn agent_menu(ui: &Ui) -> Option<Element> {
+    if ui.agents.len() < 2 {
+        return None;
+    }
+    let open = ui.open_menu == Some(AGENT_MENU);
+    let chosen = ui.agents.iter().find(|a| a.id == ui.agent)?;
+    let logo = |a: &quill_model::AgentInfo| icons::of(icons::agent(a.icon.as_deref()));
+    let anchor = chip(
+        AGENT_MENU,
+        vec![
+            chip_icon(logo(chosen)),
+            chip_text(&chosen.name, look::palette().text),
+        ],
+        open,
+        "Agent",
+        None,
+    );
+    let mut entries = vec![limn::DropdownMenuEntry::Heading("Agent".into())];
+    entries.extend(ui.agents.iter().map(|a| {
+        limn::DropdownMenuItem::new(format!("agent:{}", a.id), a.name.clone())
+            .icon(logo(a))
+            .selected(a.id == ui.agent)
+            .into()
+    }));
+    Some(menu(
+        anchor,
+        entries,
+        open,
+        AGENT_MENU,
+        200.0,
+        limn::PopoverPlacement::TopStart,
+    ))
+}
+
 /// The folder a new session works in: the recent ones and "Open folder…".
 fn folder_menu(store: &Store, ui: &Ui) -> Element {
     let open = ui.open_menu == Some(FOLDER_MENU);
@@ -6912,10 +6956,18 @@ fn folder_menu(store: &Store, ui: &Ui) -> Element {
 /// model adds (Auto), that quill can name.
 pub(crate) fn offered_modes(store: &Store, session: Option<&Session>, ui: &Ui) -> Vec<String> {
     let capabilities = agent_capabilities(store, session, ui);
+    let agent = session.map_or(ui.agent.as_str(), |s| s.agent.as_str());
+    // Before the agent has said what it offers: the modes its adapter lists at the start.
     let mut modes = capabilities
         .map(|c| c.modes.clone())
         .filter(|m| !m.is_empty())
-        .unwrap_or_else(|| vec!["default".into(), "acceptEdits".into(), "plan".into()]);
+        .unwrap_or_else(|| {
+            let words = ui.agents.iter().find(|a| a.id == agent).map(|a| &a.modes);
+            (words.into_iter().flatten())
+                .filter(|m| m.listed)
+                .map(|m| m.id.clone())
+                .collect()
+        });
     // The chosen model, or the agent's first, its default.
     let models = capabilities.map_or(&[][..], |c| c.models.as_slice());
     let model = ui
@@ -6924,7 +6976,7 @@ pub(crate) fn offered_modes(store: &Store, session: Option<&Session>, ui: &Ui) -
         .and_then(|id| (models.iter()).find(|m| m.id == id || m.name.to_lowercase().contains(id)))
         .or(models.first());
     modes.extend(model.into_iter().flat_map(|m| m.modes.iter().cloned()));
-    modes.retain(|m| mode_entry(m).is_some());
+    modes.retain(|m| mode_entry(ui, agent, m).is_some());
     modes
 }
 
@@ -6939,7 +6991,7 @@ pub(crate) fn menu_modes(store: &Store, session: Option<&Session>, ui: &Ui) -> V
                 .map(|c| c.unsafe_modes.clone())
                 .unwrap_or_default()
                 .into_iter()
-                .filter(|m| mode_entry(m).is_some()),
+                .filter(|m| mode_entry(ui, agent, m).is_some()),
         );
     }
     modes
@@ -7023,27 +7075,28 @@ pub fn menu_digit(store: &Store, ui: &Ui, typed: &str) -> Option<String> {
     }
 }
 
-/// What each mode does, in Desktop's words, with its mark (3.6556.2 `shared-8` `zG`).
-/// Auto's says who decides without naming the agent.
-pub(crate) fn mode_entry(mode: &str) -> Option<(&'static str, &'static str)> {
-    Some(match mode {
-        "default" => ("Manual", "Always ask before making changes"),
-        "acceptEdits" => ("Accept edits", "Automatically accept all file edits"),
-        "plan" => ("Plan", "Create a plan before making changes"),
-        "auto" => ("Auto", "The agent handles permission decisions"),
-        // Offered once Settings allows it, Desktop's "Allow bypass permissions mode".
-        "bypassPermissions" => ("Bypass permissions", "Accepts all permissions"),
-        _ => return None,
-    })
+/// What `mode` is called and does for `agent`, in the words its adapter gave; `None` for a
+/// mode the adapter has no words for.
+pub(crate) fn mode_entry<'a>(
+    ui: &'a Ui,
+    agent: &str,
+    mode: &str,
+) -> Option<&'a quill_model::ModeWords> {
+    (ui.agents.iter().find(|a| a.id == agent))?
+        .modes
+        .iter()
+        .find(|m| m.id == mode)
 }
 
-fn mode_icon(mode: &str) -> &'static str {
-    match mode {
-        "acceptEdits" => icons::CODE,
-        "plan" => icons::SCROLL,
-        "auto" => icons::LIGHTNING,
-        "bypassPermissions" => icons::WARNING,
-        _ => icons::HAND,
+fn mode_icon(tone: quill_model::ModeTone) -> &'static str {
+    use quill_model::ModeTone::*;
+    match tone {
+        Edits => icons::CODE,
+        Plan => icons::SCROLL,
+        Auto => icons::LIGHTNING,
+        Read => icons::EYE,
+        Unsafe => icons::WARNING,
+        Ask => icons::HAND,
     }
 }
 
@@ -7051,15 +7104,18 @@ fn mode_icon(mode: &str) -> &'static str {
 fn mode_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
     let open = ui.open_menu == Some(MODE_MENU);
     let current = session.map_or(ui.mode.as_str(), |s| s.mode.as_str());
-    let label = mode_entry(current).map_or("Manual", |(label, _)| label);
-    // Bypass reads as the warning it is, as Desktop marks it (`isWarning`).
-    let ink = match current {
-        "default" => look::manual(),
-        "bypassPermissions" => look::failed(),
+    let agent = session.map_or(ui.agent.as_str(), |s| s.agent.as_str());
+    let words = mode_entry(ui, agent, current);
+    let label = words.map_or(current, |w| w.label.as_str());
+    // A mode that skips approvals reads as the warning it is, as Desktop marks it
+    // (`isWarning`); one that asks reads amber.
+    let ink = match words.map(|w| w.tone) {
+        Some(quill_model::ModeTone::Ask) => look::manual(),
+        Some(quill_model::ModeTone::Unsafe) => look::failed(),
         _ => look::palette().text,
     };
     // Desktop's tooltip says what the mode does.
-    let about = mode_entry(current).map_or("", |(_, about)| about);
+    let about = words.map_or("", |w| w.about.as_str());
     let anchor = chip(
         MODE_MENU,
         vec![chip_text(label, ink)],
@@ -7069,12 +7125,14 @@ fn mode_menu(store: &Store, session: Option<&Session>, ui: &Ui) -> Element {
     );
     let mut entries = vec![limn::DropdownMenuEntry::Heading("Mode".into())];
     for (i, mode) in menu_modes(store, session, ui).iter().enumerate() {
-        let (label, about) = mode_entry(mode).unwrap_or(("", ""));
+        let Some(words) = mode_entry(ui, agent, mode) else {
+            continue;
+        };
         let n = i + 1;
         entries.push(
-            limn::DropdownMenuItem::new(format!("mode:{mode}"), label)
-                .icon(icons::of(mode_icon(mode)))
-                .description(about)
+            limn::DropdownMenuItem::new(format!("mode:{mode}"), words.label.clone())
+                .icon(icons::of(mode_icon(words.tone)))
+                .description(words.about.clone())
                 .shortcut(n.to_string())
                 .selected(mode == current)
                 .into(),
@@ -10485,7 +10543,7 @@ fn agent_page(
                     .modes
                     .iter()
                     .chain(&unsafe_modes)
-                    .filter_map(|m| mode_entry(m).map(|(label, _)| (m.clone(), label.to_owned()))),
+                    .filter_map(|m| mode_entry(ui, mine, m).map(|w| (m.clone(), w.label.clone()))),
             );
             let mut rows = vec![
                 setting(

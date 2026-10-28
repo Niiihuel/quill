@@ -311,13 +311,14 @@ fn wide(id: &str, label: &str, primary: bool) -> Element {
 /// steps of signing in through its program.
 pub fn screen(ui: &Ui, window: Size) -> Element {
     let palette = look::palette();
-    let (name, program, methods) = current(ui)
+    let (name, program, methods, takes_code) = current(ui)
         .map(|a| {
             let program = ui.settings.agent(&a.id).program;
             (
                 a.name.clone(),
                 program.unwrap_or_else(|| a.id.clone()),
                 a.sign_in_methods.clone(),
+                a.sign_in_code,
             )
         })
         .unwrap_or_default();
@@ -359,6 +360,20 @@ pub fn screen(ui: &Ui, window: Size) -> Element {
                 if !matches!(state(ui), Some(AuthState::SignedOut)) {
                     column.push(Element::spacer().size(None, Some(10.0)));
                     column.push(centered(wide(CANCEL, "Cancel", false)));
+                } else {
+                    // Signed out of this agent, the person can still use another (inferred).
+                    for other in ui
+                        .agents
+                        .iter()
+                        .filter(|a| Some(a.id.as_str()) != current(ui).map(|c| c.id.as_str()))
+                    {
+                        column.push(Element::spacer().size(None, Some(10.0)));
+                        column.push(centered(wide(
+                            &format!("agent:{}", other.id),
+                            &format!("Use {} instead", other.name),
+                            false,
+                        )));
+                    }
                 }
             }
         }
@@ -372,6 +387,20 @@ pub fn screen(ui: &Ui, window: Size) -> Element {
             column.push(centered(muted("We opened the sign-in page.")));
             column.push(centered(muted("If it didn\u{2019}t open, copy the link.")));
             column.push(Element::spacer().size(None, Some(28.0)));
+            if !takes_code {
+                // The browser returns to the program by itself; nothing to paste.
+                column.push(centered(muted("Waiting for the browser\u{2026}")));
+                column.push(Element::spacer().size(None, Some(14.0)));
+                column.push(centered(
+                    Element::row(vec![
+                        keyed_button(COPY_LINK, "Copy link", "", false, url.is_some(), palette),
+                        keyed_button(CANCEL, "Cancel", "", false, true, palette),
+                    ])
+                    .gap(8.0)
+                    .centered_x(),
+                ));
+                return finish(column, window);
+            }
             // One action leads, as on the first screen: the code's field over a 320 px
             // Continue that fills once there is a code; the ways out sit small beneath.
             column.push(centered(
@@ -403,6 +432,11 @@ pub fn screen(ui: &Ui, window: Size) -> Element {
             ));
         }
     }
+    finish(column, window)
+}
+
+/// The steps, centered in the window.
+fn finish(column: Vec<Element>, window: Size) -> Element {
     Element::column(vec![
         Element::spacer().flex(1.0),
         Element::row(vec![

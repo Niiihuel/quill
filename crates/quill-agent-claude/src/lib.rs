@@ -6,8 +6,8 @@ use quill_agent::{
     AgentAdapter, AgentCapabilities, AgentCommand, AgentEvent, AgentId, AgentSlashCommand,
     AuthState, Choices, CommandRun, ContextCategory, ContextKind, ContextUsage, Decision, Decoded,
     ExtensionOp, FileChange, LaunchPlan, Marketplace, McpServer, McpSource, McpStatus, McpTool,
-    ModelInfo, PlanLimits, Plugin, PluginOffer, ProgramRun, SessionSpec, Skill, Suggestion,
-    TaskUsage, ToolContent, Usage, UsageWindow, WebSearchRun, WebSource, BROWSER_GUIDE,
+    ModeWords, ModelInfo, PlanLimits, Plugin, PluginOffer, ProgramRun, SessionSpec, Skill,
+    Suggestion, TaskUsage, ToolContent, Usage, UsageWindow, WebSearchRun, WebSource, BROWSER_GUIDE,
     BROWSER_TOOLS, HOST_TOOLS,
 };
 use serde_json::{json, Value};
@@ -352,6 +352,60 @@ impl AgentAdapter for Claude {
             env_remove: vec!["NODE_OPTIONS".into(), "CLAUDE_CODE_ENTRYPOINT".into()],
             cwd: spec.cwd.clone(),
         }
+    }
+
+    // Desktop's words for each mode (3.6556.2 `shared-8` `zG`), as the mode menu shows them;
+    // Auto's says who decides without naming the agent.
+    fn modes(&self) -> Vec<ModeWords> {
+        use quill_agent::ModeTone::*;
+        let w = |id: &str, label: &str, about: &str, tone, listed| ModeWords {
+            id: id.into(),
+            label: label.into(),
+            about: about.into(),
+            tone,
+            listed,
+        };
+        vec![
+            w(
+                "default",
+                "Manual",
+                "Always ask before making changes",
+                Ask,
+                true,
+            ),
+            w(
+                "acceptEdits",
+                "Accept edits",
+                "Automatically accept all file edits",
+                Edits,
+                true,
+            ),
+            w(
+                "plan",
+                "Plan",
+                "Create a plan before making changes",
+                Plan,
+                true,
+            ),
+            w(
+                "auto",
+                "Auto",
+                "The agent handles permission decisions",
+                Auto,
+                false,
+            ),
+            w(
+                "bypassPermissions",
+                "Bypass permissions",
+                "Accepts all permissions",
+                Unsafe,
+                false,
+            ),
+        ]
+    }
+
+    fn default_mode(&self) -> &'static str {
+        "default"
     }
 
     // As Desktop does, through the CLI's own commands (2.9939.4 `DuaKZOPP`, 3.6556.2

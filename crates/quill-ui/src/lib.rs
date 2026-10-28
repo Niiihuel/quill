@@ -1800,8 +1800,9 @@ impl Ui {
             selected: None,
             prompt: String::new(),
             cwd,
-            agent: "claude".into(),
-            mode: "default".into(),
+            // The first agent available, once the engine says which (`Event::Settings`).
+            agent: String::new(),
+            mode: String::new(),
             model: None,
             effort: None,
             open_menu: None,
@@ -2158,6 +2159,18 @@ impl Ui {
         }
     }
 
+    /// A new session runs `agent` from now on, starting from its own mode; model and effort
+    /// are the agent's default until Settings says otherwise.
+    fn take_agent(&mut self, agent: &str) {
+        self.agent = agent.to_owned();
+        self.model = None;
+        self.effort = None;
+        if let Some(info) = self.agents.iter().find(|a| a.id == agent) {
+            self.mode = info.default_mode.clone();
+        }
+        self.take_defaults();
+    }
+
     /// What a new session starts with: the agent's defaults from Settings, where it has any.
     fn take_defaults(&mut self) {
         let defaults = self.settings.agent(&self.agent);
@@ -2297,6 +2310,17 @@ impl Ui {
             look::set_width(settings.width);
             self.settings = settings.clone();
             self.agents = agents.clone();
+            // The agent last chosen, else the first available, until there is one in use.
+            if !agents.iter().any(|a| a.id == self.agent) {
+                let wanted = settings.default_agent.as_deref();
+                if let Some(agent) = agents
+                    .iter()
+                    .find(|a| Some(a.id.as_str()) == wanted)
+                    .or(agents.first())
+                {
+                    self.take_agent(&agent.id.clone());
+                }
+            }
             if self.selected.is_none() {
                 self.take_defaults();
             }
@@ -3348,6 +3372,13 @@ fn clicked(store: &Store, ui: &mut Ui, id: &str) -> Vec<Intent> {
         ui.selected = None;
         ui.cwd = PathBuf::from(folder);
         return vec![];
+    }
+    if let Some(agent) = id.strip_prefix("agent:") {
+        ui.open_menu = None;
+        ui.take_agent(agent);
+        // Persist before the next frame shows it (AGENTS.md): the choice survives a restart.
+        ui.settings.default_agent = Some(agent.to_owned());
+        return vec![Intent::SaveSettings(ui.settings.clone())];
     }
     if let Some(folder) = id.strip_prefix("folder:") {
         ui.open_menu = None;

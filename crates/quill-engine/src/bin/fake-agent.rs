@@ -10,8 +10,10 @@
 use std::io::{BufRead, Write};
 
 fn main() {
-    if std::env::args().nth(1).as_deref() == Some("auth") {
-        return auth();
+    match std::env::args().nth(1).as_deref() {
+        Some("auth") => return auth(),
+        Some("login" | "logout") => return codex_auth(),
+        _ => {}
     }
     let path =
         std::fs::read_to_string(".fake-agent").expect(".fake-agent in the working directory");
@@ -98,6 +100,53 @@ fn auth() {
         Some("logout") => {
             set(false);
             println!("Successfully logged out from your Anthropic account.");
+        }
+        _ => std::process::exit(2),
+    }
+}
+
+/// `login status|(none)` and `logout` as Codex 0.163.0 answers them (docs/codex.md "Fase 1" 6-8,
+/// from `codex-rs/cli/src/login.rs`; `login` and `logout` were not run live): all on stderr.
+/// The account state is `auth()`'s, so `QUILL_FAKE_AUTH` and the marker work the same. `login`
+/// prints the address like the real one, waits `QUILL_FAKE_LOGIN_MS` (the browser coming back to
+/// Codex's local server, 1500 by default) and signs in, or ends early when stdin closes (a
+/// cancel).
+fn codex_auth() {
+    let args: Vec<String> = std::env::args().collect();
+    let marker = std::env::var("QUILL_FAKE_AUTH_MARKER").unwrap_or_else(|_| ".fake-auth".into());
+    let base = std::env::var("QUILL_FAKE_AUTH").as_deref() != Ok("signed-out");
+    let set = |signed_in: bool| {
+        if signed_in == base {
+            let _ = std::fs::remove_file(&marker);
+        } else {
+            let _ = std::fs::write(&marker, "");
+        }
+    };
+    let signed_in = base != std::path::Path::new(&marker).exists();
+    match (args[1].as_str(), args.get(2).map(String::as_str)) {
+        ("login", Some("status")) if signed_in => eprintln!("Logged in using ChatGPT"),
+        ("login", Some("status")) => {
+            eprintln!("Not logged in");
+            std::process::exit(1);
+        }
+        ("login", _) => {
+            eprintln!("Starting local login server on http://localhost:1455.");
+            eprintln!("If your browser did not open, navigate to this URL to authenticate:");
+            eprintln!();
+            eprintln!("https://auth.openai.com/oauth/authorize?response_type=code&client_id=fake&state=fake");
+            eprintln!();
+            eprintln!("On a remote or headless machine? Use `codex login --device-auth` instead.");
+            let wait = std::env::var("QUILL_FAKE_LOGIN_MS")
+                .ok()
+                .and_then(|ms| ms.parse().ok())
+                .unwrap_or(1500);
+            std::thread::sleep(std::time::Duration::from_millis(wait));
+            set(true);
+            eprintln!("Successfully logged in");
+        }
+        ("logout", _) => {
+            set(false);
+            eprintln!("Successfully logged out");
         }
         _ => std::process::exit(2),
     }

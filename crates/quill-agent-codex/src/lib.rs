@@ -7,8 +7,9 @@
 
 use quill_agent::{
     AgentAdapter, AgentCapabilities, AgentCommand, AgentEvent, AgentId, AuthState, Choices,
-    CommandRun, ContextUsage, Decision, Decoded, FileChange, LaunchPlan, ModelInfo, PlanLimits,
-    ProgramRun, PromptImage, SessionSpec, Suggestion, Usage, UsageWindow, WebSearchRun, WebSource,
+    CommandRun, ContextUsage, Decision, Decoded, FileChange, LaunchPlan, ModeWords, ModelInfo,
+    PlanLimits, ProgramRun, PromptImage, SessionSpec, Suggestion, Usage, UsageWindow, WebSearchRun,
+    WebSource,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -682,12 +683,60 @@ impl AgentAdapter for Codex {
         mode == FULL_ACCESS
     }
 
+    // The three presets of docs/codex.md "Modos de permiso", in Codex's own words for them.
+    fn modes(&self) -> Vec<ModeWords> {
+        use quill_agent::ModeTone::*;
+        let w = |id: &str, label: &str, about: &str, tone, listed| ModeWords {
+            id: id.into(),
+            label: label.into(),
+            about: about.into(),
+            tone,
+            listed,
+        };
+        vec![
+            w(
+                "read-only",
+                "Read only",
+                "Asks before anything but reading",
+                Read,
+                true,
+            ),
+            w(
+                "auto",
+                "Auto",
+                "Works in this folder; asks to go beyond it",
+                Auto,
+                true,
+            ),
+            w(
+                FULL_ACCESS,
+                "Full access",
+                "No sandbox, never asks",
+                Unsafe,
+                false,
+            ),
+        ]
+    }
+
+    fn default_mode(&self) -> &'static str {
+        DEFAULT_MODE
+    }
+
+    // svgl.app's "Codex" icon, recolored to currentColor (the same source as Claude's).
+    fn icon(&self) -> Option<&'static str> {
+        Some(include_str!("../assets/codex.svg"))
+    }
+
     // Sign-in is the CLI's own `codex login` (docs/codex.md, codex-rs/cli/src/login.rs): it
     // prints the page address on stderr and waits for the browser to come back to a local
     // server, so it never needs a code. `--device-auth` prints a code the person must type
     // on the page, which quill has no place to show, so it is not offered.
     fn sign_in_methods(&self) -> Choices {
         vec![("chatgpt".into(), "ChatGPT account".into())]
+    }
+
+    fn login_takes_code(&self) -> bool {
+        false
     }
 
     fn auth_query(&self) -> Option<Vec<String>> {

@@ -490,6 +490,9 @@ impl Router {
                 options: a.options(),
                 icon: a.icon().map(str::to_owned),
                 sign_in_methods: a.sign_in_methods(),
+                sign_in_code: a.login_takes_code(),
+                modes: a.modes(),
+                default_mode: a.default_mode().to_owned(),
             })
             .collect();
         (self.ui)(Event::Settings {

@@ -260,13 +260,14 @@ fn options(store: &Store, ui: &Ui, command: &str, query: &str) -> Vec<Row> {
             view::menu_modes(store, session, ui)
                 .into_iter()
                 .filter_map(|m| {
-                    let (label, about) = view::mode_entry(&m)?;
+                    let agent = session.map_or(ui.agent.as_str(), |s| s.agent.as_str());
+                    let words = view::mode_entry(ui, agent, &m)?;
                     let in_use = m == current;
                     Some((
                         format!("mode:{m}"),
                         m.clone(),
-                        label.to_owned(),
-                        about.to_owned(),
+                        words.label.clone(),
+                        words.about.clone(),
                         in_use,
                     ))
                 })

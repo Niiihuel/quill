@@ -1174,3 +1174,26 @@ fn an_unauthenticated_turn_asks_to_sign_in() {
         ]
     ));
 }
+
+#[test]
+fn the_mode_words_are_desktops_and_the_default_is_manual() {
+    let claude = Claude::new();
+    let words: Vec<(String, String)> = claude
+        .modes()
+        .into_iter()
+        .map(|w| (w.id, w.label))
+        .collect();
+    assert_eq!(
+        words,
+        [
+            ("default", "Manual"),
+            ("acceptEdits", "Accept edits"),
+            ("plan", "Plan"),
+            ("auto", "Auto"),
+            ("bypassPermissions", "Bypass permissions"),
+        ]
+        .map(|(id, label)| (id.to_owned(), label.to_owned()))
+    );
+    assert_eq!(claude.default_mode(), "default");
+    assert!(claude.login_takes_code());
+}

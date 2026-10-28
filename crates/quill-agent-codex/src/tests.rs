@@ -968,3 +968,22 @@ fn the_account_is_the_clis_own() {
     );
     assert!(codex.mode_waives_prompts("full-access") && !codex.mode_waives_prompts("auto"));
 }
+
+#[test]
+fn the_mode_words_cover_the_modes_it_offers_and_the_default_is_one_of_them() {
+    let codex = Codex::new();
+    let words = codex.modes();
+    let ids: Vec<&str> = words.iter().map(|w| w.id.as_str()).collect();
+    assert_eq!(ids, ["read-only", "auto", "full-access"]);
+    assert_eq!(codex.default_mode(), "auto");
+    assert!(ids.contains(&codex.default_mode()));
+    // Only the unsafe one waits for the person's say.
+    let unlisted: Vec<&str> = words
+        .iter()
+        .filter(|w| !w.listed)
+        .map(|w| w.id.as_str())
+        .collect();
+    assert_eq!(unlisted, ["full-access"]);
+    assert!(codex.icon().is_some_and(|svg| svg.contains("currentColor")));
+    assert!(!codex.login_takes_code());
+}

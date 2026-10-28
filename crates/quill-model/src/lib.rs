@@ -6,9 +6,9 @@ use std::path::PathBuf;
 pub use quill_agent::{
     AgentCapabilities, AgentEvent, AgentOption, AgentSlashCommand, AuthState, ConfiguredServer,
     ContextCategory, ContextKind, ContextUsage, Decision, ExtensionOp, Extensions, FileChange,
-    Marketplace, McpServer, McpSource, McpStatus, McpTool, ModelInfo, NewServer, PlanLimits,
-    Plugin, PluginOffer, Skill, Suggestion, TaskUsage, ToolContent, Usage, UsageWindow,
-    WebSearchRun, WebSource,
+    Marketplace, McpServer, McpSource, McpStatus, McpTool, ModeTone, ModeWords, ModelInfo,
+    NewServer, PlanLimits, Plugin, PluginOffer, Skill, Suggestion, TaskUsage, ToolContent, Usage,
+    UsageWindow, WebSearchRun, WebSource,
 };
 
 /// quill's own id of a session.
@@ -98,6 +98,8 @@ pub struct Settings {
     /// The welcome was seen and its Get started pressed.
     #[serde(default)]
     pub welcomed: bool,
+    /// The agent the new-session page last chose; none takes the first one available.
+    pub default_agent: Option<String>,
     /// The tour after the welcome was finished or skipped; it shows again only from the
     /// account menu.
     #[serde(default)]
@@ -180,6 +182,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             welcomed: false,
+            default_agent: None,
             toured: false,
             theme: Theme::System,
             text_size: TextSize::Medium,
@@ -326,6 +329,16 @@ pub struct AgentInfo {
     /// The ways to sign in to its program, as (key, label); none when it has no sign-in of its own.
     #[serde(default)]
     pub sign_in_methods: Vec<(String, String)>,
+    /// Its sign-in page shows a code to paste back; off, the browser returns by itself.
+    #[serde(default)]
+    pub sign_in_code: bool,
+    /// Its permission modes in its own words, unsafe ones included; the menu picks marks from
+    /// each one's tone.
+    #[serde(default)]
+    pub modes: Vec<ModeWords>,
+    /// The mode a new session starts in.
+    #[serde(default)]
+    pub default_mode: String,
 }
 
 /// Where a message sent while a turn runs goes.

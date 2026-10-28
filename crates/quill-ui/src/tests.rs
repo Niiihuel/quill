@@ -1417,6 +1417,9 @@ fn an_adapters_switch_flips_and_its_list_chooses() {
         ],
         icon: None,
         sign_in_methods: vec![],
+        sign_in_code: true,
+        modes: claude_modes(),
+        default_mode: "default".into(),
     }];
     click(&store, &mut ui, view::SETTINGS_OPEN);
     let saved = |intents: Vec<Intent>| match intents.as_slice() {
@@ -2043,6 +2046,9 @@ fn the_sidebars_customize_and_the_persons_menu_open_settings() {
             options: vec![],
             icon: None,
             sign_in_methods: vec![],
+            sign_in_code: true,
+            modes: claude_modes(),
+            default_mode: "default".into(),
         }],
     });
     ui.cwd = "/work".into();
@@ -2077,6 +2083,9 @@ fn customize_lists_and_changes_an_agents_plugins_marketplaces_and_skills() {
             options: vec![],
             icon: None,
             sign_in_methods: vec![],
+            sign_in_code: true,
+            modes: claude_modes(),
+            default_mode: "default".into(),
         }],
     });
     // A project folder: plugins install for it, and skills' states are kept there.
@@ -2785,6 +2794,9 @@ fn settings_save_through_the_engine_and_shape_what_comes_next() {
                 options: vec![],
                 icon: None,
                 sign_in_methods: vec![],
+                sign_in_code: true,
+                modes: claude_modes(),
+                default_mode: "default".into(),
             }],
         });
     };
@@ -3763,6 +3775,7 @@ fn slash_tab_completes_a_command_that_takes_an_argument() {
 fn slash_permissions_lists_the_offered_modes() {
     let (mut store, mut ui) = store_with_session();
     with_models(&mut store);
+    ui.agents = an_agent_known();
     ui.model = Some("haiku".into());
     ui.prompt = "/permissions ".into();
     assert_eq!(
@@ -4931,6 +4944,9 @@ fn the_logos_of_connectors_and_plugins_are_asked_once_and_only_while_shown() {
             options: vec![],
             icon: None,
             sign_in_methods: vec![],
+            sign_in_code: true,
+            modes: claude_modes(),
+            default_mode: "default".into(),
         }],
     });
     ui.applied(&Event::Servers {
@@ -5077,6 +5093,9 @@ fn the_welcome_shows_once_the_settings_are_known_until_get_started() {
             options: vec![],
             icon: None,
             sign_in_methods: vec![],
+            sign_in_code: true,
+            modes: claude_modes(),
+            default_mode: "default".into(),
         }],
     });
     assert!(crate::welcoming(&ui));
@@ -5101,6 +5120,9 @@ fn an_agent_known() -> Vec<quill_model::AgentInfo> {
         options: vec![],
         icon: None,
         sign_in_methods: vec![],
+        sign_in_code: true,
+        modes: claude_modes(),
+        default_mode: "default".into(),
     }]
 }
 
@@ -5420,4 +5442,251 @@ fn a_turn_that_needed_a_sign_in_offers_it_and_the_button_opens_the_screen() {
     assert!(!crate::account::visible(&ui));
     click(&store, &mut ui, crate::account::SIGN_IN);
     assert!(crate::account::visible(&ui));
+}
+
+/// Claude's mode words as its adapter gives them (the UI itself names no agent's).
+fn claude_modes() -> Vec<quill_model::ModeWords> {
+    use quill_model::ModeTone::*;
+    let w = |id: &str, label: &str, about: &str, tone, listed| quill_model::ModeWords {
+        id: id.into(),
+        label: label.into(),
+        about: about.into(),
+        tone,
+        listed,
+    };
+    vec![
+        w(
+            "default",
+            "Manual",
+            "Always ask before making changes",
+            Ask,
+            true,
+        ),
+        w(
+            "acceptEdits",
+            "Accept edits",
+            "Automatically accept all file edits",
+            Edits,
+            true,
+        ),
+        w(
+            "plan",
+            "Plan",
+            "Create a plan before making changes",
+            Plan,
+            true,
+        ),
+        w(
+            "auto",
+            "Auto",
+            "The agent handles permission decisions",
+            Auto,
+            false,
+        ),
+        w(
+            "bypassPermissions",
+            "Bypass permissions",
+            "Accepts all permissions",
+            Unsafe,
+            false,
+        ),
+    ]
+}
+
+fn codex_known() -> quill_model::AgentInfo {
+    use quill_model::ModeTone::*;
+    let mut codex = an_agent_known().remove(0);
+    codex.id = "codex".into();
+    codex.name = "Codex".into();
+    codex.default_mode = "auto".into();
+    let w = |id: &str, label: &str, about: &str, tone, listed| quill_model::ModeWords {
+        id: id.into(),
+        label: label.into(),
+        about: about.into(),
+        tone,
+        listed,
+    };
+    codex.modes = vec![
+        w(
+            "read-only",
+            "Read only",
+            "Asks before anything but reading",
+            Read,
+            true,
+        ),
+        w(
+            "auto",
+            "Auto",
+            "Works in this folder; asks to go beyond it",
+            Auto,
+            true,
+        ),
+        w(
+            "full-access",
+            "Full access",
+            "No sandbox, never asks",
+            Unsafe,
+            false,
+        ),
+    ];
+    codex
+}
+
+fn two_agents() -> (Store, Ui) {
+    let mut ui = Ui::new("/work".into());
+    ui.skip_welcome = true;
+    let mut agents = an_agent_known();
+    agents[0].id = "claude".into();
+    agents.push(codex_known());
+    ui.applied(&Event::Settings {
+        settings: Settings::default(),
+        agents,
+    });
+    (Store::default(), ui)
+}
+
+#[test]
+fn the_agent_chip_shows_only_with_two_agents_and_the_first_is_the_default() {
+    let (store, mut ui) = two_agents();
+    assert_eq!((ui.agent.as_str(), ui.mode.as_str()), ("claude", "default"));
+    let window = limn::Size::new(1408.0, 844.0);
+    let name = ui.agents[0].name.clone();
+    let draws = |ui: &Ui| {
+        let frame = UiTree::new(view(&store, ui, window)).layout(window);
+        frame
+            .commands
+            .iter()
+            .any(|c| matches!(c, limn::DrawCommand::Text { text, .. } if *text == name))
+    };
+    assert!(draws(&ui));
+    ui.agents.truncate(1);
+    assert!(!draws(&ui));
+}
+
+#[test]
+fn choosing_an_agent_takes_its_mode_drops_the_model_and_is_kept_in_settings() {
+    let (store, mut ui) = two_agents();
+    ui.model = Some("opus".into());
+    ui.effort = Some("high".into());
+    let saved = click(&store, &mut ui, "agent:codex");
+    assert_eq!(
+        (
+            ui.agent.as_str(),
+            ui.mode.as_str(),
+            ui.model.clone(),
+            ui.effort.clone()
+        ),
+        ("codex", "auto", None, None)
+    );
+    let [Intent::SaveSettings(settings)] = saved.as_slice() else {
+        panic!("the choice is saved: {saved:?}");
+    };
+    assert_eq!(settings.default_agent.as_deref(), Some("codex"));
+    // A later settings (the saved ones) keeps it, and a restart starts from it.
+    let remembered = Settings {
+        default_agent: Some("codex".into()),
+        ..Default::default()
+    };
+    let agents = ui.agents.clone();
+    ui.applied(&Event::Settings {
+        settings: remembered.clone(),
+        agents: agents.clone(),
+    });
+    assert_eq!(ui.agent, "codex");
+    let mut restarted = Ui::new("/work".into());
+    restarted.applied(&Event::Settings {
+        settings: remembered,
+        agents,
+    });
+    assert_eq!(
+        (restarted.agent.as_str(), restarted.mode.as_str()),
+        ("codex", "auto")
+    );
+}
+
+#[test]
+fn the_mode_words_are_the_chosen_agents_and_unsafe_ones_wait_for_settings() {
+    let (store, mut ui) = two_agents();
+    assert_eq!(
+        view::menu_modes(&store, None, &ui),
+        ["default", "acceptEdits", "plan"]
+    );
+    let words = |ui: &Ui, agent: &str, mode: &str| {
+        view::mode_entry(ui, agent, mode).map(|w| (w.label.clone(), w.about.clone()))
+    };
+    assert_eq!(
+        words(&ui, "claude", "default"),
+        Some(("Manual".into(), "Always ask before making changes".into()))
+    );
+    click(&store, &mut ui, "agent:codex");
+    assert_eq!(view::menu_modes(&store, None, &ui), ["read-only", "auto"]);
+    assert_eq!(
+        words(&ui, "codex", "read-only"),
+        Some((
+            "Read only".into(),
+            "Asks before anything but reading".into()
+        ))
+    );
+    // Claude's words mean nothing to Codex.
+    assert_eq!(words(&ui, "codex", "default"), None);
+    ui.settings.agents.insert(
+        "codex".into(),
+        quill_model::AgentSettings {
+            allow_unsafe: true,
+            ..Default::default()
+        },
+    );
+    let mut store = store;
+    store.apply(Event::SessionCreated {
+        session: 1,
+        agent: "codex".into(),
+        cwd: "/work".into(),
+    });
+    store.apply(Event::Agent {
+        session: 1,
+        request: None,
+        event: AgentEvent::Ready {
+            version: "0.163.0".into(),
+            capabilities: quill_model::AgentCapabilities {
+                modes: vec!["read-only".into(), "auto".into()],
+                unsafe_modes: vec!["full-access".into()],
+                ..Default::default()
+            },
+            mode: Some("auto".into()),
+        },
+    });
+    assert_eq!(
+        view::menu_modes(&store, None, &ui),
+        ["read-only", "auto", "full-access"]
+    );
+}
+
+#[test]
+fn the_account_is_the_chosen_agents() {
+    let (store, mut ui) = two_agents();
+    ui.applied(&Event::Auth {
+        agent: "claude".into(),
+        state: quill_model::AuthState::SignedIn {
+            method: "claude.ai".into(),
+            email: Some("ada@example.com".into()),
+            org: None,
+            plan: None,
+        },
+    });
+    ui.applied(&Event::Auth {
+        agent: "codex".into(),
+        state: quill_model::AuthState::SignedOut,
+    });
+    assert!(!crate::account::visible(&ui));
+    click(&store, &mut ui, "agent:codex");
+    assert!(crate::account::visible(&ui));
+    // Signing in is the chosen agent's; the other can be used instead from the screen.
+    ui.agents[1].sign_in_methods = vec![("chatgpt".into(), "ChatGPT account".into())];
+    assert_eq!(
+        click(&store, &mut ui, "account:method:chatgpt"),
+        [Intent::SignIn {
+            agent: "codex".into(),
+            method: "chatgpt".into()
+        }]
+    );
 }
