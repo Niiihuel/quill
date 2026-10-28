@@ -3,7 +3,7 @@
 //! A capture is driven the way the engine would: the lines quill sent become the commands
 //! that make the adapter write them, and the lines Codex sent are decoded. What the adapter
 //! writes must be the capture's `out` lines, in number and order, because the fake agent
-//! waits for one line per `out` (`model/list` is the one it answers by itself).
+//! waits for one line per `out`.
 
 use super::*;
 use quill_agent::AgentEvent::*;
@@ -130,9 +130,7 @@ fn replay(run: &mut Run, entries: &[(String, Value)], from: usize) -> usize {
             // A fork inside one process: quill forks by launching a new one (below).
             ("out", Some("thread/fork")) => {
                 run.codex.next_id = msg["id"].as_u64().unwrap();
-                run.codex
-                    .pending
-                    .insert(key(&msg["id"]), Pending::Thread { resume: false });
+                run.codex.pending.insert(key(&msg["id"]), Pending::Thread);
             }
             // Start, `initialized`, the thread, the turn list: the adapter writes them itself.
             ("out", Some(_)) => {}
@@ -145,7 +143,6 @@ fn replay(run: &mut Run, entries: &[(String, Value)], from: usize) -> usize {
 
 fn methods(lines: &[Value]) -> Vec<String> {
     (lines.iter())
-        .filter(|l| l["id"] != MODELS_ID)
         .map(|l| l["method"].as_str().unwrap_or("response").to_owned())
         .collect()
 }
@@ -174,12 +171,7 @@ fn run_of(name: &str) -> Run {
         methods(&expected),
         "{name}: lines written"
     );
-    for (written, expected) in run
-        .written
-        .iter()
-        .filter(|l| l["id"] != MODELS_ID)
-        .zip(&expected)
-    {
+    for (written, expected) in run.written.iter().zip(&expected) {
         assert_eq!(written["id"], expected["id"], "{name}: ids");
         // Only the request's identity and the answers are the capture's; the adapter sends more
         // parameters (policy, config) than the capture's driver did.
@@ -281,8 +273,9 @@ fn a_session_starts_with_its_id_and_what_codex_can_do() {
     assert!(
         capabilities.steer && capabilities.resume && capabilities.fork && !capabilities.tool_hooks
     );
-    // No model/list answer in this capture: the thread's own model.
-    assert_eq!(capabilities.models[0].id, "gpt-6-luna");
+    // model/list's own order (account.jsonl), the thread's model among them.
+    assert_eq!(capabilities.models.len(), 8);
+    assert!(capabilities.models.iter().any(|m| m.id == "gpt-6-luna"));
     assert_eq!(texts(&run.events), ["ok"]);
     let streamed: Vec<_> = (run.events.iter())
         .filter_map(|e| {
@@ -384,18 +377,16 @@ fn a_prompt_before_the_thread_waits_for_it() {
     run.prompt("hi", false);
     assert_eq!(methods(&run.written), ["initialize"]);
     run.feed(&entries("simple")[1].1);
-    run.feed(&entries("simple")[5].1);
+    run.feed(&entries("simple")[7].1);
     assert_eq!(
         methods(&run.written),
-        ["initialize", "initialized", "thread/start", "turn/start"]
-    );
-    // Beside them: the one line no capture holds, which the fake agent answers itself.
-    assert_eq!(
-        run.written
-            .iter()
-            .filter(|l| l["method"] == "model/list")
-            .count(),
-        1
+        [
+            "initialize",
+            "initialized",
+            "model/list",
+            "thread/start",
+            "turn/start"
+        ]
     );
     let turn = run.written.last().unwrap();
     assert_eq!(turn["params"]["effort"], "low");
@@ -753,7 +744,6 @@ fn resume_is_a_second_process_that_starts_over_and_lists_its_turns() {
         .written
         .iter()
         .chain(&second.written)
-        .filter(|l| l["id"] != MODELS_ID)
         .cloned()
         .collect();
     assert_eq!(methods(&written), methods(&out_lines(&all)));
@@ -780,13 +770,19 @@ fn a_fork_continues_a_copy_of_the_thread() {
     // The capture forks inside the process; quill launches a new one with `fork` set, so the
     // second half is checked on its own, after the first.
     let mut first = Run::started(SessionSpec::default());
-    replay(&mut first, &all[..35], 0);
+    replay(&mut first, &all[..37], 0);
     let Session { id } = first.events[0].clone() else {
         panic!()
     };
     assert_eq!(
         methods(&first.written),
-        ["initialize", "initialized", "thread/start", "turn/start"]
+        [
+            "initialize",
+            "initialized",
+            "model/list",
+            "thread/start",
+            "turn/start"
+        ]
     );
     let mut second = Run::started(SessionSpec {
         resume: Some(id.clone()),
@@ -797,10 +793,10 @@ fn a_fork_continues_a_copy_of_the_thread() {
     second.feed(&all[1].1);
     assert_eq!(
         methods(&second.written),
-        ["initialize", "initialized", "thread/fork"]
+        ["initialize", "initialized", "model/list", "thread/fork"]
     );
     assert_eq!(second.written.last().unwrap()["params"]["threadId"], id);
-    second.feed(&json!({ "id": 2, "result": all[41].1["result"] }));
+    second.feed(&json!({ "id": 2, "result": all[43].1["result"] }));
     assert!(
         matches!(&second.events[0], Session { id: forked } if forked == "01a18181-020f-72e0-bd68-fab8fef650f4")
     );
@@ -810,7 +806,7 @@ fn a_fork_continues_a_copy_of_the_thread() {
         "01a18181-020f-72e0-bd68-fab8fef650f4"
     );
     // The capture's ids are those of a process that counted on; only its notifications apply.
-    for (dir, msg) in &all[44..] {
+    for (dir, msg) in &all[46..] {
         if dir == "in" && msg["method"].is_string() {
             second.feed(msg);
         }
@@ -827,7 +823,7 @@ fn account_models_become_the_pickers_and_the_unauthorized_turn_asks_to_sign_in()
     let mut models = account[6].1.clone();
     models["id"] = json!(MODELS_ID);
     run.feed(&models);
-    run.feed(&entries("simple")[5].1);
+    run.feed(&entries("simple")[7].1);
     let Ready { capabilities, .. } = run
         .events
         .iter()
@@ -850,7 +846,7 @@ fn account_models_become_the_pickers_and_the_unauthorized_turn_asks_to_sign_in()
     // Models after the thread tell the session again.
     let mut late = Run::started(SessionSpec::default());
     late.feed(&account[1].1);
-    late.feed(&entries("simple")[5].1);
+    late.feed(&entries("simple")[7].1);
     late.feed(&models);
     assert_eq!(
         late.events

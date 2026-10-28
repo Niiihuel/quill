@@ -58,10 +58,8 @@ const QUIET: [&str; 13] = [
 enum Pending {
     Init,
     Models,
-    /// `thread/start`, `thread/resume` or `thread/fork`; a resumed thread also lists its turns.
-    Thread {
-        resume: bool,
-    },
+    /// `thread/start`, `thread/resume` or `thread/fork`.
+    Thread,
     /// `turn/start`.
     Turn,
     /// `turn/steer`, for the quill request it carries.
@@ -144,13 +142,13 @@ impl Codex {
         let resume = self.spec.lock().unwrap().resume.clone();
         let mut params = self.thread_params();
         let Some(id) = resume else {
-            return self.request("thread/start", params, Pending::Thread { resume: false });
+            return self.request("thread/start", params, Pending::Thread);
         };
         let fork = self.spec.lock().unwrap().fork;
         params["threadId"] = json!(id);
         params["excludeTurns"] = json!(true);
         let method = if fork { "thread/fork" } else { "thread/resume" };
-        self.request(method, params, Pending::Thread { resume: !fork })
+        self.request(method, params, Pending::Thread)
     }
 
     fn turn_start(&mut self, request: String, input: Vec<Value>) -> String {
@@ -273,22 +271,12 @@ impl Codex {
                     out.events.push(self.ready());
                 }
             }
-            Pending::Thread { resume } => {
+            Pending::Thread => {
                 let id = text(&result["thread"]["id"]);
                 self.thread_model = result["model"].as_str().map(str::to_owned);
                 self.thread = Some(id.clone());
                 out.events.push(AgentEvent::Session { id: id.clone() });
                 out.events.push(self.ready());
-                if resume {
-                    // Only to keep the fake agent's replay in step with resume.jsonl:54, where
-                    // the capture listed the turns; the answer is ignored.
-                    let list = self.request(
-                        "thread/turns/list",
-                        json!({ "threadId": id, "limit": 1 }),
-                        Pending::Ignore,
-                    );
-                    out.replies.push(list);
-                }
                 for (request, input) in std::mem::take(&mut self.queued) {
                     out.replies.push(self.turn_start(request, input));
                 }
@@ -317,7 +305,7 @@ impl Codex {
             out.events.push(AgentEvent::AuthRequired);
         }
         let turn = matches!(pending, Pending::Turn)
-            || (matches!(pending, Pending::Thread { .. }) && !self.queued.is_empty());
+            || (matches!(pending, Pending::Thread) && !self.queued.is_empty());
         if turn {
             self.queued.clear();
             self.starting.clear();
