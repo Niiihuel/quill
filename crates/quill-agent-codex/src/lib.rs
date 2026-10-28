@@ -859,10 +859,12 @@ fn key(id: &Value) -> String {
     id.as_str().map_or_else(|| id.to_string(), str::to_owned)
 }
 
-/// (approval policy, sandbox, sandbox policy of a turn) of a mode.
+/// (approval policy, sandbox, sandbox policy of a turn) of a mode. Read only asks before
+/// anything but a read (`untrusted`): with `on-request` the sandbox fails a command without
+/// asking (deny.jsonl and always.jsonl ask only under `untrusted`).
 fn preset(mode: &str) -> (&'static str, &'static str, &'static str) {
     match mode {
-        "read-only" => ("on-request", "read-only", "readOnly"),
+        "read-only" => ("untrusted", "read-only", "readOnly"),
         FULL_ACCESS => ("never", "danger-full-access", "dangerFullAccess"),
         _ => ("on-request", "workspace-write", "workspaceWrite"),
     }

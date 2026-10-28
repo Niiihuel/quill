@@ -65,7 +65,7 @@ Codex no tiene un modo único sino dos ejes: `approvalPolicy` (`untrusted`, `on-
 
 | Modo en quill | `approvalPolicy` | `sandbox` |
 |---|---|---|
-| Read only | `on-request` | `read-only` |
+| Read only | `untrusted` (pide aprobación antes de cualquier cosa que no sea leer) | `read-only` |
 | Auto (por defecto) | `on-request` | `workspace-write` |
 | Full access (inseguro, en `unsafe_modes`) | `never` | `danger-full-access` |
 
@@ -149,7 +149,7 @@ Cómo se llegó a cada uno:
 ### Otros hallazgos que cambian el diseño
 
 - **`commandActions`** viaja en el ítem `commandExecution` (y en el pedido): `{type: "read", command, name, path}` para `cat <archivo>` simple (`deny-patch.jsonl:53`), `{type: "listFiles", command, path}` para `ls` (`plan.jsonl:69`), y `{type: "unknown", command}` para el resto: `touch`, `pwd`, y también `cat … && pwd` o `rtk cat …` (`edit-bash.jsonl:54`, `:80`). `search` no apareció. El comando completo viene envuelto: `/run/current-system/sw/bin/bash -lc '<cmd>'`; el texto útil está en `commandActions[].command`.
-- **Aprobaciones y el modo Read only.** Con `on-request` + `read-only` Codex **no** pide aprobación para un comando que el sandbox bloquea: el modelo recibe el fallo y lo cuenta. Solo `apply_patch` pide aprobación (`edit-bash`, `deny-patch`). Para ver aprobaciones de comandos hubo que usar `untrusted`. Hay que revisar los presets de "Modos de permiso": con `on-request` el modo "Read only" nunca preguntaría por comandos.
+- **Aprobaciones y el modo Read only.** Con `on-request` + `read-only` Codex **no** pide aprobación para un comando que el sandbox bloquea: el modelo recibe el fallo y lo cuenta. Solo `apply_patch` pide aprobación (`edit-bash`, `deny-patch`). Para ver aprobaciones de comandos hubo que usar `untrusted`. Por eso "Read only" usa `untrusted`: pregunta antes de correr cualquier cosa que no sea leer.
 - **Resume, fork y los valores por defecto del usuario.** `thread/resume` y `thread/fork` **sin** `approvalPolicy` / `sandbox` volvieron con `sandbox: {type: "dangerFullAccess"}`, tomado de la configuración de la persona (primer intento, descartado y no incluido). El adaptador debe mandar `approvalPolicy` y `sandbox` en `thread/start`, `thread/resume` y `thread/fork`, siempre. Lo mismo vale para el esfuerzo: `thread/start` respondió `reasoningEffort: "max"` (el de la persona), y el `effort` sale en cada `turn/start`.
 - **`update_plan` está apagado por defecto.** Sin config, el modelo dice que no existe la herramienta (dos intentos). Con `tools.update_plan.enabled` en la `config` del thread llega `turn/plan/updated` `{turnId, explanation, plan[{step, status}]}` con `status` `pending | inProgress | completed`; la primera notificación llega antes de los comandos (`plan.jsonl:52`, `:59`, `:66`, `:73`). Es la lista completa en cada notificación.
 - **Razonamiento.** Ver `think`: con `gpt-6-luna` en `low` no hay resumen. Además, `turn/start.summary` hay que mandarlo (`auto` | `concise` | `detailed`) para tenerlos, y `model/list` da los esfuerzos válidos por modelo (`low` … `max`; `gpt-6-luna` ofrece `low, medium, high, xhigh, max`, `account.jsonl:7`). `model/list` vino en una sola página (`nextCursor: null`), 8 modelos.

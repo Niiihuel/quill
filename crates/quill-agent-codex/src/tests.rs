@@ -324,7 +324,7 @@ fn every_thread_is_opened_with_its_approval_policy_sandbox_and_config() {
     // The person's own Codex config may be danger-full-access: never inherit it.
     for (mode, approval, sandbox) in [
         (None, "on-request", "workspace-write"),
-        (Some("read-only"), "on-request", "read-only"),
+        (Some("read-only"), "untrusted", "read-only"),
         (Some("full-access"), "never", "danger-full-access"),
     ] {
         let allow = mode == Some("full-access");
