@@ -7002,7 +7002,7 @@ pub(crate) fn offered_modes(store: &Store, session: Option<&Session>, ui: &Ui) -
                 .collect()
         });
     // The chosen model, or the agent's first, its default.
-    let models = capabilities.map_or(&[][..], |c| c.models.as_slice());
+    let models = offered_models(store, session, ui);
     let model = ui
         .model
         .as_deref()
@@ -7045,15 +7045,18 @@ pub(crate) fn agent_capabilities<'a>(
     })
 }
 
-/// The models the menu lists: the session's agent's, or for a new session the last
-/// session's.
+/// The models the menu lists: the session's agent's, for a new session the last session's,
+/// and before any session of the agent what its program offered when asked.
 pub(crate) fn offered_models<'a>(
     store: &'a Store,
     session: Option<&'a Session>,
-    ui: &Ui,
+    ui: &'a Ui,
 ) -> &'a [quill_model::ModelInfo] {
+    let agent = session.map_or(ui.agent.as_str(), |s| s.agent.as_str());
     agent_capabilities(store, session, ui)
         .map(|c| c.models.as_slice())
+        .filter(|models| !models.is_empty())
+        .or_else(|| ui.agent_models.get(agent).map(Vec::as_slice))
         .unwrap_or_default()
 }
 
@@ -7258,7 +7261,7 @@ fn model_menu(
 pub(crate) fn current_model<'a>(
     store: &'a Store,
     session: Option<&'a Session>,
-    ui: &Ui,
+    ui: &'a Ui,
 ) -> Option<&'a quill_model::ModelInfo> {
     offered_models(store, session, ui).iter().find(|m| {
         ui.model

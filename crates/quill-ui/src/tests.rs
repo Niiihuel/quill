@@ -5701,3 +5701,22 @@ fn a_permission_card_names_the_agent_that_asks() {
     assert_eq!(view::agent_word(&ui, "codex"), "Codex");
     assert_eq!(view::agent_word(&ui, "other"), "the agent");
 }
+
+#[test]
+fn a_new_session_offers_the_models_its_agent_told_before_any_session() {
+    let store = Store::default();
+    let mut ui = Ui::new("/tmp".into());
+    ui.agent = "codex".into();
+    assert!(view::offered_models(&store, None, &ui).is_empty());
+    let model = quill_model::ModelInfo {
+        id: "gpt-6-luna".into(),
+        name: "GPT-6-Luna".into(),
+        efforts: vec!["low".into()],
+        modes: vec![],
+    };
+    ui.applied(&Event::AgentModels {
+        agent: "codex".into(),
+        models: vec![model],
+    });
+    assert_eq!(view::offered_models(&store, None, &ui)[0].id, "gpt-6-luna");
+}

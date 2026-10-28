@@ -776,6 +776,21 @@ impl AgentAdapter for Codex {
         })
     }
 
+    /// The handshake and `model/list`, no thread: what account.jsonl:1-7 asked.
+    fn models_query(&self) -> Option<Vec<String>> {
+        Some(vec![
+            json!({ "id": 1, "method": "initialize", "params": { "clientInfo": client() } })
+                .to_string(),
+            json!({ "method": "initialized" }).to_string(),
+            json!({ "id": MODELS_ID, "method": "model/list", "params": {} }).to_string(),
+        ])
+    }
+
+    fn models_answer(&self, line: &str) -> Option<Vec<ModelInfo>> {
+        let answer: Value = serde_json::from_str(line).ok()?;
+        (answer["id"] == MODELS_ID).then(|| models(&answer["result"]["data"]))
+    }
+
     /// Its own line, after "navigate to this URL to authenticate:" (the line before it
     /// holds `http://localhost:<port>`, not the page).
     fn login_url(&self, line: &str) -> Option<String> {
@@ -814,8 +829,11 @@ impl AgentAdapter for Codex {
                     ..Self::default()
                 };
                 // quill says who it is (docs/codex.md); the answer starts the rest.
-                let client = json!({ "name": "quill", "title": "quill", "version": env!("CARGO_PKG_VERSION") });
-                vec![self.request("initialize", json!({ "clientInfo": client }), Pending::Init)]
+                vec![self.request(
+                    "initialize",
+                    json!({ "clientInfo": client() }),
+                    Pending::Init,
+                )]
             }
             AgentCommand::Prompt {
                 request,
@@ -948,6 +966,11 @@ fn result(
 
 /// The models `model/list` offers, the default first, hidden ones left out
 /// (account.jsonl:7).
+/// Who quill says it is to Codex: itself, never another client (AGENTS.md).
+fn client() -> Value {
+    json!({ "name": "quill", "title": "quill", "version": env!("CARGO_PKG_VERSION") })
+}
+
 fn models(data: &Value) -> Vec<ModelInfo> {
     let mut rows: Vec<&Value> = data
         .as_array()

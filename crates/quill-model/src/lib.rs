@@ -1159,6 +1159,12 @@ pub enum Event {
         agent: String,
         state: AuthState,
     },
+    /// The models an agent's program offers, asked before any session of it: what the model
+    /// menu of a new session lists until a session tells. Asked again at each start.
+    AgentModels {
+        agent: String,
+        models: Vec<ModelInfo>,
+    },
     /// The page where the person signs in, which the engine also opened in their browser.
     SignInUrl {
         agent: String,
@@ -1267,6 +1273,7 @@ impl Event {
             | Event::Servers { .. }
             | Event::ServersFound { .. }
             | Event::Auth { .. }
+            | Event::AgentModels { .. }
             | Event::SignInUrl { .. }
             | Event::SignInFailed { .. } => 0,
         }

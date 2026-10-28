@@ -838,6 +838,16 @@ pub trait AgentAdapter: Send {
     fn login_takes_code(&self) -> bool {
         true
     }
+    /// Lines that ask the program, started as for a session but with none, which models it
+    /// offers; its stdin stays open until [`models_answer`](Self::models_answer) reads them.
+    /// `None` when only a session tells.
+    fn models_query(&self) -> Option<Vec<String>> {
+        None
+    }
+    /// The models in a line the program wrote after [`models_query`](Self::models_query).
+    fn models_answer(&self, _line: &str) -> Option<Vec<ModelInfo>> {
+        None
+    }
     /// What goes to the program's stdin for the code the person pasted.
     fn login_code(&self, code: &str) -> String {
         format!("{code}\n")

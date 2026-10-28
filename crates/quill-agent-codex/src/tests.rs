@@ -991,3 +991,20 @@ fn the_mode_words_cover_the_modes_it_offers_and_the_default_is_one_of_them() {
     assert!(codex.icon().is_some_and(|svg| svg.contains("currentColor")));
     assert!(!codex.login_takes_code());
 }
+
+#[test]
+fn the_models_are_asked_without_a_thread() {
+    let codex = Codex::new();
+    let asked: Vec<Value> = (codex.models_query().unwrap().iter())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(methods(&asked), ["initialize", "initialized", "model/list"]);
+    // account.jsonl:7, under the id the query asks it by.
+    let mut answer = entries("account")[6].1.clone();
+    answer["id"] = json!(MODELS_ID);
+    let models = codex.models_answer(&answer.to_string()).unwrap();
+    assert_eq!(models.len(), 8);
+    assert!(codex
+        .models_answer(&entries("account")[1].1.to_string())
+        .is_none());
+}

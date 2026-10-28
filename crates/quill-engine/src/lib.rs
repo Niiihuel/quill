@@ -530,6 +530,57 @@ impl Router {
         Some(command)
     }
 
+    /// Ask an agent's program which models it offers, with no session; answered by
+    /// `Event::AgentModels` when its adapter knows how to ask.
+    fn ask_models(&self, agent: String) {
+        let Some(adapter) = adapter(&agent) else {
+            return;
+        };
+        let plan = adapter.launch(&SessionSpec::default());
+        let (Some(lines), Some(mut command)) = (
+            adapter.models_query(),
+            self.account_command(&agent, &plan.args),
+        ) else {
+            return;
+        };
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let ui = self.ui.clone();
+        // The adapter is `Send`, not `Sync`: shared across awaits only behind a lock.
+        let adapter = std::sync::Mutex::new(adapter);
+        tokio::spawn(async move {
+            let Ok(mut child) = command.spawn() else {
+                return;
+            };
+            let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+                return;
+            };
+            // The program answers only while its stdin is open: it stays so until the answer.
+            let asked = async {
+                for line in lines {
+                    stdin.write_all(format!("{line}\n").as_bytes()).await.ok()?;
+                }
+                let mut read = BufReader::new(stdout).lines();
+                while let Ok(Some(line)) = read.next_line().await {
+                    let answer = adapter.lock().unwrap().models_answer(&line);
+                    if let Some(models) = answer {
+                        return Some(models);
+                    }
+                }
+                None
+            };
+            if let Ok(Some(models)) =
+                tokio::time::timeout(std::time::Duration::from_secs(20), asked).await
+            {
+                ui(Event::AgentModels { agent, models });
+            }
+            // Dropping the child kills it.
+        });
+    }
+
     /// Ask an agent's program who is signed in; answered by `Event::Auth`.
     fn check_sign_in(&self, agent: String) {
         let Some(adapter) = adapter(&agent) else {
@@ -1331,6 +1382,8 @@ impl Router {
                 return;
             }
             Intent::CheckSignIn { agent } => {
+                // Asked when the agent is offered: its models, too, before any session of it.
+                self.ask_models(agent.clone());
                 self.check_sign_in(agent);
                 return;
             }

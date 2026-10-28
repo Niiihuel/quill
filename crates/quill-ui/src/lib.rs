@@ -592,6 +592,7 @@ impl Store {
             | Event::Servers { .. }
             | Event::ServersFound { .. }
             | Event::Auth { .. }
+            | Event::AgentModels { .. }
             | Event::SignInUrl { .. }
             | Event::SignInFailed { .. } => {}
         }
@@ -1214,6 +1215,8 @@ pub struct Ui {
     /// The settings in force, as the engine last kept them, and the agents it can run.
     pub settings: quill_model::Settings,
     pub agents: Vec<quill_model::AgentInfo>,
+    /// The models each agent's program offered before any session of it (`Event::AgentModels`).
+    pub agent_models: std::collections::HashMap<String, Vec<quill_model::ModelInfo>>,
     /// Settings, while open: the page shown, what its search looks for, and the select whose
     /// list is open.
     pub settings_page: Option<String>,
@@ -1900,6 +1903,7 @@ impl Ui {
             browser_notice: Default::default(),
             settings: Default::default(),
             agents: vec![],
+            agent_models: Default::default(),
             settings_page: None,
             account_menu: false,
             account: Default::default(),
@@ -2304,6 +2308,9 @@ impl Ui {
         } = event
         {
             self.browser_notice.insert(*session, words.clone());
+        }
+        if let Event::AgentModels { agent, models } = event {
+            self.agent_models.insert(agent.clone(), models.clone());
         }
         if let Event::Settings { settings, agents } = event {
             look::set_text_size(settings.text_size);

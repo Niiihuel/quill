@@ -59,6 +59,7 @@ impl Store {
             | Event::Servers { .. }
             | Event::ServersFound { .. }
             | Event::Auth { .. }
+            | Event::AgentModels { .. }
             | Event::SignInUrl { .. }
             | Event::SignInFailed { .. } => false,
             // What a session's browser shows is the moment's; its tabs' addresses are kept.
